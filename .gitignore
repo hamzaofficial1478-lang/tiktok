@@ -12,3 +12,4 @@ resources/sidecar-sources.json
 .DS_Store
 .vscode/
 .idea/
+.harness/

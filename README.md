@@ -66,6 +66,17 @@ The suite is Electron-free and runs in a plain Node process. If a test ever
 fails with `Cannot find module 'electron'`, a headless module has grown a UI
 dependency — fix the module, not the test.
 
+### Queue harness
+
+```bash
+npm run harness:queue
+```
+
+Drives the real queue engine, dedup layers, retry policy and SQLite
+persistence against a fake extractor and download pipeline, printing the whole
+run to the terminal. Useful for seeing the behaviours interact on one batch —
+particularly that a duplicate question does not stall the items behind it.
+
 ### Live probe
 
 ```bash
@@ -99,8 +110,8 @@ filter chain or encoder.
 | ----- | ----- | ----- |
 | 1 | Scaffold: IPC, SQLite + migrations, sidecars, logging | done |
 | 2 | URL normalization + Extractor chain (headless) | done |
-| 3 | Queue engine: ordering, retries, rate limiting, dedup | next |
-| 4 | Download pipeline: `.part` handling, verification, templating | |
+| 3 | Queue engine: ordering, retries, rate limiting, dedup | done |
+| 4 | Download pipeline: `.part` handling, verification, templating | next |
 | 5 | Post-processing: stream selection, watermark, outro | |
 | 6 | UI shell: five screens on real engine state | |
 | 7 | Motion + 3D polish, 300-item performance pass | |

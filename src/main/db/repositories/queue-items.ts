@@ -133,6 +133,40 @@ export class QueueItemsRepository {
       .get();
   }
 
+  /**
+   * Atomically takes the lowest-position queued item and marks it in flight.
+   *
+   * The SELECT and UPDATE are one statement on purpose: with concurrency up to
+   * 4, a read-then-write would let two workers claim the same row and download
+   * it twice. RETURNING gives back the row as claimed, so the caller never has
+   * to re-read and wonder whether it changed underneath.
+   */
+  claimNext(now: number = Date.now()): QueueItemRow | undefined {
+    return this.db
+      .prepare<[number], QueueItemRow>(
+        `UPDATE queue_items
+            SET status = 'resolving', started_at = ?
+          WHERE id = (SELECT id FROM queue_items WHERE status = 'queued' ORDER BY position ASC LIMIT 1)
+      RETURNING *`,
+      )
+      .get(now);
+  }
+
+  /**
+   * Reassigns positions for a reorder (section 8: drag to reorder queued items).
+   *
+   * New positions are drawn from the sequence rather than swapped, so the
+   * "never reused" guarantee survives a reorder. The visible consequence is
+   * that reordered items sort after any already-terminal ones, which is
+   * consistent with them genuinely being later in the processing order.
+   */
+  reposition(orderedIds: readonly number[]): void {
+    const update = this.db.prepare('UPDATE queue_items SET position = ? WHERE id = ?');
+    this.db.transaction(() => {
+      for (const id of orderedIds) update.run(this.nextPosition(), id);
+    })();
+  }
+
   /** Dedup layer 2: is this video already pending or in flight? */
   findActiveByAwemeId(awemeId: string): QueueItemRow | undefined {
     const placeholders = ACTIVE_FOR_DEDUP_STATUSES.map(() => '?').join(',');
@@ -198,5 +232,26 @@ export class QueueItemsRepository {
 
   remove(id: number): void {
     this.db.prepare('DELETE FROM queue_items WHERE id = ?').run(id);
+  }
+
+  listByStatus(statuses: readonly QueueStatus[]): QueueItemRow[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => '?').join(',');
+    return this.db
+      .prepare<string[], QueueItemRow>(
+        `SELECT * FROM queue_items WHERE status IN (${placeholders}) ORDER BY position ASC`,
+      )
+      .all(...statuses);
+  }
+
+  removeByStatus(statuses: readonly QueueStatus[]): number {
+    if (statuses.length === 0) return 0;
+    const placeholders = statuses.map(() => '?').join(',');
+    return this.db.prepare(`DELETE FROM queue_items WHERE status IN (${placeholders})`).run(...statuses).changes;
+  }
+
+  /** Clear queue (section 8) — terminal rows included; the confirmation is the UI's job. */
+  removeAll(): number {
+    return this.db.prepare('DELETE FROM queue_items').run().changes;
   }
 }
