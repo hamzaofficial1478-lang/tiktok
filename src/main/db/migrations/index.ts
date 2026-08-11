@@ -1,0 +1,19 @@
+import init001 from './001_init.sql?raw';
+import appMeta002 from './002_app_meta.sql?raw';
+import type { Migration } from '../migrator';
+
+/**
+ * The migration registry.
+ *
+ * SQL stays in real `.sql` files (reviewable, diffable, syntax-highlighted)
+ * and is inlined at build time via Vite's `?raw`, so nothing has to locate a
+ * file on disk at runtime — which is what would otherwise break inside a
+ * packaged asar. Vitest shares Vite's resolver, so tests load the identical
+ * strings the app ships.
+ *
+ * Append only. Never renumber or edit a migration that has shipped.
+ */
+export const MIGRATIONS: readonly Migration[] = [
+  { version: 1, name: '001_init', sql: init001 },
+  { version: 2, name: '002_app_meta', sql: appMeta002 },
+];

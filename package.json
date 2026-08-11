@@ -1,0 +1,52 @@
+{
+  "name": "tiktok-downloader",
+  "version": "0.1.0",
+  "description": "Desktop TikTok downloader with an ordered queue, deduplication, and watermark removal",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "author": "",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamzaofficial1478-lang/tiktok.git"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "fetch:sidecars": "node scripts/fetch-sidecars.mjs",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "postinstall": "electron-builder install-app-deps",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "verify": "npm run typecheck && npm run test"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "pino": "^10.3.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.14"
+  }
+}

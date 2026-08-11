@@ -1,0 +1,202 @@
+import type { Database } from 'better-sqlite3';
+import { ACTIVE_FOR_DEDUP_STATUSES, IN_FLIGHT_STATUSES, type DuplicateAction, type QueueStatus } from '@shared/types';
+import type { ErrorCode } from '@shared/errors';
+
+export interface QueueItemRow {
+  id: number;
+  position: number;
+  batch_id: string;
+  raw_url: string;
+  canonical_url: string | null;
+  aweme_id: string | null;
+  status: QueueStatus;
+  progress: number;
+  bytes_done: number | null;
+  bytes_total: number | null;
+  attempt_count: number;
+  error_code: ErrorCode | null;
+  error_detail: string | null;
+  duplicate_action: DuplicateAction | null;
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
+export interface EnqueueInput {
+  batchId: string;
+  rawUrl: string;
+  canonicalUrl?: string | null;
+  awemeId?: string | null;
+  status?: QueueStatus;
+}
+
+export interface QueueItemPatch {
+  status?: QueueStatus;
+  progress?: number;
+  bytesDone?: number | null;
+  bytesTotal?: number | null;
+  canonicalUrl?: string | null;
+  awemeId?: string | null;
+  attemptCount?: number;
+  errorCode?: ErrorCode | null;
+  errorDetail?: string | null;
+  duplicateAction?: DuplicateAction | null;
+  startedAt?: number | null;
+  finishedAt?: number | null;
+}
+
+const POSITION_SEQ_KEY = 'queue_position_seq';
+
+/**
+ * Data access for the queue. Deliberately free of business logic — the state
+ * machine, retry policy and dedup decisions live in queue/QueueEngine
+ * (phase 3). This class only guarantees two things the engine depends on:
+ * positions are unique and never reused, and ordering is always by position.
+ */
+export class QueueItemsRepository {
+  constructor(private readonly db: Database) {}
+
+  /**
+   * Allocates the next position from a persisted counter rather than
+   * MAX(position) + 1, so removing the last item never causes a later insert
+   * to reuse its position (section 8).
+   */
+  private nextPosition(): number {
+    const row = this.db
+      .prepare<[string], { value: string }>('SELECT value FROM app_meta WHERE key = ?')
+      .get(POSITION_SEQ_KEY);
+    const next = (row ? Number(row.value) : 0) + 1;
+    this.db
+      .prepare('INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run(POSITION_SEQ_KEY, String(next));
+    return next;
+  }
+
+  /**
+   * Inserts a batch in the given array order, in one transaction.
+   *
+   * Atomicity is the point: pasting 200 links must produce 200 rows with 200
+   * consecutive positions or none at all. A partial insert would leave gaps
+   * that look like lost links.
+   */
+  enqueue(inputs: readonly EnqueueInput[], now: number = Date.now()): QueueItemRow[] {
+    const insert = this.db.prepare(
+      `INSERT INTO queue_items (
+         position, batch_id, raw_url, canonical_url, aweme_id, status, progress, attempt_count, created_at
+       ) VALUES (@position, @batchId, @rawUrl, @canonicalUrl, @awemeId, @status, 0, 0, @createdAt)`,
+    );
+
+    const run = this.db.transaction((items: readonly EnqueueInput[]): number[] => {
+      const ids: number[] = [];
+      for (const item of items) {
+        const result = insert.run({
+          position: this.nextPosition(),
+          batchId: item.batchId,
+          rawUrl: item.rawUrl,
+          canonicalUrl: item.canonicalUrl ?? null,
+          awemeId: item.awemeId ?? null,
+          status: item.status ?? 'queued',
+          createdAt: now,
+        });
+        ids.push(Number(result.lastInsertRowid));
+      }
+      return ids;
+    });
+
+    const ids = run(inputs);
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    return this.db
+      .prepare<number[], QueueItemRow>(`SELECT * FROM queue_items WHERE id IN (${placeholders}) ORDER BY position ASC`)
+      .all(...ids);
+  }
+
+  findById(id: number): QueueItemRow | undefined {
+    return this.db.prepare<[number], QueueItemRow>('SELECT * FROM queue_items WHERE id = ?').get(id);
+  }
+
+  /** Always ORDER BY position — never by id, timestamp, or insertion into a Map (section 8). */
+  listOrdered(): QueueItemRow[] {
+    return this.db.prepare<[], QueueItemRow>('SELECT * FROM queue_items ORDER BY position ASC').all();
+  }
+
+  listByBatch(batchId: string): QueueItemRow[] {
+    return this.db
+      .prepare<[string], QueueItemRow>('SELECT * FROM queue_items WHERE batch_id = ? ORDER BY position ASC')
+      .all(batchId);
+  }
+
+  /** The next item to work on: lowest position still queued. */
+  nextQueued(): QueueItemRow | undefined {
+    return this.db
+      .prepare<[], QueueItemRow>("SELECT * FROM queue_items WHERE status = 'queued' ORDER BY position ASC LIMIT 1")
+      .get();
+  }
+
+  /** Dedup layer 2: is this video already pending or in flight? */
+  findActiveByAwemeId(awemeId: string): QueueItemRow | undefined {
+    const placeholders = ACTIVE_FOR_DEDUP_STATUSES.map(() => '?').join(',');
+    return this.db
+      .prepare<string[], QueueItemRow>(
+        `SELECT * FROM queue_items WHERE aweme_id = ? AND status IN (${placeholders}) ORDER BY position ASC LIMIT 1`,
+      )
+      .get(awemeId, ...ACTIVE_FOR_DEDUP_STATUSES);
+  }
+
+  update(id: number, patch: QueueItemPatch): QueueItemRow | undefined {
+    const columns: Record<keyof QueueItemPatch, string> = {
+      status: 'status',
+      progress: 'progress',
+      bytesDone: 'bytes_done',
+      bytesTotal: 'bytes_total',
+      canonicalUrl: 'canonical_url',
+      awemeId: 'aweme_id',
+      attemptCount: 'attempt_count',
+      errorCode: 'error_code',
+      errorDetail: 'error_detail',
+      duplicateAction: 'duplicate_action',
+      startedAt: 'started_at',
+      finishedAt: 'finished_at',
+    };
+
+    const sets: string[] = [];
+    const values: unknown[] = [];
+    for (const [key, column] of Object.entries(columns) as [keyof QueueItemPatch, string][]) {
+      if (patch[key] === undefined) continue;
+      sets.push(`${column} = ?`);
+      values.push(patch[key]);
+    }
+    if (sets.length === 0) return this.findById(id);
+
+    this.db.prepare(`UPDATE queue_items SET ${sets.join(', ')} WHERE id = ?`).run(...values, id);
+    return this.findById(id);
+  }
+
+  /**
+   * Crash recovery (section 8): anything that was mid-flight when the process
+   * died goes back to `queued` so the engine picks it up in position order.
+   * `.part` files are left untouched on purpose — they are the resume point.
+   */
+  resetInFlight(): number {
+    const placeholders = IN_FLIGHT_STATUSES.map(() => '?').join(',');
+    const result = this.db
+      .prepare(
+        `UPDATE queue_items
+            SET status = 'queued', progress = 0, started_at = NULL
+          WHERE status IN (${placeholders})`,
+      )
+      .run(...IN_FLIGHT_STATUSES);
+    return result.changes;
+  }
+
+  countsByStatus(): Record<string, number> {
+    const rows = this.db
+      .prepare<[], { status: QueueStatus; n: number }>('SELECT status, COUNT(*) AS n FROM queue_items GROUP BY status')
+      .all();
+    return Object.fromEntries(rows.map((r) => [r.status, r.n]));
+  }
+
+  remove(id: number): void {
+    this.db.prepare('DELETE FROM queue_items WHERE id = ?').run(id);
+  }
+}

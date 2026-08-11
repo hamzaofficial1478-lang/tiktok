@@ -1,0 +1,14 @@
+node_modules/
+out/
+release/
+dist/
+
+# Sidecar binaries and their manifest are fetched, never committed:
+# large, platform-specific, and yt-dlp must update independently of releases.
+resources/bin/
+resources/sidecar-sources.json
+
+*.log
+.DS_Store
+.vscode/
+.idea/

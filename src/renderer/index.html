@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      The renderer loads no remote resources, so everything is locked to 'self'.
+      style-src allows inline because Tailwind injects a style element; ws: in
+      connect-src is what lets Vite's HMR socket work in development and is
+      harmless in a packaged build, which has no dev server to connect to.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self' ws:; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>TikTok Downloader</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

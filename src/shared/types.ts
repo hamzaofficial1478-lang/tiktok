@@ -1,0 +1,62 @@
+/**
+ * Domain vocabulary shared by main and renderer.
+ *
+ * These constants are the same strings persisted in SQLite (spec section 5),
+ * so changing one is a migration, not a rename. Keep them in lockstep with
+ * db/migrations.
+ */
+
+/** Queue state machine — spec section 8. */
+export const QUEUE_STATUSES = [
+  'queued',
+  'resolving',
+  'awaiting_user',
+  'downloading',
+  'processing',
+  'completed',
+  'failed',
+  'skipped',
+  'cancelled',
+  'paused',
+] as const;
+
+export type QueueStatus = (typeof QUEUE_STATUSES)[number];
+
+/**
+ * Statuses that mean work is in flight. On startup these are reset to
+ * 'queued' so a crash never strands an item (section 8, crash recovery).
+ */
+export const IN_FLIGHT_STATUSES = ['resolving', 'downloading', 'processing'] as const satisfies readonly QueueStatus[];
+
+/** Statuses that occupy a slot for dedup layer 2 (section 7). */
+export const ACTIVE_FOR_DEDUP_STATUSES = [
+  'queued',
+  'resolving',
+  'awaiting_user',
+  'downloading',
+  'processing',
+] as const satisfies readonly QueueStatus[];
+
+export const TERMINAL_STATUSES = [
+  'completed',
+  'failed',
+  'skipped',
+  'cancelled',
+] as const satisfies readonly QueueStatus[];
+
+/** How a file's watermark state was achieved — `downloads.source_strategy`. */
+export const SOURCE_STRATEGIES = ['clean_source', 'removelogo', 'blur', 'raw'] as const;
+export type SourceStrategy = (typeof SOURCE_STRATEGIES)[number];
+
+/** User's answer to a layer-3 duplicate prompt — `queue_items.duplicate_action`. */
+export const DUPLICATE_ACTIONS = ['skip', 'redownload', 'replace'] as const;
+export type DuplicateAction = (typeof DUPLICATE_ACTIONS)[number];
+
+export const WATERMARK_MODES = ['auto', 'force_removal', 'keep'] as const;
+export type WatermarkMode = (typeof WATERMARK_MODES)[number];
+
+export const OUTRO_MODES = ['ask', 'always', 'never'] as const;
+export type OutroMode = (typeof OUTRO_MODES)[number];
+
+export const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
+export type LogLevel = (typeof LOG_LEVELS)[number];
