@@ -66,6 +66,19 @@ The suite is Electron-free and runs in a plain Node process. If a test ever
 fails with `Cannot find module 'electron'`, a headless module has grown a UI
 dependency — fix the module, not the test.
 
+### Live probe
+
+```bash
+npm run probe:live
+PROBE_URLS="https://vm.tiktok.com/XXXX/,https://…" npm run probe:live
+```
+
+Skipped by default and never run in CI. The offline suite proves the logic is
+right — that a `play_addr` format is classified clean, that a 404 maps to
+`VIDEO_DELETED`. It cannot prove the *premise*: that TikTok still serves a
+watermark-free stream at all. Only a real request answers that, so the probe
+prints the actual format table and asserts a clean stream was offered.
+
 Coverage is concentrated where bugs hide silently: migrations and rollback,
 queue ordering and position reuse, crash recovery, dedup lookups, config
 validation, IPC payload rejection, and the error taxonomy's invariants. URL
@@ -85,8 +98,8 @@ filter chain or encoder.
 | Phase | Scope | State |
 | ----- | ----- | ----- |
 | 1 | Scaffold: IPC, SQLite + migrations, sidecars, logging | done |
-| 2 | URL normalization + Extractor chain (headless) | next |
-| 3 | Queue engine: ordering, retries, rate limiting, dedup | |
+| 2 | URL normalization + Extractor chain (headless) | done |
+| 3 | Queue engine: ordering, retries, rate limiting, dedup | next |
 | 4 | Download pipeline: `.part` handling, verification, templating | |
 | 5 | Post-processing: stream selection, watermark, outro | |
 | 6 | UI shell: five screens on real engine state | |

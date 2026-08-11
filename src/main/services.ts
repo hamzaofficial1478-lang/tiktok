@@ -8,6 +8,12 @@ import { DownloadsRepository } from './db/repositories/downloads';
 import { QueueItemsRepository } from './db/repositories/queue-items';
 import { SidecarResolver } from './media/sidecars';
 import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
+import { UrlNormalizer } from './resolve/url-normalizer';
+import { HttpRedirectResolver } from './resolve/redirect-resolver';
+import { ChildProcessRunner } from './resolve/process-runner';
+import { YtDlpExtractor } from './resolve/yt-dlp-extractor';
+import { ExtractorChain } from './resolve/extractor-chain';
+import type { Extractor } from './resolve/types';
 import type { MediaCapabilities, SidecarStatus } from '@shared/ipc/contract';
 
 /**
@@ -30,6 +36,11 @@ export interface AppServices {
     readonly queueItems: QueueItemsRepository;
   };
   readonly sidecars: SidecarResolver;
+  /** Phase 2's resolution layer: URL canonicalisation and the extractor chain. */
+  readonly resolution: {
+    readonly normalizer: UrlNormalizer;
+    readonly extractor: Extractor;
+  };
   /** Latest sidecar snapshot; refreshed on demand and after an extractor update. */
   getSidecarStatus(): { sidecars: SidecarStatus[]; capabilities: MediaCapabilities };
   refreshSidecars(): Promise<{ sidecars: SidecarStatus[]; capabilities: MediaCapabilities }>;
@@ -90,6 +101,33 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
 
   await refreshSidecars();
 
+  /**
+   * The extractor chain. yt-dlp is the only implementation today; section 2
+   * requires the seam so a second one can be slotted in ahead of or behind it
+   * when TikTok next changes, without touching the queue.
+   *
+   * The yt-dlp path is read fresh on every resolve rather than captured here,
+   * so a "Update extractor" run mid-session takes effect immediately.
+   */
+  const processRunner = new ChildProcessRunner();
+  const extractor = new ExtractorChain(
+    [
+      new YtDlpExtractor({
+        get binaryPath(): string | null {
+          return sidecars.resolve('yt-dlp').path;
+        },
+        runner: processRunner,
+        proxyUrl: () => config.get().proxyUrl || undefined,
+        log: logging.log.child({ scope: 'yt-dlp' }),
+      }),
+    ],
+    logging.log.child({ scope: 'extractor' }),
+  );
+
+  const normalizer = new UrlNormalizer({
+    redirectResolver: new HttpRedirectResolver(),
+  });
+
   log.info(
     {
       version: options.appVersion,
@@ -116,6 +154,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       queueItems,
     },
     sidecars,
+    resolution: { normalizer, extractor },
     getSidecarStatus: () => snapshot,
     refreshSidecars,
     async shutdown(): Promise<void> {
