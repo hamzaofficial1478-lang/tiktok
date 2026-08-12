@@ -85,7 +85,7 @@ export function Settings(): React.JSX.Element {
             hint={
               config.concurrency > 1
                 ? 'Above 1, completion order no longer matches paste order — faster videos finish first. Downloads still start in order.'
-                : 'Completion order matches paste order exactly.'
+                : 'The main speed lever. Raise it to 3 or 4 for large batches; completion order then stops matching paste order.'
             }
           >
             <input
@@ -108,19 +108,6 @@ export function Settings(): React.JSX.Element {
               onChange={(event) => void set('rateLimitMs', Number(event.target.value))}
               className={inputClass}
             />
-          </Field>
-
-          <Field label="Quality">
-            <select
-              value={config.qualityPreference}
-              onChange={(event) => void set('qualityPreference', event.target.value as typeof config.qualityPreference)}
-              className={inputClass}
-            >
-              <option value="best">Best available</option>
-              <option value="1080p">1080p</option>
-              <option value="720p">720p</option>
-              <option value="480p">480p</option>
-            </select>
           </Field>
 
           <Field label="Proxy" hint="http(s):// or socks5://. Leave empty for none.">
@@ -168,9 +155,7 @@ export function Settings(): React.JSX.Element {
           {(
             [
               ['audioOnly', 'Extract audio only (MP3/M4A)'],
-              ['saveThumbnail', 'Save the cover image beside each video'],
-              ['saveMetadataSidecar', 'Write a .json metadata sidecar'],
-              ['saveSubtitles', 'Download captions when available'],
+              ['detectReposts', 'Detect reposts (slower: decodes each video again)'],
               ['hardwareAcceleration', 'Use hardware encoding when available'],
               ['reduceEffects', 'Reduce visual effects'],
             ] as const

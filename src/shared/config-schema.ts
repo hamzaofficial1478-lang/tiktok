@@ -10,10 +10,14 @@ import { OUTRO_MODES, WATERMARK_MODES, LOG_LEVELS } from './types';
  * caught while typing rather than after a round trip. Defaults are declared
  * here and nowhere else; there is no second copy in the UI.
  *
- * Bounds come straight from the spec: concurrency 1-4 (section 8), rate limit
- * 0.5-10s (section 8). Values outside those are rejected rather than clamped,
- * because silently clamping a user's setting is how you get a support ticket
- * about a slider that "doesn't work".
+ * Deliberately smaller than the original brief. Resolution choice, thumbnail
+ * saving, the metadata sidecar and subtitle downloading were all removed: each
+ * one asked the user a question they did not want to answer, and two of them
+ * cost a full pass over the file with ffmpeg. Removing them is what makes the
+ * common download path spawn no subprocess at all.
+ *
+ * Removed keys in an existing config.json are simply ignored — zod strips
+ * unknown properties — so an upgrade needs no migration.
  */
 
 export const FilenameTemplateSchema = z
@@ -38,12 +42,14 @@ export const AppConfigSchema = z.object({
   watermarkMode: z.enum(WATERMARK_MODES),
   outroMode: z.enum(OUTRO_MODES),
 
-  /** 'best' picks the highest resolution clean stream available. */
-  qualityPreference: z.enum(['best', '1080p', '720p', '480p']),
   audioOnly: z.boolean(),
-  saveThumbnail: z.boolean(),
-  saveMetadataSidecar: z.boolean(),
-  saveSubtitles: z.boolean(),
+
+  /**
+   * Dedup layer 4's repost badge. Off by default because computing a
+   * perceptual hash means decoding the video with ffmpeg — a second full pass
+   * over every file, for a badge most users never look at.
+   */
+  detectReposts: z.boolean(),
 
   hardwareAcceleration: z.boolean(),
   /** Empty string means no proxy. Validated as a URL only when non-empty. */
@@ -60,7 +66,7 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
-export const CONFIG_SCHEMA_VERSION = 1;
+export const CONFIG_SCHEMA_VERSION = 2;
 
 export const DEFAULT_CONFIG: AppConfig = {
   outputDir: '',
@@ -71,13 +77,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   rateLimitJitterMs: 400,
 
   watermarkMode: 'auto',
-  outroMode: 'ask',
+  outroMode: 'never',
 
-  qualityPreference: 'best',
   audioOnly: false,
-  saveThumbnail: true,
-  saveMetadataSidecar: false,
-  saveSubtitles: false,
+  detectReposts: false,
 
   hardwareAcceleration: true,
   proxyUrl: '',

@@ -108,9 +108,9 @@ describe('YtDlpExtractor — metadata', () => {
     expect(metadata.stats).toEqual({ views: 120_000, likes: 9_400, comments: 210, shares: 55 });
   });
 
-  it('extracts unique hashtags from the caption', async () => {
+  it('does not extract hashtags, since nothing consumes them', async () => {
     const { metadata } = await extractorFor(CLEAN_AND_WATERMARKED).resolve(CANONICAL);
-    expect(metadata.hashtags).toEqual(['tags', 'more']);
+    expect(metadata.hashtags).toEqual([]);
   });
 
   it('falls back to upload_date when no timestamp is present', async () => {

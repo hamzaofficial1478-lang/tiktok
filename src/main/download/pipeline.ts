@@ -10,7 +10,6 @@ import { commitPart, discardPart, downloadToPart, partPathFor } from './download
 import { verifyDownload } from './verify';
 import { renderTemplate, resolveOutputPath } from './filename';
 import { computePerceptualHash, sha256File } from './hashing';
-import { embedMetadata, saveThumbnail, writeSidecar } from './metadata-writer';
 import { assertEnoughSpace } from './disk-space';
 import type { PostProcessor } from '../postprocess/processor';
 import type { MediaCapabilities } from '@shared/ipc/contract';
@@ -59,7 +58,6 @@ export class DownloadPipeline implements MediaPipeline {
     // 1. Pick the stream. Clean beats watermarked before resolution is even
     //    considered (section 9 step 4).
     const selection = selectStream(input.resolved.streams, {
-      qualityPreference: config.qualityPreference,
       audioOnly: config.audioOnly,
       watermarkMode: config.watermarkMode,
     });
@@ -189,53 +187,30 @@ export class DownloadPipeline implements MediaPipeline {
       }
     }
 
-    // 8. Everything past this point is best-effort: the download has already
-    //    succeeded and must not be failed by an optional extra.
-    const ffmpegPath = this.options.ffmpegPath();
 
-    if (config.saveMetadataSidecar) {
-      writeSidecar({
-        filePath: targetPath,
-        metadata: input.resolved.metadata,
-        canonicalUrl: input.normalized.canonicalUrl,
-        rawUrl: input.item.raw_url,
-        sourceStrategy: selection.strategy,
-        extractor: input.resolved.extractor,
-        log,
-      });
-    }
-
-    if (config.saveThumbnail) {
-      await saveThumbnail({
-        filePath: targetPath,
-        coverUrl: input.resolved.metadata.coverUrl,
-        ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
-        signal: input.signal,
-        log,
-      });
-    }
-
-    await embedMetadata({
-      filePath: targetPath,
-      metadata: input.resolved.metadata,
-      canonicalUrl: input.normalized.canonicalUrl,
-      ffmpegPath,
-      runner: this.options.runner,
-      log,
-      signal: input.signal,
-    });
-
-    const [sha256, phash] = await Promise.all([
-      sha256File(targetPath).catch(() => null),
-      computePerceptualHash({
-        filePath: targetPath,
-        ffmpegPath,
-        runner: this.options.runner,
-        durationMs: input.resolved.metadata.durationMs,
-        log,
-        signal: input.signal,
-      }),
-    ]);
+    /**
+     * Nothing else touches the file.
+     *
+     * Metadata tags, a JSON sidecar and a saved thumbnail were all removed:
+     * tagging meant remuxing the entire file with ffmpeg and the thumbnail
+     * meant a second HTTP request, both per video. Everything they carried is
+     * already in the library database, so nothing is lost and the common path
+     * now finishes the moment the bytes land.
+     */
+    // SHA-256 is a streaming read of bytes already on disk, so it is cheap.
+    // The perceptual hash is not: it decodes the video again with ffmpeg, so
+    // it only runs when repost detection is explicitly turned on.
+    const sha256 = await sha256File(targetPath).catch(() => null);
+    const phash = config.detectReposts
+      ? await computePerceptualHash({
+          filePath: targetPath,
+          ffmpegPath: this.options.ffmpegPath(),
+          runner: this.options.runner,
+          durationMs: input.resolved.metadata.durationMs,
+          log,
+          signal: input.signal,
+        })
+      : null;
 
     const finalSize = existsSync(targetPath) ? verified.sizeBytes : null;
 

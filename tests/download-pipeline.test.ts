@@ -44,7 +44,7 @@ const metadata: VideoMetadata = {
 };
 
 describe('stream selection (section 9 step 4)', () => {
-  const options = { qualityPreference: 'best', audioOnly: false, watermarkMode: 'auto' } as const;
+  const options = { audioOnly: false, watermarkMode: 'auto' } as const;
 
   it('prefers a clean source even when a watermarked one is higher resolution', () => {
     const result = selectStream(
@@ -61,7 +61,7 @@ describe('stream selection (section 9 step 4)', () => {
     expect(result.strategy).toBe('clean_source');
   });
 
-  it('takes the highest resolution among clean sources', () => {
+  it('takes the highest resolution TikTok offers, with no setting to lower it', () => {
     const result = selectStream(
       [
         stream({ id: 'low', width: 480, height: 854 }),
@@ -77,37 +77,6 @@ describe('stream selection (section 9 step 4)', () => {
     const result = selectStream([stream({ id: 'download_addr', watermarked: true })], options);
     expect(result.strategy).toBe('raw');
     expect(result.reason).toMatch(/re-encoding/i);
-  });
-
-  it('honours a quality ceiling measured on the short side, as portrait video requires', () => {
-    const result = selectStream(
-      [
-        stream({ id: 'fhd', width: 1080, height: 1920 }),
-        stream({ id: 'hd', width: 720, height: 1280 }),
-        stream({ id: 'sd', width: 480, height: 854 }),
-      ],
-      { ...options, qualityPreference: '720p' },
-    );
-    // 720x1280 IS 720p. Measuring height would have excluded it and silently
-    // handed back the 480p stream instead.
-    expect(result.stream.id).toBe('hd');
-  });
-
-  it('does not exclude 1080x1920 from a 1080p preference', () => {
-    const result = selectStream(
-      [stream({ id: 'fhd', width: 1080, height: 1920 }), stream({ id: 'sd', width: 480, height: 854 })],
-      { ...options, qualityPreference: '1080p' },
-    );
-    expect(result.stream.id).toBe('fhd');
-  });
-
-  it('returns the smallest available rather than failing when nothing meets the ceiling', () => {
-    const result = selectStream([stream({ id: 'fhd', width: 1080, height: 1920 })], {
-      ...options,
-      qualityPreference: '480p',
-    });
-    // A user asking for 480p wants a file, not an error.
-    expect(result.stream.id).toBe('fhd');
   });
 
   it('treats the watermarked variant as first-class when the user wants it kept', () => {

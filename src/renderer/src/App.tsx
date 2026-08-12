@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import { useAppStore } from './store/app-store';
 import { invoke } from './lib/ipc';
 import { AddLinks } from './screens/AddLinks';
@@ -8,6 +9,16 @@ import { Settings } from './screens/Settings';
 import { Logs } from './screens/Logs';
 import { DuplicateModal } from './components/DuplicateModal';
 import { Button } from './components/primitives';
+import { transition, usePrefersReducedMotion } from './lib/motion-prefs';
+
+/**
+ * three.js is ~2MB and the scene is pure atmosphere, so it is split into its
+ * own chunk and only fetched when it is actually going to be shown. A user
+ * with reduce-effects on never downloads or parses it at all.
+ */
+const BackgroundScene = lazy(() =>
+  import('./scene/BackgroundScene').then((module) => ({ default: module.BackgroundScene })),
+);
 
 type Screen = 'add' | 'queue' | 'library' | 'settings' | 'logs';
 
@@ -22,12 +33,19 @@ const NAV: readonly { id: Screen; label: string }[] = [
 function Toasts(): React.JSX.Element {
   const toasts = useAppStore((s) => s.toasts);
   const dismiss = useAppStore((s) => s.dismissToast);
+  const reduced = usePrefersReducedMotion();
 
   return (
     <div className="pointer-events-none fixed bottom-6 right-6 z-40 flex flex-col gap-2" aria-live="polite">
+      <AnimatePresence initial={false}>
       {toasts.map((toast) => (
-        <div
+        <motion.div
           key={toast.id}
+          layout={!reduced}
+          initial={reduced ? false : { opacity: 0, x: 24, scale: 0.96 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={reduced ? { opacity: 0 } : { opacity: 0, x: 24, scale: 0.96 }}
+          transition={transition(reduced)}
           className={`pointer-events-auto flex items-center gap-3 rounded-xl border px-4 py-3 text-sm shadow-[var(--shadow-card)]
             ${
               toast.kind === 'error'
@@ -48,8 +66,9 @@ function Toasts(): React.JSX.Element {
           <button onClick={() => dismiss(toast.id)} aria-label="Dismiss" className="text-ink-500 hover:text-ink-100">
             ✕
           </button>
-        </div>
+        </motion.div>
       ))}
+      </AnimatePresence>
     </div>
   );
 }
@@ -58,6 +77,7 @@ export default function App(): React.JSX.Element {
   const { ready, bootError, queueState, pendingDuplicates, bootstrap } = useAppStore();
   const queueCount = useAppStore((s) => s.queueItems.size);
   const [screen, setScreen] = useState<Screen>('add');
+  const reducedMotion = usePrefersReducedMotion();
 
   useEffect(() => {
     void bootstrap();
@@ -106,7 +126,12 @@ export default function App(): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col bg-base-900">
+    <div className="flex h-full flex-col">
+      {!reducedMotion && (
+        <Suspense fallback={null}>
+          <BackgroundScene />
+        </Suspense>
+      )}
       <header className="flex shrink-0 items-center gap-1 border-b border-white/5 px-4 py-2">
         <span className="mr-4 text-sm font-semibold tracking-tight text-ink-100">TikTok Downloader</span>
 

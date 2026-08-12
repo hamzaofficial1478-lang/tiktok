@@ -224,7 +224,8 @@ function toMetadata(payload: YtDlpPayload, canonicalUrl: string): VideoMetadata 
     coverUrl: payload.thumbnail ?? null,
     musicTitle: payload.track ?? payload.artist ?? null,
     uploadedAt: toEpochMs(payload),
-    hashtags: extractHashtags(caption),
+    // Hashtags are not extracted: nothing consumes them.
+    hashtags: [],
     isPhotoPost,
     stats: {
       views: payload.view_count ?? null,
@@ -241,12 +242,6 @@ function toEpochMs(payload: YtDlpPayload): number | null {
   const match = /^(\d{4})(\d{2})(\d{2})$/.exec(payload.upload_date ?? '');
   if (!match) return null;
   return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
-}
-
-function extractHashtags(caption: string | null): string[] {
-  if (!caption) return [];
-  const tags = caption.match(/#[\p{L}\p{N}_]+/gu) ?? [];
-  return [...new Set(tags.map((tag) => tag.slice(1)))];
 }
 
 function extractIdFromUrl(url: string): string {

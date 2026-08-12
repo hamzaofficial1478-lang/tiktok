@@ -4,12 +4,33 @@ A cross-platform desktop app that takes one or many TikTok links, downloads them
 in a strictly ordered queue, refuses to silently duplicate work, and saves clean
 video files with metadata.
 
-**Status: phases 1-6 of 8 complete.** The app is usable end to end: paste
+**Status: phases 1-7 of 8 complete.** The app is usable end to end: paste
 links, watch them download in order, browse the library, change settings, read
-logs. Motion and the 3D background are phase 7; packaging is phase 8.
+logs. Packaging is phase 8.
 
 The UI has never been run by its author — this environment has no display — so
 `npm run dev` on a real machine is the outstanding verification.
+
+## What it does not do, on purpose
+
+No resolution picker: the video is downloaded exactly as TikTok serves it.
+No thumbnails, no metadata tags, no JSON sidecar, no hashtags. Each of those
+either asked a question with no good answer or cost a full extra pass over the
+file, and everything they carried already lives in the library database.
+
+The result is that a normal download spawns **no subprocess at all** — the
+bytes stream to a `.part`, get verified, and are renamed into place.
+
+| Needs ffmpeg / ffprobe | When |
+| ---------------------- | ---- |
+| `ffprobe` truncation check | every download; degrades to a size check if absent |
+| Watermark filtering | only when TikTok offers no clean stream |
+| Outro trimming | only on watermarked sources, and off by default |
+| Perceptual hash | only with "Detect reposts" turned on |
+
+The single biggest speed lever left is **Concurrent downloads** in Settings.
+It defaults to 1 because that is what makes completion order match paste order
+exactly; raising it to 3 or 4 trades that guarantee for throughput.
 
 ## Getting started
 
@@ -153,5 +174,5 @@ filter chain or encoder.
 | 4 | Download pipeline: `.part` handling, verification, templating | done |
 | 5 | Post-processing: watermark filtering tiers, outro detection | done |
 | 6 | UI shell: five screens on real engine state | done |
-| 7 | Motion + 3D polish, 300-item performance pass | next |
-| 8 | Packaging: NSIS, DMG, sidecar bundling, first run | |
+| 7 | Motion + 3D polish, 300-item performance pass | done |
+| 8 | Packaging: NSIS, DMG, sidecar bundling, first run | next |

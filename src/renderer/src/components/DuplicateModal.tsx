@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
 import type { DuplicateAction } from '@shared/types';
 import { useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
 import { Button } from './primitives';
+import { modalVariants, transition, usePrefersReducedMotion } from '../lib/motion-prefs';
 
 /**
  * Dedup layer 3's question — spec section 7.
@@ -18,6 +20,7 @@ export function DuplicateModal(): React.JSX.Element | null {
   const pushToast = useAppStore((s) => s.pushToast);
   const [applyToBatch, setApplyToBatch] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const reduced = usePrefersReducedMotion();
 
   const current = pending[0];
   if (!current || dismissed) return null;
@@ -34,15 +37,29 @@ export function DuplicateModal(): React.JSX.Element | null {
     }
   }
 
+  const variants = modalVariants(reduced);
+
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-base-950/70 p-6 backdrop-blur-sm">
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="duplicate-title"
-        className="w-full max-w-lg rounded-[--radius-overlay] border border-white/8 bg-base-850
-          p-6 shadow-[var(--shadow-overlay)]"
+    <AnimatePresence>
+      <motion.div
+        key="backdrop"
+        initial={{ opacity: reduced ? 1 : 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: reduced ? 0 : 0.15 }}
+        className="fixed inset-0 z-50 grid place-items-center bg-base-950/70 p-6 backdrop-blur-sm"
       >
+        <motion.div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="duplicate-title"
+          initial={variants.initial}
+          animate={variants.animate}
+          exit={variants.exit}
+          transition={transition(reduced)}
+          className="w-full max-w-lg rounded-[--radius-overlay] border border-white/8 bg-base-850
+            p-6 shadow-[var(--shadow-overlay)]"
+        >
         <h2 id="duplicate-title" className="text-lg font-semibold text-ink-100">
           Already downloaded
         </h2>
@@ -100,7 +117,8 @@ export function DuplicateModal(): React.JSX.Element | null {
             Later
           </Button>
         </div>
-      </div>
-    </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
   );
 }
