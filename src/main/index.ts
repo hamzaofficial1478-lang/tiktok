@@ -44,6 +44,15 @@ function updatePowerBlocker(active: boolean, log?: AppServices['log']): void {
   }
 }
 
+/** `videos` is not guaranteed to exist on every platform; fall back rather than throw. */
+function safeVideosPath(): string | undefined {
+  try {
+    return app.getPath('videos');
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveResourcesRoot(): string {
   // Packaged: resources/bin/… sits beside the asar. Dev: the repo's resources/.
   return app.isPackaged ? process.resourcesPath : join(app.getAppPath(), 'resources');
@@ -116,7 +125,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   void app.whenReady().then(async () => {
-    const paths = buildPaths(app.getPath('userData'), resolveResourcesRoot());
+    const paths = buildPaths(app.getPath('userData'), resolveResourcesRoot(), safeVideosPath());
     services = await createServices({ paths, isDev, appVersion: app.getVersion() });
 
     const registry = new IpcRegistry(ipcMain, services.logging.log.child({ scope: 'ipc' }));

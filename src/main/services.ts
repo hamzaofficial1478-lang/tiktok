@@ -1,3 +1,4 @@
+import { mkdirSync } from 'node:fs';
 import type { Logger } from 'pino';
 import type { AppPaths } from './paths';
 import { createLogger, type LoggerHandle } from './logging/logger';
@@ -79,6 +80,18 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
 
   const config = ConfigStore.load(paths.configFile, logging.log.child({ scope: 'config' }));
   logging.setLevel(config.get().logLevel);
+
+  // First run: give downloads somewhere to go rather than failing the first
+  // item with "no output folder has been chosen yet".
+  if (config.get().outputDir === '') {
+    try {
+      mkdirSync(paths.defaultOutputDir, { recursive: true });
+      config.update({ outputDir: paths.defaultOutputDir });
+      log.info({ outputDir: paths.defaultOutputDir }, 'first run: chose a default output folder');
+    } catch (err) {
+      log.warn({ err: String(err) }, 'could not create the default output folder; the user must choose one');
+    }
+  }
 
   const database = openDatabase({ file: paths.database, log: logging.log.child({ scope: 'db' }) });
 

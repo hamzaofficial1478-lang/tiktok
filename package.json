@@ -22,11 +22,12 @@
     "fetch:sidecars": "node scripts/fetch-sidecars.mjs",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
     "postinstall": "electron-builder install-app-deps",
-    "dist:win": "npm run build && electron-builder --win --publish never",
-    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run preflight && electron-builder --win --publish never",
+    "dist:mac": "npm run preflight && electron-builder --mac --publish never",
     "verify": "npm run typecheck && npm run test",
     "harness:queue": "node scripts/run-harness.mjs scripts/queue-harness.ts",
-    "probe:ffmpeg": "node scripts/run-harness.mjs scripts/probe-ffmpeg.ts"
+    "probe:ffmpeg": "node scripts/run-harness.mjs scripts/probe-ffmpeg.ts",
+    "preflight": "npm run build && node scripts/run-harness.mjs scripts/preflight.ts"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",

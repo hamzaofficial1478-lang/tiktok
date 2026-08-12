@@ -77,3 +77,27 @@ Section 2 requires a one-click "Update extractor" that pulls the latest
 ticket. That action re-downloads only the `yt-dlp` binary for the current
 platform and rewrites its manifest entry — it is the same code path as
 `node scripts/fetch-sidecars.mjs --only=yt-dlp`.
+
+## Packaging checklist
+
+```bash
+npm install          # rebuilds better-sqlite3 for Electron's ABI
+npm run fetch:sidecars
+npm run preflight    # refuses to package a build that would ship broken
+npm run dist:win     # or dist:mac
+```
+
+`preflight` is wired into both `dist:*` scripts, so a packaging run cannot
+skip it. It blocks on the things that produce a *working installer of a broken
+app*:
+
+- a missing `yt-dlp` (the app could not download anything)
+- a sidecar whose checksum does not match the manifest
+- **a GPL ffmpeg build**, which must never ship
+- an ffmpeg missing `removelogo`, `gblur`, `overlay`, `crop`, `split`
+- a preload that requires anything from `node_modules` (a sandboxed preload
+  cannot resolve it, and the window would come up blank)
+
+Icons in `build/` (`icon.ico`, `icon.icns`, `icon.png`) are warnings rather
+than failures — electron-builder substitutes its own default if they are
+absent, which is fine for a test build and not for a release.

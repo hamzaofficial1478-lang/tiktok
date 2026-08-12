@@ -4,9 +4,15 @@ A cross-platform desktop app that takes one or many TikTok links, downloads them
 in a strictly ordered queue, refuses to silently duplicate work, and saves clean
 video files with metadata.
 
-**Status: phases 1-7 of 8 complete.** The app is usable end to end: paste
-links, watch them download in order, browse the library, change settings, read
-logs. Packaging is phase 8.
+**Status: phases 1-7 complete, phase 8 configured.** The app is usable end to
+end: paste links, watch them download in order, browse the library, change
+settings, read logs. On first run it creates a download folder for itself, so
+nothing has to be configured before the first paste.
+
+Packaging is configured and gated behind `npm run preflight`, but no installer
+has been produced here: building one requires rebuilding `better-sqlite3`
+against Electron's ABI, and node-gyp's header endpoint is unreachable from this
+environment. See docs/SIDECARS.md for the checklist.
 
 The UI has never been run by its author — this environment has no display — so
 `npm run dev` on a real machine is the outstanding verification.
@@ -175,4 +181,4 @@ filter chain or encoder.
 | 5 | Post-processing: watermark filtering tiers, outro detection | done |
 | 6 | UI shell: five screens on real engine state | done |
 | 7 | Motion + 3D polish, 300-item performance pass | done |
-| 8 | Packaging: NSIS, DMG, sidecar bundling, first run | next |
+| 8 | Packaging: NSIS, DMG, sidecar bundling, first run | config + preflight done; needs a real machine to build |

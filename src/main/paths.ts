@@ -22,12 +22,21 @@ export interface AppPaths {
    * the repo's `resources/`; when packaged it is `process.resourcesPath`.
    */
   readonly resources: string;
+  /**
+   * Where downloads go until the user picks somewhere else.
+   *
+   * A blank output folder on first run means the very first download fails
+   * with "no output folder has been chosen yet" — a bad way to meet a new
+   * product. This gives it somewhere sensible to land immediately.
+   */
+  readonly defaultOutputDir: string;
 }
 
-export function buildPaths(userData: string, resources: string): AppPaths {
+export function buildPaths(userData: string, resources: string, videosDir?: string): AppPaths {
   return {
     userData,
     resources,
+    defaultOutputDir: join(videosDir ?? userData, 'TikTok Downloads'),
     logs: join(userData, 'logs'),
     database: join(userData, 'library.db'),
     configFile: join(userData, 'config.json'),
