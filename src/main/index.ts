@@ -89,17 +89,35 @@ function createWindow(): BrowserWindow {
   // Avoid the white flash before React paints against a near-black UI.
   window.once('ready-to-show', () => window.show());
 
+  /**
+   * `shell.openExternal` hands a URL to the operating system, which will act on
+   * far more than web addresses: `file:` opens local content, and on Windows
+   * any registered custom protocol can launch a program with its argument. So
+   * only http(s) is ever forwarded, and anything else is dropped rather than
+   * passed on to the OS to interpret.
+   */
+  const openExternalIfWeb = (url: string): void => {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return;
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+    void shell.openExternal(url);
+  };
+
   // The renderer must never navigate itself or open windows; any external link
   // goes to the system browser instead.
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    openExternalIfWeb(url);
     return { action: 'deny' };
   });
   window.webContents.on('will-navigate', (event, url) => {
     const devServer = process.env['ELECTRON_RENDERER_URL'];
     if (devServer && url.startsWith(devServer)) return;
     event.preventDefault();
-    void shell.openExternal(url);
+    openExternalIfWeb(url);
   });
 
   const devServerUrl = process.env['ELECTRON_RENDERER_URL'];

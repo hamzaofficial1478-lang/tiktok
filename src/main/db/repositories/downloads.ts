@@ -66,6 +66,15 @@ export interface DailyStat {
 export class DownloadsRepository {
   constructor(private readonly db: Database) {}
 
+  /** Whether this exact path is a file the app recorded downloading. */
+  existsByFilePath(filePath: string): boolean {
+    return (
+      this.db
+        .prepare<[string], { n: number }>('SELECT COUNT(*) AS n FROM downloads WHERE file_path = ?')
+        .get(filePath)?.n ?? 0
+    ) > 0;
+  }
+
   /**
    * Downloads per calendar day, newest first.
    *

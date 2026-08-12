@@ -4,7 +4,13 @@ import type { AddressInfo } from 'node:net';
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { commitPart, discardPart, downloadToPart, partPathFor } from '@main/download/downloader';
+import {
+  assertFetchableUrl,
+  commitPart,
+  discardPart,
+  downloadToPart,
+  partPathFor,
+} from '@main/download/downloader';
 
 /**
  * Driven against a real HTTP server writing to a real temp directory.
@@ -112,6 +118,9 @@ async function download(path: string, targetPath: string, signal = new AbortCont
     targetPath,
     signal,
     skipSpaceCheck: true,
+    // The fixture server runs on 127.0.0.1, which the SSRF guard blocks by
+    // design. Opting out here keeps the guard on everywhere else.
+    allowPrivateHosts: true,
     onProgress: (p) => progress.push({ bytesDone: p.bytesDone, bytesTotal: p.bytesTotal }),
   });
   return { outcome, progress };
@@ -160,6 +169,7 @@ describe('downloading to .part', () => {
         signal: new AbortController().signal,
         skipSpaceCheck: true,
         onProgress: () => {},
+      allowPrivateHosts: true,
       }),
     ).rejects.toMatchObject({ code: 'DOWNLOAD_INCOMPLETE' });
 
@@ -178,6 +188,7 @@ describe('downloading to .part', () => {
       signal: new AbortController().signal,
       skipSpaceCheck: true,
       onProgress: () => {},
+    allowPrivateHosts: true,
     }).catch(() => undefined);
 
     const partialSize = statSync(partPathFor(path)).size;
@@ -228,6 +239,7 @@ describe('downloading to .part', () => {
       signal: controller.signal,
       skipSpaceCheck: true,
       onProgress: () => {},
+    allowPrivateHosts: true,
     });
 
     await new Promise((resolve) => setTimeout(resolve, 80));
@@ -271,5 +283,60 @@ describe('downloading to .part', () => {
     const { outcome } = await download('/video', nested);
     commitPart(outcome.partPath, nested);
     expect(existsSync(nested)).toBe(true);
+  });
+});
+
+describe('refusing untrustworthy download URLs', () => {
+  function detailOf(fn: () => void): string {
+    try {
+      fn();
+    } catch (err) {
+      return (err as { detail?: string }).detail ?? String(err);
+    }
+    throw new Error('expected it to throw');
+  }
+
+  it.each([
+    'file:///C:/Windows/System32/config/SAM',
+    'file:///etc/passwd',
+    'ftp://example.com/video.mp4',
+    'data:video/mp4;base64,AAAA',
+  ])('refuses the %s scheme', (url) => {
+    expect(detailOf(() => assertFetchableUrl(url))).toMatch(/refusing to download/i);
+  });
+
+  it.each([
+    'http://localhost:8080/admin',
+    'http://127.0.0.1/secret',
+    'http://[::1]/secret',
+    'http://169.254.169.254/latest/meta-data/',
+    'http://10.0.0.5/internal',
+    'http://192.168.1.1/router',
+    'http://172.16.0.1/internal',
+  ])('refuses the private address in %s', (url) => {
+    expect(detailOf(() => assertFetchableUrl(url))).toMatch(/private address/i);
+  });
+
+  it('accepts an ordinary public CDN URL', () => {
+    expect(() => assertFetchableUrl('https://v16-webapp.tiktok.com/video.mp4?a=1')).not.toThrow();
+    expect(() => assertFetchableUrl('http://cdn.example.com/video.mp4')).not.toThrow();
+  });
+
+  it('refuses something that is not a URL at all', () => {
+    expect(detailOf(() => assertFetchableUrl('not a url'))).toMatch(/cannot be parsed/i);
+  });
+
+  it('is enforced by downloadToPart, not only available to callers', async () => {
+    // The check has to sit on the path that actually fetches, or it is
+    // decoration.
+    await expect(
+      downloadToPart({
+        url: 'file:///etc/passwd',
+        targetPath: target('out.mp4'),
+        signal: new AbortController().signal,
+        onProgress: () => {},
+      allowPrivateHosts: true,
+      }),
+    ).rejects.toMatchObject({ detail: expect.stringMatching(/refusing to download/i) });
   });
 });

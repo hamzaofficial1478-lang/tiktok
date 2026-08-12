@@ -1,3 +1,4 @@
+import { resolve, sep } from 'node:path';
 import { dialog, session, shell, type BrowserWindow } from 'electron';
 import { AppError } from '@shared/errors';
 import type { AppServices } from '../services';
@@ -25,14 +26,39 @@ export function registerSystemHandlers(
     return { path: result.canceled ? null : (result.filePaths[0] ?? null) };
   });
 
+  /**
+   * Both of these hand a path to the operating system, and `shell.openPath` in
+   * particular will *launch* what it is given — on Windows an .exe or .bat runs
+   * rather than opening. An arbitrary path arriving over IPC is therefore an
+   * execution primitive, so it is checked against what this app actually
+   * produced instead of being trusted because the renderer is our own code.
+   */
+  const assertOurFile = (candidate: string): string => {
+    const resolved = resolve(candidate);
+
+    // Either the app downloaded it, or it sits under the folder the app was
+    // told to download into. Nothing else is openable.
+    if (services.repos.downloads.existsByFilePath(resolved)) return resolved;
+
+    const outputDir = services.config.get().outputDir;
+    if (outputDir !== '') {
+      const root = resolve(outputDir);
+      if (resolved === root || resolved.startsWith(root + sep)) return resolved;
+    }
+
+    services.log.warn({ path: resolved }, 'refused to open a path outside the download folder');
+    throw new AppError('PERMISSION_DENIED', 'that file is not one this app downloaded');
+  };
+
   registry.handle('system:showInFolder', ({ path }) => {
-    shell.showItemInFolder(path);
+    shell.showItemInFolder(assertOurFile(path));
     return { ok: true as const };
   });
 
   registry.handle('system:openPath', async ({ path }) => {
-    const error = await shell.openPath(path);
-    if (error) throw new AppError('PERMISSION_DENIED', `could not open ${path}: ${error}`);
+    const safe = assertOurFile(path);
+    const error = await shell.openPath(safe);
+    if (error) throw new AppError('PERMISSION_DENIED', `could not open ${safe}: ${error}`);
     return { ok: true as const };
   });
 

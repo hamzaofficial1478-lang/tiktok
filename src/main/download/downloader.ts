@@ -35,6 +35,12 @@ export interface DownloadOptions {
   readonly fetchImpl?: typeof fetch;
   /** Skip the free-space precheck (used when the caller already did one). */
   readonly skipSpaceCheck?: boolean;
+  /**
+   * Permit loopback and private addresses. Off in production: a stream URL
+   * pointing at the user's own machine means something has gone wrong or is
+   * being manipulated. Set only by tests serving fixtures from 127.0.0.1.
+   */
+  readonly allowPrivateHosts?: boolean;
   readonly now?: () => number;
 }
 
@@ -65,6 +71,8 @@ export async function downloadToPart(options: DownloadOptions): Promise<Download
   if (!options.skipSpaceCheck && options.expectedBytes) {
     assertEnoughSpace(dirname(options.targetPath), Math.max(0, options.expectedBytes - existingBytes));
   }
+
+  assertFetchableUrl(options.url, options.allowPrivateHosts ?? false);
 
   const headers: Record<string, string> = {
     'user-agent': USER_AGENT,
@@ -220,6 +228,50 @@ async function pipeToFile(
     } catch {
       /* already closed */
     }
+  }
+}
+
+/**
+ * Loopback and link-local addresses, in the forms a URL can actually carry.
+ * 169.254.169.254 is the cloud metadata endpoint and the classic SSRF target.
+ */
+const BLOCKED_HOST = /^(localhost|127(\.\d+){3}|0\.0\.0\.0|\[?::1\]?|169\.254\.\d+\.\d+|.*\.local)$/i;
+const PRIVATE_IPV4 = /^(10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)$/;
+
+/**
+ * Refuses to fetch anything that is not a public web URL.
+ *
+ * The stream URL is not user input, but it is not ours either: it arrives from
+ * whatever the extractor parsed out of a remote response. Treating it as
+ * trusted means a manipulated or malformed response could point this function
+ * at the local filesystem, at a service on the user's own machine, or at a
+ * cloud metadata endpoint — and the result would be written to disk and
+ * presented as a downloaded video. Checking the scheme and host costs nothing
+ * and removes the whole category.
+ */
+export function assertFetchableUrl(rawUrl: string, allowPrivateHosts = false): void {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new AppError('DOWNLOAD_INCOMPLETE', `the extractor returned a URL that cannot be parsed: ${rawUrl}`);
+  }
+
+  // The scheme rule is absolute. No caller, in any environment, has a
+  // legitimate reason to stream a video out of file:, data: or ftp:.
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new AppError('DOWNLOAD_INCOMPLETE', `refusing to download from a "${url.protocol}" URL`);
+  }
+
+  // The private-address rule defaults on and is opted out of explicitly, by
+  // exactly one caller: the test suite, which serves fixtures from 127.0.0.1.
+  // Making it a parameter rather than deleting the check keeps production
+  // secure by default and makes every exception visible at its call site.
+  if (allowPrivateHosts) return;
+
+  const host = url.hostname.toLowerCase();
+  if (BLOCKED_HOST.test(host) || PRIVATE_IPV4.test(host)) {
+    throw new AppError('DOWNLOAD_INCOMPLETE', `refusing to download from the private address ${host}`);
   }
 }
 
