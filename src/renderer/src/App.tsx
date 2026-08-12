@@ -78,6 +78,7 @@ export default function App(): React.JSX.Element {
   const queueCount = useAppStore((s) => s.queueItems.size);
   const [screen, setScreen] = useState<Screen>('add');
   const reducedMotion = usePrefersReducedMotion();
+  const setDuplicatePromptDismissed = useAppStore((s) => s.setDuplicatePromptDismissed);
 
   useEffect(() => {
     void bootstrap();
@@ -91,7 +92,9 @@ export default function App(): React.JSX.Element {
 
       if (event.key === ' ' && !typing) {
         event.preventDefault();
-        void invoke(queueState.paused ? 'queue:resume' : 'queue:pause');
+        // A queue that was never started should start, not be "paused".
+        if (!queueState.running) void invoke('queue:start');
+        else void invoke(queueState.paused ? 'queue:resume' : 'queue:pause');
       }
       if (event.key === 'f' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
@@ -101,7 +104,7 @@ export default function App(): React.JSX.Element {
 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [queueState.paused]);
+  }, [queueState.paused, queueState.running]);
 
   if (!ready) {
     return (
@@ -155,9 +158,13 @@ export default function App(): React.JSX.Element {
 
         <div className="ml-auto flex items-center gap-3">
           {pendingDuplicates.length > 0 && (
-            <span className="rounded-md bg-warn-400/20 px-2 py-1 text-xs font-medium text-warn-400">
+            // The way back to a question dismissed with "Later".
+            <button
+              onClick={() => setDuplicatePromptDismissed(false)}
+              className="rounded-md bg-warn-400/20 px-2 py-1 text-xs font-medium text-warn-400 hover:bg-warn-400/30"
+            >
               {pendingDuplicates.length} question{pendingDuplicates.length === 1 ? '' : 's'}
-            </span>
+            </button>
           )}
           {queueState.running && (
             <span className="flex items-center gap-2 text-xs text-ink-500">

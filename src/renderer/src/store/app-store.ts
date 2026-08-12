@@ -46,8 +46,11 @@ interface AppState {
   pendingDuplicates: PendingDuplicateDto[];
   lastBatch: BatchSummaryDto | null;
   toasts: Toast[];
+  /** True while the user has chosen 'Later' on the duplicate question. */
+  duplicatePromptDismissed: boolean;
 
   bootstrap(): Promise<void>;
+  setDuplicatePromptDismissed(dismissed: boolean): void;
   updateConfig(patch: Partial<AppConfig>): Promise<void>;
   pushToast(toast: Omit<Toast, 'id'>): void;
   dismissToast(id: number): void;
@@ -55,6 +58,14 @@ interface AppState {
 }
 
 let toastId = 0;
+
+/**
+ * React StrictMode deliberately invokes effects twice in development. Without
+ * this guard the second run subscribes to every IPC channel a second time, and
+ * every log line, toast and batch summary arrives duplicated — visible only
+ * when running `npm run dev`, which is exactly when it is most confusing.
+ */
+let bootstrapped = false;
 
 export const useAppStore = create<AppState>((set, get) => ({
   ready: false,
@@ -71,8 +82,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingDuplicates: [],
   lastBatch: null,
   toasts: [],
+  duplicatePromptDismissed: false,
 
   async bootstrap(): Promise<void> {
+    if (bootstrapped) return;
+    bootstrapped = true;
     try {
       const [versions, sidecarStatus, config, logTail, queue, duplicates] = await Promise.all([
         invoke('app:getVersions'),
@@ -146,8 +160,14 @@ export const useAppStore = create<AppState>((set, get) => ({
         });
       });
     } catch (err) {
+      // Allow a retry: a failed bootstrap left nothing subscribed.
+      bootstrapped = false;
       set({ ready: true, bootError: err instanceof Error ? err.message : String(err) });
     }
+  },
+
+  setDuplicatePromptDismissed(dismissed: boolean): void {
+    set({ duplicatePromptDismissed: dismissed });
   },
 
   async updateConfig(patch: Partial<AppConfig>): Promise<void> {

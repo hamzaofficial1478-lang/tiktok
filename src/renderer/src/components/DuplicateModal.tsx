@@ -19,7 +19,8 @@ export function DuplicateModal(): React.JSX.Element | null {
   const pending = useAppStore((s) => s.pendingDuplicates);
   const pushToast = useAppStore((s) => s.pushToast);
   const [applyToBatch, setApplyToBatch] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  const dismissed = useAppStore((s) => s.duplicatePromptDismissed);
+  const setDismissed = useAppStore((s) => s.setDuplicatePromptDismissed);
   const reduced = usePrefersReducedMotion();
 
   const current = pending[0];
@@ -107,12 +108,8 @@ export function DuplicateModal(): React.JSX.Element | null {
           </span>
           <Button
             variant="ghost"
-            onClick={() => {
-              // Dismissing hides the modal but keeps the questions; the header
-              // badge is how the user finds them again.
-              setDismissed(true);
-              setTimeout(() => setDismissed(false), 500);
-            }}
+            onClick={() => setDismissed(true)}
+            title="The questions stay in the header until you answer them"
           >
             Later
           </Button>
