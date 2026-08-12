@@ -15,7 +15,8 @@ against Electron's ABI, and node-gyp's header endpoint is unreachable from this
 environment. See docs/SIDECARS.md for the checklist.
 
 The UI has never been run by its author — this environment has no display — so
-`npm run dev` on a real machine is the outstanding verification.
+`npm run dev` on a real machine is the outstanding verification. The engine
+underneath it is covered by 403 offline tests.
 
 ## What it does not do, on purpose
 
@@ -45,6 +46,15 @@ npm install
 npm run fetch:sidecars     # downloads yt-dlp; see docs/SIDECARS.md for ffmpeg
 npm run dev
 ```
+
+**[docs/RUNNING.md](docs/RUNNING.md) is the step-by-step version** — clean
+machine to a downloaded, watermark-free video, including how to read the
+per-item watermark badge and what to do when a video comes back watermarked.
+
+Worth knowing up front: the normal watermark-removal path needs **only yt-dlp**.
+TikTok serves most videos from a clean URL as well as a watermarked one, and the
+app asks for the clean one first, so the file arrives untouched with nothing to
+filter. ffmpeg is the fallback for videos where no clean stream exists.
 
 `npm run verify` runs the typecheck and the full test suite. Both must be clean
 before a phase is considered done.
