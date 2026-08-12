@@ -4,10 +4,11 @@ A cross-platform desktop app that takes one or many TikTok links, downloads them
 in a strictly ordered queue, refuses to silently duplicate work, and saves clean
 video files with metadata.
 
-**Status: phases 1-4 of 8 complete.** The engine is functional end to end
+**Status: phases 1-5 of 8 complete.** The engine is functional end to end
 headlessly: links normalise and deduplicate, the queue orders and retries them,
-and files download, verify and land with metadata. There is no product UI yet —
-phase 6 — and watermark filtering is phase 5.
+files download, verify and land with metadata, and watermark/outro
+post-processing runs when a clean source was not available. There is no product
+UI yet — that is phase 6.
 
 ## Getting started
 
@@ -81,6 +82,18 @@ persistence against a fake extractor and download pipeline, printing the whole
 run to the terminal. Useful for seeing the behaviours interact on one batch —
 particularly that a duplicate question does not stall the items behind it.
 
+### ffmpeg probe
+
+```bash
+npm run probe:ffmpeg
+```
+
+Phase 5's decision logic is unit tested, but the *filter graph strings* it
+produces cannot be validated without a real ffmpeg — a misplaced label is a
+runtime error, not a type error. This generates a synthetic clip, runs every
+tier's graph against it, and reports whether each executes. It also reports
+whether the installed build is GPL, which must be false for anything shipped.
+
 ### Live probe
 
 ```bash
@@ -133,7 +146,7 @@ filter chain or encoder.
 | 2 | URL normalization + Extractor chain (headless) | done |
 | 3 | Queue engine: ordering, retries, rate limiting, dedup | done |
 | 4 | Download pipeline: `.part` handling, verification, templating | done |
-| 5 | Post-processing: watermark filtering tiers, outro detection | next |
-| 6 | UI shell: five screens on real engine state | |
+| 5 | Post-processing: watermark filtering tiers, outro detection | done |
+| 6 | UI shell: five screens on real engine state | next |
 | 7 | Motion + 3D polish, 300-item performance pass | |
 | 8 | Packaging: NSIS, DMG, sidecar bundling, first run | |

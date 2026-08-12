@@ -18,6 +18,7 @@ import type { MediaPipeline } from './queue/types';
 import { ChildProcessRunner } from './resolve/process-runner';
 import { Ffprobe } from './media/ffprobe';
 import { DownloadPipeline } from './download/pipeline';
+import { PostProcessor } from './postprocess/processor';
 import { YtDlpExtractor } from './resolve/yt-dlp-extractor';
 import { ExtractorChain } from './resolve/extractor-chain';
 import type { Extractor } from './resolve/types';
@@ -147,6 +148,13 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     runner: processRunner,
   });
 
+  const postProcessor = new PostProcessor({
+    ffmpegPath: () => sidecars.resolve('ffmpeg').path,
+    runner: processRunner,
+    ffprobe,
+    log: logging.log.child({ scope: 'postprocess' }),
+  });
+
   const downloadPipeline =
     options.pipeline ??
     new DownloadPipeline({
@@ -156,6 +164,8 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       // Read fresh each time so an extractor/ffmpeg update mid-session applies.
       ffmpegPath: () => sidecars.resolve('ffmpeg').path,
       log: logging.log.child({ scope: 'download' }),
+      postProcessor,
+      capabilities: () => snapshot.capabilities,
     });
 
   const queue = new QueueEngine({

@@ -12,6 +12,9 @@ import { renderTemplate, resolveOutputPath } from './filename';
 import { computePerceptualHash, sha256File } from './hashing';
 import { embedMetadata, saveThumbnail, writeSidecar } from './metadata-writer';
 import { assertEnoughSpace } from './disk-space';
+import type { PostProcessor } from '../postprocess/processor';
+import type { MediaCapabilities } from '@shared/ipc/contract';
+import { EMPTY_CAPABILITIES } from '../media/capabilities';
 
 /**
  * The download pipeline — spec section 9 steps 4-11.
@@ -21,10 +24,9 @@ import { assertEnoughSpace } from './disk-space';
  * fails leaves either a resumable `.part` or nothing at all, so the final
  * filename never appears over bytes that were not checked.
  *
- * Post-processing (watermark filtering, outro trimming) is phase 5. This
- * deliberately records `source_strategy` from stream selection alone, which is
- * accurate today: a clean source needs no work, and a watermarked one is
- * recorded as 'raw' until the filtering tiers exist to change it.
+ * Post-processing runs after the file is in place but before hashing and
+ * metadata, since it can rewrite the file. `source_strategy` records what
+ * actually happened to the bytes, not what was hoped for.
  */
 export interface DownloadPipelineOptions {
   readonly config: () => AppConfig;
@@ -35,6 +37,16 @@ export interface DownloadPipelineOptions {
   readonly fetchImpl?: typeof fetch;
   /** Overridable so tests can point at a temp directory. */
   readonly outputDir?: () => string;
+  /** Phase 5. Absent means downloads are saved exactly as fetched. */
+  readonly postProcessor?: PostProcessor;
+  /** Probed ffmpeg capabilities, for encoder and filter availability. */
+  readonly capabilities?: () => MediaCapabilities;
+  /** Section 9's "Ask on first detection" prompt; resolved by the UI. */
+  readonly confirmOutro?: (proposal: {
+    cutAtMs: number;
+    trimmedMs: number;
+    confidence: number;
+  }) => Promise<boolean>;
 }
 
 export class DownloadPipeline implements MediaPipeline {
@@ -126,7 +138,58 @@ export class DownloadPipeline implements MediaPipeline {
     });
     commitPart(outcome.partPath, targetPath);
 
-    // 7. Everything past this point is best-effort: the download has already
+    /**
+     * 7. Post-processing (phase 5).
+     *
+     * Runs before hashing and metadata, because it can rewrite the file: a
+     * SHA-256 taken beforehand would describe bytes that no longer exist, and
+     * tags written beforehand would be discarded by the remux.
+     *
+     * A failure here does not fail the item. The download succeeded and the
+     * file is watchable; losing it because a filter chain misbehaved would be
+     * a worse outcome than keeping it with its watermark.
+     */
+    let strategy = selection.strategy;
+    let watermarkRemoved = selection.strategy === 'clean_source';
+    let outroTrimmedMs: number | null = null;
+
+    if (this.options.postProcessor) {
+      try {
+        const processed = await this.options.postProcessor.process({
+          filePath: targetPath,
+          durationMs: input.resolved.metadata.durationMs,
+          frameWidth: selection.stream.width,
+          frameHeight: selection.stream.height,
+          sourceStrategy: selection.strategy,
+          watermarkMode: config.watermarkMode,
+          outroMode: config.outroMode,
+          hardwareAcceleration: config.hardwareAcceleration,
+          capabilities: this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
+          signal: input.signal,
+          ...(this.options.confirmOutro ? { confirmOutro: this.options.confirmOutro } : {}),
+          onEstimate: (estimatedMs) =>
+            input.onProgress({
+              bytesDone: outcome.bytes,
+              bytesTotal: outcome.bytes,
+              speed: null,
+              etaMs: estimatedMs,
+              processing: true,
+            }),
+        });
+
+        strategy = processed.sourceStrategy;
+        watermarkRemoved = processed.watermarkRemoved || watermarkRemoved;
+        outroTrimmedMs = processed.outroTrimmedMs;
+        for (const note of processed.notes) log.info({ note }, 'post-processing');
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'post-processing failed; keeping the unprocessed file',
+        );
+      }
+    }
+
+    // 8. Everything past this point is best-effort: the download has already
     //    succeeded and must not be failed by an optional extra.
     const ffmpegPath = this.options.ffmpegPath();
 
@@ -176,17 +239,19 @@ export class DownloadPipeline implements MediaPipeline {
 
     const finalSize = existsSync(targetPath) ? verified.sizeBytes : null;
 
-    log.info({ targetPath, strategy: selection.strategy, bytes: finalSize }, 'download complete');
+    log.info({ targetPath, strategy, watermarkRemoved, outroTrimmedMs, bytes: finalSize }, 'download complete');
 
     return {
       filePath: targetPath,
       fileSize: finalSize,
       sha256,
       phash,
-      sourceStrategy: selection.strategy,
-      // Nothing has been stripped yet; a clean source simply never had one.
-      watermarkRemoved: selection.strategy === 'clean_source',
-      outroTrimmedMs: null,
+      // Reflects what actually happened: 'clean_source' when nothing needed
+      // doing, 'removelogo'/'blur' when a tier ran, 'raw' when the watermark
+      // was kept by preference.
+      sourceStrategy: strategy,
+      watermarkRemoved,
+      outroTrimmedMs,
     };
   }
 }

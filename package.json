@@ -25,7 +25,8 @@
     "dist:win": "npm run build && electron-builder --win --publish never",
     "dist:mac": "npm run build && electron-builder --mac --publish never",
     "verify": "npm run typecheck && npm run test",
-    "harness:queue": "node scripts/run-harness.mjs scripts/queue-harness.ts"
+    "harness:queue": "node scripts/run-harness.mjs scripts/queue-harness.ts",
+    "probe:ffmpeg": "node scripts/run-harness.mjs scripts/probe-ffmpeg.ts"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
