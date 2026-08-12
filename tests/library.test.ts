@@ -119,3 +119,58 @@ describe('library query (section 10)', () => {
     expect(downloads.listLibrary({ search: "100%' OR 1=1 --" }).entries).toHaveLength(0);
   });
 });
+
+describe('daily history', () => {
+  it('groups downloads by calendar day, newest first', () => {
+    const day = 24 * 60 * 60 * 1_000;
+    const now = Date.UTC(2026, 5, 15, 12, 0, 0);
+
+    const a = videos.upsert({ awemeId: '7000000000000000001', canonicalUrl: 'https://t/1' });
+    const b = videos.upsert({ awemeId: '7000000000000000002', canonicalUrl: 'https://t/2' });
+    const c = videos.upsert({ awemeId: '7000000000000000003', canonicalUrl: 'https://t/3' });
+
+    downloads.insert({
+      videoId: a.id, filePath: '/o/a.mp4', fileSize: 1_000, watermarkRemoved: true,
+      sourceStrategy: 'clean_source', completedAt: now,
+    });
+    downloads.insert({
+      videoId: b.id, filePath: '/o/b.mp4', fileSize: 2_000, watermarkRemoved: true,
+      sourceStrategy: 'removelogo', completedAt: now,
+    });
+    downloads.insert({
+      videoId: c.id, filePath: '/o/c.mp4', fileSize: 4_000, watermarkRemoved: false,
+      sourceStrategy: 'raw', completedAt: now - 2 * day,
+    });
+
+    const stats = downloads.dailyStats(30, now + 1_000);
+    expect(stats).toHaveLength(2);
+
+    const [newest, older] = stats;
+    expect(newest?.downloads).toBe(2);
+    expect(newest?.watermarkFree).toBe(2);
+    // Only the filtered one counts as re-encoded; a clean source never was.
+    expect(newest?.reEncoded).toBe(1);
+    expect(newest?.bytes).toBe(3_000);
+
+    expect(older?.downloads).toBe(1);
+    expect(older?.watermarkFree).toBe(0);
+    expect(newest?.day && older?.day && newest.day > older.day).toBe(true);
+  });
+
+  it('excludes anything older than the requested window', () => {
+    const day = 24 * 60 * 60 * 1_000;
+    const now = Date.UTC(2026, 5, 15);
+    const video = videos.upsert({ awemeId: '7000000000000000009', canonicalUrl: 'https://t/9' });
+
+    downloads.insert({
+      videoId: video.id, filePath: '/o/old.mp4', watermarkRemoved: true, completedAt: now - 40 * day,
+    });
+
+    expect(downloads.dailyStats(7, now)).toEqual([]);
+    expect(downloads.dailyStats(90, now)).toHaveLength(1);
+  });
+
+  it('returns nothing rather than throwing on an empty library', () => {
+    expect(downloads.dailyStats(30)).toEqual([]);
+  });
+});

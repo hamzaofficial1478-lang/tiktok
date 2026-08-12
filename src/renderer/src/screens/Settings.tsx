@@ -91,7 +91,7 @@ export function Settings(): React.JSX.Element {
           </Field>
 
           <div className="flex flex-wrap gap-1.5">
-            {['{author}', '{id}', '{date}', '{caption:40}', '{index}'].map((token) => (
+            {['{n:3}', '{author}', '{id}', '{date}', '{caption:40}', '{index:4}'].map((token) => (
               <button
                 key={token}
                 onClick={() => void set('filenameTemplate', `${config.filenameTemplate}${token}`)}
@@ -101,6 +101,13 @@ export function Settings(): React.JSX.Element {
               </button>
             ))}
           </div>
+          <p className="text-xs text-ink-500">
+            <span className="font-mono text-ink-300">{'{n:3}'}</span> numbers each link by its place in the paste
+            — 001, 002, 003 — so the folder reads in the order you added them. The padding matters: without it
+            Explorer sorts 1, 10, 11, 2.{' '}
+            <span className="font-mono text-ink-300">{'{index:4}'}</span> is the same idea but counts across every
+            batch, so it never repeats.
+          </p>
         </div>
       </Panel>
 

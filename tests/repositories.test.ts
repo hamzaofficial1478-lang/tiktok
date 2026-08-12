@@ -224,3 +224,40 @@ describe('watermark verdict on a queue row (section 9)', () => {
     expect(claimed?.watermark_removed).toBeNull();
   });
 });
+
+describe('batch ordinals (sequential filenames)', () => {
+  it('numbers each batch from 1, independently of the global position', () => {
+    queue.enqueue(urls(3, 'batch-a'));
+    queue.enqueue(urls(2, 'batch-b'));
+
+    const a = queue.listByBatch('batch-a');
+    const b = queue.listByBatch('batch-b');
+
+    expect(a.map((r) => r.batch_index)).toEqual([1, 2, 3]);
+    // The second batch restarts at 1 even though its positions are 4 and 5 —
+    // that difference is the whole reason this column exists.
+    expect(b.map((r) => r.batch_index)).toEqual([1, 2]);
+    expect(b.map((r) => r.position)).toEqual([4, 5]);
+  });
+
+  it('continues the sequence when a batch is added to twice', () => {
+    queue.enqueue(urls(2, 'batch-a'));
+    // Same batch id, separate call: the ordinals must not restart.
+    queue.enqueue(
+      [{ batchId: 'batch-a', rawUrl: 'https://www.tiktok.com/@a/video/7999999999999999999', awemeId: '7999999999999999999' }],
+    );
+
+    expect(queue.listByBatch('batch-a').map((r) => r.batch_index)).toEqual([1, 2, 3]);
+  });
+
+  it('keeps the ordinal when an item is claimed and retried', () => {
+    const [row] = queue.enqueue(urls(1, 'batch-a'));
+    const id = row?.id as number;
+
+    queue.claimNext();
+    queue.update(id, { status: 'queued' });
+    queue.claimNext();
+
+    expect(queue.findById(id)?.batch_index).toBe(1);
+  });
+});

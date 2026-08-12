@@ -34,17 +34,40 @@ interface Candidate {
  * Quality arguments are per-encoder because the scales are not comparable:
  * NVENC's `cq` and QuickSync's `global_quality` are not the same number as a
  * CRF, and copying one across produces either a bloated file or a soft one.
+ *
+ * ## Why these targets are aggressive
+ *
+ * This path only runs when the watermark has to be filtered out of the pixels,
+ * which means the video is being decoded and encoded again — a generation loss
+ * that cannot be undone later. The source is a TikTok upload that has already
+ * been compressed once, so encoding it a second time at a "reasonable" quality
+ * compounds two lossy passes and the result visibly softens, most obviously on
+ * the fast motion and hard text edges that TikTok videos are full of.
+ *
+ * The targets below are therefore set near-transparent rather than balanced:
+ * roughly CQ/QP 19, where the second encode is not meaningfully distinguishable
+ * from its input. The cost is file size, perhaps 40% over the source, and some
+ * encode time. That is the right trade for a video that is being kept.
+ *
+ * None of this touches the common path. When TikTok serves a watermark-free
+ * stream the file is copied byte for byte and no encoder is selected at all.
  */
 const CANDIDATES: readonly Candidate[] = [
-  { name: 'h264_nvenc', hardware: true, args: ['-preset', 'p5', '-rc', 'vbr', '-cq', '23'] },
-  { name: 'h264_videotoolbox', hardware: true, args: ['-q:v', '55'] },
-  { name: 'h264_qsv', hardware: true, args: ['-global_quality', '23'] },
-  { name: 'h264_amf', hardware: true, args: ['-quality', 'balanced', '-rc', 'vbr_latency', '-qp_i', '23'] },
-  { name: 'h264_vaapi', hardware: true, args: ['-qp', '23'] },
-  { name: 'libopenh264', hardware: false, args: ['-b:v', '4M'] },
+  // p6 is a slower preset than p5 with a real quality gain; on hardware the
+  // extra time is still a fraction of a second per video.
+  { name: 'h264_nvenc', hardware: true, args: ['-preset', 'p6', '-rc', 'vbr', '-cq', '19', '-b:v', '0'] },
+  // VideoToolbox's scale runs the other way: higher is better, out of 100.
+  { name: 'h264_videotoolbox', hardware: true, args: ['-q:v', '68'] },
+  { name: 'h264_qsv', hardware: true, args: ['-global_quality', '19'] },
+  { name: 'h264_amf', hardware: true, args: ['-quality', 'quality', '-rc', 'cqp', '-qp_i', '19', '-qp_p', '19'] },
+  { name: 'h264_vaapi', hardware: true, args: ['-qp', '19'] },
+  // openh264 has no CRF mode, so quality has to be bought with bitrate. 10M is
+  // comfortably above any 1080x1920 TikTok source, which is what keeps the
+  // second encode from becoming the visible one.
+  { name: 'libopenh264', hardware: false, args: ['-b:v', '10M'] },
   // Last resort: universally available and LGPL, but visibly worse. Better
-  // than refusing to process the video at all.
-  { name: 'mpeg4', hardware: false, args: ['-q:v', '3'] },
+  // than refusing to process the video at all. Scale is 1-31, lower is better.
+  { name: 'mpeg4', hardware: false, args: ['-q:v', '2'] },
 ];
 
 /** Explicitly refused, whatever the build offers. */

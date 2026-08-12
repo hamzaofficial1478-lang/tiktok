@@ -25,7 +25,11 @@ export const FilenameTemplateSchema = z
   .min(1, 'Filename template cannot be empty')
   .max(200)
   .refine((t) => !/[\\/]/.test(t), 'Filename template cannot contain path separators')
-  .refine((t) => /\{(id|index)\}/.test(t), {
+  // {n} is deliberately NOT accepted as the uniqueness token: it restarts at 1
+  // for every paste, so a template of only {n} collides across batches and the
+  // second batch silently becomes "001 (2)". {index} is the global counter and
+  // is the right choice for pure sequential naming.
+  .refine((t) => /\{(id|index)(?::\d+)?\}/.test(t), {
     message: 'Template must include {id} or {index} so filenames stay unique',
   });
 
@@ -70,7 +74,10 @@ export const CONFIG_SCHEMA_VERSION = 2;
 
 export const DEFAULT_CONFIG: AppConfig = {
   outputDir: '',
-  filenameTemplate: '{author} - {id}',
+  // Numbered by paste order first, so the output folder reads in the same
+  // order the links were pasted, then identified so a file is still
+  // recognisable once it is out of that folder.
+  filenameTemplate: '{n:3} - {author} - {id}',
 
   concurrency: 1,
   rateLimitMs: 1_500,

@@ -8,7 +8,10 @@ import type { VideoMetadata } from './media-types';
  * preview without an IPC round trip on every keystroke. Nothing here touches
  * the filesystem; path resolution and collision handling stay in main.
  *
- * Tokens: {author} {id} {date} {caption:N} {index}
+ * Tokens: {author} {authorName} {id} {date} {duration} {caption:N} {index} {n}
+ *
+ * `{n}` is the link's number within the paste — 1, 2, 3 — and `{index}` is its
+ * global queue position. `:N` zero-pads either: `{n:3}` renders 007.
  *
  * Sanitisation targets Windows because Windows is target platform #1 and its
  * rules are the strict superset: characters macOS allows happily (`:` `?` `*`)
@@ -41,8 +44,14 @@ const MAX_BASENAME_LENGTH = 180;
 export interface TemplateContext {
   readonly metadata: VideoMetadata;
   readonly awemeId: string;
-  /** 1-based position within the batch, for {index}. */
+  /** Global queue position — stable, never reused, matches the Queue screen. */
   readonly index: number;
+  /**
+   * 1-based ordinal within this paste, for {n}: link 1, link 2, link 3.
+   * Null for rows enqueued before the batch ordinal existed, where {n} falls
+   * back to {index} rather than rendering nothing.
+   */
+  readonly batchIndex?: number | null;
   readonly extension: string;
 }
 
@@ -79,6 +88,12 @@ export function sanitizeBasename(value: string): string {
   return name === '' ? 'untitled' : name;
 }
 
+/** Zero-pads a sequence number so a folder sorts the way it was numbered. */
+function pad(value: number, width: number | undefined): string {
+  const text = String(value);
+  return width === undefined ? text : text.padStart(width, '0');
+}
+
 function formatDate(epochMs: number | null): string {
   const date = epochMs === null ? new Date() : new Date(epochMs);
   const pad = (n: number): string => String(n).padStart(2, '0');
@@ -111,8 +126,13 @@ export function renderTemplate(template: string, context: TemplateContext): stri
         if (caption === '') return '';
         return max !== undefined && caption.length > max ? caption.slice(0, max).trim() : caption;
       }
+      // For the numeric tokens `:N` is a zero-pad width, not a truncation.
+      // Without padding a folder sorts 1, 10, 11, 2 — which defeats the entire
+      // point of numbering the files in the first place.
       case 'index':
-        return String(context.index);
+        return pad(context.index, max);
+      case 'n':
+        return pad(context.batchIndex ?? context.index, max);
       case 'duration':
         return metadata.durationMs === null ? '' : `${Math.round(metadata.durationMs / 1_000)}s`;
       default:
@@ -135,7 +155,10 @@ export function renderTemplate(template: string, context: TemplateContext): stri
 export function previewTemplate(template: string, extension = '.mp4'): string {
   return `${renderTemplate(template, {
     awemeId: '7123456789012345678',
-    index: 1,
+    // A preview of "1" would hide the very thing padding exists for, so the
+    // sample is the seventh link of a batch: {n:3} renders 007, not 7.
+    index: 7,
+    batchIndex: 7,
     extension,
     metadata: {
       awemeId: '7123456789012345678',

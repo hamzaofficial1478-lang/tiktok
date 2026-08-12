@@ -28,6 +28,8 @@ export interface QueueItemRow {
   finished_at: number | null;
   source_strategy: SourceStrategy | null;
   watermark_removed: number | null;
+  /** 1-based ordinal within this batch — the number the user counted. */
+  batch_index: number | null;
 }
 
 export interface EnqueueInput {
@@ -82,6 +84,14 @@ export class QueueItemsRepository {
     return next;
   }
 
+  /** Highest batch ordinal already used by this batch, or 0 when it is new. */
+  private highestBatchIndex(batchId: string): number {
+    const row = this.db
+      .prepare<[string], { n: number | null }>('SELECT MAX(batch_index) AS n FROM queue_items WHERE batch_id = ?')
+      .get(batchId);
+    return row?.n ?? 0;
+  }
+
   /**
    * Inserts a batch in the given array order, in one transaction.
    *
@@ -92,15 +102,23 @@ export class QueueItemsRepository {
   enqueue(inputs: readonly EnqueueInput[], now: number = Date.now()): QueueItemRow[] {
     const insert = this.db.prepare(
       `INSERT INTO queue_items (
-         position, batch_id, raw_url, canonical_url, aweme_id, status, progress, attempt_count, created_at
-       ) VALUES (@position, @batchId, @rawUrl, @canonicalUrl, @awemeId, @status, 0, 0, @createdAt)`,
+         position, batch_index, batch_id, raw_url, canonical_url, aweme_id, status, progress, attempt_count, created_at
+       ) VALUES (@position, @batchIndex, @batchId, @rawUrl, @canonicalUrl, @awemeId, @status, 0, 0, @createdAt)`,
     );
 
     const run = this.db.transaction((items: readonly EnqueueInput[]): number[] => {
       const ids: number[] = [];
+      // Counted per batch id rather than per call, so two pastes that happen to
+      // share a batch continue the sequence instead of restarting it.
+      const nextIndex = new Map<string, number>();
+
       for (const item of items) {
+        const index = (nextIndex.get(item.batchId) ?? this.highestBatchIndex(item.batchId)) + 1;
+        nextIndex.set(item.batchId, index);
+
         const result = insert.run({
           position: this.nextPosition(),
+          batchIndex: index,
           batchId: item.batchId,
           rawUrl: item.rawUrl,
           canonicalUrl: item.canonicalUrl ?? null,

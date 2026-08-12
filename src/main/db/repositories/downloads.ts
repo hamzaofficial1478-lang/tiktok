@@ -54,8 +54,43 @@ export interface DownloadInput {
   completedAt?: number;
 }
 
+export interface DailyStat {
+  /** Local calendar day, YYYY-MM-DD. */
+  readonly day: string;
+  readonly downloads: number;
+  readonly watermarkFree: number;
+  readonly reEncoded: number;
+  readonly bytes: number;
+}
+
 export class DownloadsRepository {
   constructor(private readonly db: Database) {}
+
+  /**
+   * Downloads per calendar day, newest first.
+   *
+   * Grouped in SQLite rather than in JS so a library of 50k rows does not have
+   * to cross the IPC boundary to be counted. `completed_at` is epoch
+   * milliseconds; `unixepoch` and `localtime` turn it into the day the user
+   * actually experienced, which is the whole point of a daily total — a
+   * download at 1am should land on that night, not on UTC's tomorrow.
+   */
+  dailyStats(days: number, now: number = Date.now()): DailyStat[] {
+    const since = now - days * 24 * 60 * 60 * 1_000;
+    return this.db
+      .prepare<[number], DailyStat>(
+        `SELECT date(completed_at / 1000, 'unixepoch', 'localtime') AS day,
+                COUNT(*)                                            AS downloads,
+                SUM(CASE WHEN watermark_removed = 1 THEN 1 ELSE 0 END) AS watermarkFree,
+                SUM(CASE WHEN source_strategy IN ('removelogo','blur') THEN 1 ELSE 0 END) AS reEncoded,
+                COALESCE(SUM(file_size), 0)                         AS bytes
+           FROM downloads
+          WHERE completed_at >= ?
+          GROUP BY day
+          ORDER BY day DESC`,
+      )
+      .all(since);
+  }
 
   insert(input: DownloadInput): number {
     const result = this.db

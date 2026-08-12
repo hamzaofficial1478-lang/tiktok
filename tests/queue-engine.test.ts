@@ -389,3 +389,70 @@ describe('watermark reporting on the queue row (section 9)', () => {
     expect(row?.watermarkRemoved).toBeNull();
   });
 });
+
+describe('accounting: every link ends up somewhere (section 8)', () => {
+  it('leaves no item in a non-terminal state after a mixed batch', async () => {
+    harness = createHarness();
+    // A realistic mix: successes, a permanent failure, and a retry that
+    // eventually succeeds.
+    harness.pipeline.failFor(awemeIdFor(3), ['DISK_FULL']);
+    harness.pipeline.failFor(awemeIdFor(5), ['NETWORK_ERROR']);
+
+    const urls = Array.from({ length: 10 }, (_, i) => makeUrl(i));
+    const result = harness.engine.addLinks(urls);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    const snapshot = harness.engine.getSnapshot();
+    const terminal = new Set(['completed', 'failed', 'skipped', 'cancelled']);
+
+    // The guarantee: what went in equals what came out, and nothing is left
+    // silently mid-flight.
+    expect(snapshot).toHaveLength(result.added);
+    expect(snapshot.every((item) => terminal.has(item.status))).toBe(true);
+  });
+
+  it('accounts for duplicates rather than dropping them', () => {
+    harness = createHarness();
+    const urls = [makeUrl(1), makeUrl(2), makeUrl(1), makeUrl(2), makeUrl(3)];
+
+    const result = harness.engine.addLinks(urls);
+
+    // 5 in, 3 queued, 2 named as duplicates — the totals reconcile, which is
+    // what stops "it lost my links" being indistinguishable from correct
+    // deduplication.
+    expect(result.totalFound).toBe(5);
+    expect(result.added).toBe(3);
+    expect(result.duplicatesRemoved).toBe(2);
+    expect(result.added + result.duplicatesRemoved + result.invalid.length).toBe(result.totalFound);
+  });
+
+  it('counts invalid links instead of silently discarding them', () => {
+    harness = createHarness();
+    const result = harness.engine.addLinks([
+      makeUrl(1),
+      'not a link at all',
+      'https://youtube.com/watch?v=x',
+      makeUrl(2),
+    ]);
+
+    expect(result.added).toBe(2);
+    expect(result.invalid).toHaveLength(2);
+    expect(result.added + result.duplicatesRemoved + result.invalid.length).toBe(result.totalFound);
+  });
+
+  it('keeps every position unique across adds, removals and reorders', () => {
+    harness = createHarness();
+    harness.engine.addLinks(Array.from({ length: 5 }, (_, i) => makeUrl(i)));
+
+    const before = harness.engine.getSnapshot();
+    harness.engine.removeItem(before[4]?.id as number);
+    harness.engine.addLinks([makeUrl(99)]);
+
+    const positions = harness.engine.getSnapshot().map((i) => i.position);
+    // A reused position would let a later insert overwrite an earlier item's
+    // place in the order, which is how links go missing.
+    expect(new Set(positions).size).toBe(positions.length);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+});

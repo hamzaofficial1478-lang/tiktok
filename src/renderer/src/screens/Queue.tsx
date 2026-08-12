@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { describeError } from '@shared/errors';
 import type { QueueItemDto } from '@shared/ipc/contract';
-import { orderedItems, useAppStore } from '../store/app-store';
+import { orderedItems, useAppStore, type LiveProgress } from '../store/app-store';
 import { invoke } from '../lib/ipc';
 import {
   Button,
@@ -13,7 +13,10 @@ import {
   StatusChip,
   WatermarkBadge,
   formatBytes,
+  formatEta,
+  formatSpeed,
 } from '../components/primitives';
+import { LiveLog } from '../components/LiveLog';
 
 /**
  * Queue — the core screen (section 10).
@@ -33,17 +36,34 @@ const STRATEGY_DETAIL: Record<string, string> = {
   raw: 'Still present — no clean stream was offered and removal was not attempted',
 };
 
-function speedLabel(item: QueueItemDto): string {
-  if (item.status !== 'downloading' || !item.bytesTotal) return '';
-  return `${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}`;
+/**
+ * The line under an item's title while it is working.
+ *
+ * Bytes come from the persisted row so they survive a refresh; rate and ETA
+ * come from the volatile progress event, so they are simply absent rather than
+ * stale when nothing is moving.
+ */
+function activityLabel(item: QueueItemDto, live: LiveProgress | undefined): string {
+  if (item.status === 'processing') return 'Removing watermark…';
+  if (item.status === 'resolving') return 'Looking up the video…';
+  if (item.status !== 'downloading') return '';
+
+  const parts: string[] = [];
+  if (item.bytesTotal) parts.push(`${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}`);
+  else if (item.bytesDone) parts.push(formatBytes(item.bytesDone));
+  if (live?.speed) parts.push(formatSpeed(live.speed));
+  if (live?.etaMs) parts.push(formatEta(live.etaMs));
+  return parts.join(' · ');
 }
 
 function Row({
   item,
+  live,
   expanded,
   onToggle,
 }: {
   item: QueueItemDto;
+  live: LiveProgress | undefined;
   expanded: boolean;
   onToggle: () => void;
 }): React.JSX.Element {
@@ -67,7 +87,9 @@ function Row({
             {item.awemeId ? `@${item.canonicalUrl?.match(/@([\w.-]*)\//)?.[1] || '…'}` : 'Resolving…'}
             <span className="ml-2 font-mono text-xs text-ink-500">{item.awemeId ?? item.rawUrl}</span>
           </p>
-          <p className="truncate text-xs text-ink-500">{descriptor ? descriptor.title : speedLabel(item)}</p>
+          <p className="truncate text-xs text-ink-500">
+            {descriptor ? descriptor.title : activityLabel(item, live)}
+          </p>
         </button>
 
         <WatermarkBadge sourceStrategy={item.sourceStrategy} watermarkRemoved={item.watermarkRemoved} />
@@ -144,6 +166,7 @@ export function Queue(): React.JSX.Element {
   const queueItems = useAppStore((s) => s.queueItems);
   const items = useMemo(() => orderedItems(queueItems), [queueItems]);
   const queueState = useAppStore((s) => s.queueState);
+  const liveProgress = useAppStore((s) => s.liveProgress);
   const pending = useAppStore((s) => s.pendingDuplicates);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
@@ -160,13 +183,35 @@ export function Queue(): React.JSX.Element {
     let done = 0;
     let failed = 0;
     let remaining = 0;
+    let watermarkRemoved = 0;
+    let stillWatermarked = 0;
     for (const item of items) {
-      if (item.status === 'completed') done++;
-      else if (item.status === 'failed') failed++;
+      if (item.status === 'completed') {
+        done++;
+        if (item.watermarkRemoved) watermarkRemoved++;
+        else if (item.sourceStrategy === 'raw') stillWatermarked++;
+      } else if (item.status === 'failed') failed++;
       else if (item.status !== 'skipped' && item.status !== 'cancelled') remaining++;
     }
-    return { done, failed, remaining };
+    return { done, failed, remaining, watermarkRemoved, stillWatermarked };
   }, [items]);
+
+  /**
+   * Combined throughput across everything in flight.
+   *
+   * Summed rather than averaged: with concurrency above 1 the number the user
+   * cares about is what the connection is doing overall, not per item.
+   */
+  const combined = useMemo(() => {
+    let speed = 0;
+    let etaMs = 0;
+    for (const progress of liveProgress.values()) {
+      if (progress.speed) speed += progress.speed;
+      // The batch is not done until its slowest member is.
+      if (progress.etaMs) etaMs = Math.max(etaMs, progress.etaMs);
+    }
+    return { speed: speed || null, etaMs: etaMs || null };
+  }, [liveProgress]);
 
   if (items.length === 0) {
     return (
@@ -185,6 +230,23 @@ export function Queue(): React.JSX.Element {
             <span className="text-2xl font-semibold text-ink-100">{totals.done}</span>
             <span className="text-sm text-ink-500">of {items.length} done</span>
           </div>
+          {/* The headline number for this app: how many actually came out clean. */}
+          {totals.watermarkRemoved > 0 && (
+            <span className="text-sm text-mint-300" title="Watermark removed, or never present in the source">
+              {totals.watermarkRemoved} watermark-free
+            </span>
+          )}
+          {totals.stillWatermarked > 0 && (
+            <span className="text-sm text-warn-400" title="No clean stream was offered and removal was not attempted">
+              {totals.stillWatermarked} still watermarked
+            </span>
+          )}
+          {combined.speed !== null && (
+            <span className="text-sm text-ink-300">
+              {formatSpeed(combined.speed)}
+              {combined.etaMs !== null && <span className="text-ink-500"> · {formatEta(combined.etaMs)}</span>}
+            </span>
+          )}
           {totals.failed > 0 && <span className="text-sm text-danger-400">{totals.failed} failed</span>}
           {pending.length > 0 && (
             <span className="rounded-md bg-warn-400/20 px-2 py-0.5 text-xs font-medium text-warn-400">
@@ -213,7 +275,7 @@ export function Queue(): React.JSX.Element {
         </div>
       </Panel>
 
-      <div ref={parentRef} className="elevation-card min-h-0 flex-1 overflow-y-auto">
+      <div ref={parentRef} className="elevation-card min-h-0 flex-[3] overflow-y-auto">
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const item = items[virtualRow.index];
@@ -234,6 +296,7 @@ export function Queue(): React.JSX.Element {
               >
                 <Row
                   item={item}
+                  live={liveProgress.get(item.id)}
                   expanded={expandedId === item.id}
                   onToggle={() => setExpandedId(expandedId === item.id ? null : item.id)}
                 />
@@ -241,6 +304,12 @@ export function Queue(): React.JSX.Element {
             );
           })}
         </div>
+      </div>
+
+      {/* Kept to a third of the height: the queue is the subject, this is
+          context. It only fills up when something actually goes wrong. */}
+      <div className="min-h-32 flex-1">
+        <LiveLog />
       </div>
     </div>
   );

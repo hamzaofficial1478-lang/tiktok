@@ -76,6 +76,7 @@ export class DownloadPipeline implements MediaPipeline {
       metadata: input.resolved.metadata,
       awemeId: input.normalized.awemeId,
       index: input.item.position,
+      batchIndex: input.item.batch_index,
       extension,
     });
     const targetPath = resolveOutputPath({

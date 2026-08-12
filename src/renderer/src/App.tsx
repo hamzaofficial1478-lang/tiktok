@@ -5,6 +5,7 @@ import { invoke } from './lib/ipc';
 import { AddLinks } from './screens/AddLinks';
 import { Queue } from './screens/Queue';
 import { Library } from './screens/Library';
+import { History } from './screens/History';
 import { Settings } from './screens/Settings';
 import { Logs } from './screens/Logs';
 import { DuplicateModal } from './components/DuplicateModal';
@@ -21,12 +22,13 @@ const BackgroundScene = lazy(() =>
   import('./scene/BackgroundScene').then((module) => ({ default: module.BackgroundScene })),
 );
 
-type Screen = 'add' | 'queue' | 'library' | 'settings' | 'logs';
+type Screen = 'add' | 'queue' | 'library' | 'history' | 'settings' | 'logs';
 
 const NAV: readonly { id: Screen; label: string }[] = [
   { id: 'add', label: 'Add links' },
   { id: 'queue', label: 'Queue' },
   { id: 'library', label: 'Library' },
+  { id: 'history', label: 'History' },
   { id: 'settings', label: 'Settings' },
   { id: 'logs', label: 'Logs' },
 ];
@@ -196,6 +198,7 @@ export default function App(): React.JSX.Element {
           {screen === 'add' && <AddLinks onQueued={() => setScreen('queue')} />}
           {screen === 'queue' && <Queue />}
           {screen === 'library' && <Library />}
+          {screen === 'history' && <History />}
           {screen === 'settings' && <Settings />}
           {screen === 'logs' && <Logs />}
         </ErrorBoundary>

@@ -88,6 +88,10 @@ export function registerLibraryHandlers(registry: IpcRegistry, services: AppServ
     return { entries: result.entries.map(toLibraryEntry), total: result.total };
   });
 
+  registry.handle('library:dailyStats', ({ days }) => ({
+    days: services.repos.downloads.dailyStats(days),
+  }));
+
   registry.handle('library:deleteRecord', ({ downloadId }) => {
     services.repos.downloads.deleteRecord(downloadId);
     return { ok: true as const };
@@ -139,6 +143,15 @@ export function registerQueueEvents(bus: EventBus, services: AppServices): () =>
     switch (event.type) {
       case 'item-updated':
         bus.emit('queue:itemUpdated', event.item);
+        break;
+      case 'item-progress':
+        bus.emit('queue:itemProgress', {
+          itemId: event.itemId,
+          bytesDone: event.bytesDone,
+          bytesTotal: event.bytesTotal,
+          speed: event.speed,
+          etaMs: event.etaMs,
+        });
         break;
       case 'items-added':
         bus.emit('queue:itemsAdded', { batchId: event.batchId, items: [...event.items] });

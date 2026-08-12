@@ -764,6 +764,15 @@ export class QueueEngine {
       ...(progress.processing ? { status: 'processing' as const } : {}),
     });
     this.emitItem(this.options.queueItems.findById(itemId));
+
+    this.emit({
+      type: 'item-progress',
+      itemId,
+      bytesDone: progress.bytesDone,
+      bytesTotal: progress.bytesTotal,
+      speed: progress.speed,
+      etaMs: progress.etaMs,
+    });
   }
 
   private checkBatchComplete(batchId: string): void {

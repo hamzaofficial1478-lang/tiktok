@@ -37,6 +37,7 @@ export const INVOKE_CHANNELS = [
   'queue:resolveDuplicate',
 
   'library:list',
+  'library:dailyStats',
   'library:deleteRecord',
   'library:deleteFile',
 
@@ -53,6 +54,7 @@ export const EVENT_CHANNELS = [
   'sidecars:changed',
   'config:changed',
   'queue:itemUpdated',
+  'queue:itemProgress',
   'queue:itemsAdded',
   'queue:itemRemoved',
   'queue:duplicatePending',

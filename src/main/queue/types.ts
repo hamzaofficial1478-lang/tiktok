@@ -120,6 +120,21 @@ export interface BatchSummary {
 export type QueueEvent =
   | { readonly type: 'items-added'; readonly batchId: string; readonly items: readonly QueueItemSnapshot[] }
   | { readonly type: 'item-updated'; readonly item: QueueItemSnapshot }
+  /**
+   * Volatile transfer rate, deliberately separate from 'item-updated'.
+   *
+   * Speed and ETA are meaningless a second later and belong to no persisted
+   * row, so they are pushed straight to the renderer instead of being written
+   * to SQLite four times a second per active item.
+   */
+  | {
+      readonly type: 'item-progress';
+      readonly itemId: number;
+      readonly bytesDone: number;
+      readonly bytesTotal: number | null;
+      readonly speed: number | null;
+      readonly etaMs: number | null;
+    }
   | { readonly type: 'item-removed'; readonly itemId: number }
   | { readonly type: 'duplicate-pending'; readonly pending: PendingDuplicate }
   | { readonly type: 'duplicate-resolved'; readonly itemId: number; readonly action: DuplicateAction }

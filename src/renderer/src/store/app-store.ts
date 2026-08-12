@@ -23,6 +23,16 @@ import { invoke, subscribe } from '../lib/ipc';
 
 const MAX_LOG_ENTRIES = 2_000;
 
+/** Statuses for which a live transfer rate is meaningful. */
+const ACTIVE_STATUSES = new Set(['resolving', 'downloading', 'processing']);
+
+export interface LiveProgress {
+  readonly bytesDone: number;
+  readonly bytesTotal: number | null;
+  readonly speed: number | null;
+  readonly etaMs: number | null;
+}
+
 export interface Toast {
   readonly id: number;
   readonly kind: 'info' | 'success' | 'warning' | 'error';
@@ -42,6 +52,12 @@ interface AppState {
 
   /** Keyed by id so a progress event is an O(1) replace, not a list scan. */
   queueItems: Map<number, QueueItemDto>;
+  /**
+   * Live transfer rates, kept apart from `queueItems` on purpose: they are
+   * volatile, they belong to no persisted row, and an item that stops
+   * downloading should lose its speed rather than freeze at the last value.
+   */
+  liveProgress: Map<number, LiveProgress>;
   queueState: QueueStateDto;
   pendingDuplicates: PendingDuplicateDto[];
   lastBatch: BatchSummaryDto | null;
@@ -78,6 +94,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   logs: [],
 
   queueItems: new Map(),
+  liveProgress: new Map(),
   queueState: { running: false, paused: false, active: 0 },
   pendingDuplicates: [],
   lastBatch: null,
@@ -120,7 +137,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       subscribe('queue:itemUpdated', (item) => {
         const items = new Map(get().queueItems);
         items.set(item.id, item);
+
+        // An item that has stopped moving must not keep showing a speed. Any
+        // terminal or waiting status drops its live entry.
+        const live = get().liveProgress;
+        if (!ACTIVE_STATUSES.has(item.status) && live.has(item.id)) {
+          const next = new Map(live);
+          next.delete(item.id);
+          set({ queueItems: items, liveProgress: next });
+          return;
+        }
         set({ queueItems: items });
+      });
+      subscribe('queue:itemProgress', ({ itemId, ...progress }) => {
+        const live = new Map(get().liveProgress);
+        live.set(itemId, progress);
+        set({ liveProgress: live });
       });
       subscribe('queue:itemsAdded', ({ items: added }) => {
         const items = new Map(get().queueItems);
@@ -192,6 +224,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     const queue = await invoke('queue:getSnapshot');
     set({
       queueItems: new Map(queue.items.map((item) => [item.id, item])),
+      // Rates are not persisted, so a refresh has nothing to restore them
+      // from; they repopulate on the next progress tick.
+      liveProgress: new Map(),
       queueState: queue.state,
     });
   },

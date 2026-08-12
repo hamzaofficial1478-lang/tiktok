@@ -244,6 +244,27 @@ export function formatBytes(bytes: number | null): string {
   return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
+/** Transfer rate, e.g. "4.2 MB/s". */
+export function formatSpeed(bytesPerSecond: number | null): string {
+  if (bytesPerSecond === null || bytesPerSecond <= 0) return '—';
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+/**
+ * Time remaining, in the coarsest unit that is still useful.
+ *
+ * An ETA is a guess, so it is never shown to a precision it does not have:
+ * "about 3 min" rather than "3:07" for anything over a minute.
+ */
+export function formatEta(ms: number | null): string {
+  if (ms === null || ms <= 0 || !Number.isFinite(ms)) return '—';
+  const seconds = Math.round(ms / 1_000);
+  if (seconds < 60) return `${seconds}s left`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes} min left`;
+  return `${Math.round(minutes / 60)} h left`;
+}
+
 export function formatDuration(ms: number | null): string {
   if (ms === null || ms <= 0) return '—';
   const total = Math.round(ms / 1_000);

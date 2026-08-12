@@ -126,6 +126,7 @@ describe('migration runner', () => {
       'finished_at',
       'source_strategy',
       'watermark_removed',
+      'batch_index',
     ]);
     expect(columns('downloads')).toContain('source_strategy');
     expect(columns('downloads')).toContain('file_exists');

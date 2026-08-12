@@ -231,6 +231,20 @@ export const invokeContract = {
     response: z.object({ path: z.string().nullable() }),
   },
   'system:showInFolder': { request: z.object({ path: z.string() }), response: Ok },
+  'library:dailyStats': {
+    request: z.object({ days: z.number().int().min(1).max(365) }),
+    response: z.object({
+      days: z.array(
+        z.object({
+          day: z.string(),
+          downloads: z.number(),
+          watermarkFree: z.number(),
+          reEncoded: z.number(),
+          bytes: z.number(),
+        }),
+      ),
+    }),
+  },
   'system:openPath': { request: z.object({ path: z.string() }), response: Ok },
   'system:testProxy': {
     request: z.object({ proxyUrl: z.string() }),
@@ -262,6 +276,15 @@ export const eventContract = {
   }),
   'config:changed': AppConfigSchema,
   'queue:itemUpdated': QueueItemSchema,
+  /** Volatile: never persisted, never replayed on reconnect. */
+  'queue:itemProgress': z.object({
+    itemId: z.number(),
+    bytesDone: z.number(),
+    bytesTotal: z.number().nullable(),
+    /** Bytes per second, instantaneous. */
+    speed: z.number().nullable(),
+    etaMs: z.number().nullable(),
+  }),
   'queue:itemsAdded': z.object({ batchId: z.string(), items: z.array(QueueItemSchema) }),
   'queue:itemRemoved': z.object({ itemId: z.number() }),
   'queue:duplicatePending': PendingDuplicateSchema,
