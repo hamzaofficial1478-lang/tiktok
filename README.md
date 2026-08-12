@@ -74,6 +74,14 @@ merely fails the install on any machine without a C++ toolchain. `npm run
 rebuild` remains available as a manual escape hatch if a future dependency
 genuinely needs an ABI-specific build.
 
+The one `postinstall` that does exist, `scripts/ensure-electron.mjs`, checks
+that the Electron binary itself downloaded. The `electron` package is a thin
+wrapper around a ~150 MB executable fetched separately, and when that fetch is
+skipped nothing complains until electron-vite throws `Error: Electron
+uninstall` at launch. The check is idempotent, and it deliberately exits 0 even
+when it fails — the engine, the tests and the harnesses do not need a GUI
+binary, so a failed download must not break the install.
+
 ## Architecture
 
 The rule that shapes everything: **the renderer never touches the filesystem,

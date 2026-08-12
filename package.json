@@ -21,6 +21,8 @@
     "probe:live": "cross-env LIVE_PROBE=1 vitest run tests/live",
     "fetch:sidecars": "node scripts/fetch-sidecars.mjs",
     "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "setup:electron": "node scripts/ensure-electron.mjs",
+    "postinstall": "node scripts/ensure-electron.mjs",
     "dist:win": "npm run preflight && electron-builder --win --publish never",
     "dist:mac": "npm run preflight && electron-builder --mac --publish never",
     "verify": "npm run typecheck && npm run test",

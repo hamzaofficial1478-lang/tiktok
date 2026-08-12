@@ -63,9 +63,19 @@ npm install
 
 This takes a few minutes. Electron is a large download.
 
-Nothing is compiled from source, so there is no build-tool step and no
-`postinstall`. If this command finishes without a red `npm error`, you are
-done — move on.
+Nothing is compiled from source, so there is no build-tool step. The only
+`postinstall` is a check that the Electron binary actually landed — the
+`electron` npm package is a thin wrapper and the real ~150 MB executable is
+fetched separately, which is a step that quietly gets skipped often enough to
+be worth verifying. If it needs to fetch it you will see:
+
+```
+[ensure-electron] downloading the Electron binary (~150 MB, once)…
+```
+
+That check never fails the install. If the download does not work, it prints
+what to do and lets the install finish, because everything except the app
+window still works without it.
 
 ## Step 4 — Fetch yt-dlp
 
@@ -228,6 +238,7 @@ testing any recent build will do. `docs/SIDECARS.md` covers what to ship.
 | ------- | ------------- |
 | `npm install` fails on `node-gyp`, `MSBuild`, or "Could not find any Visual Studio installation" | Nothing here needs compiling, so this is a stale `postinstall` trying to rebuild `better-sqlite3`. Pull the latest commit — it was removed. The install itself already succeeded: check `dir node_modules\.bin` and carry on. |
 | "Attempting to build a module with a space in the path" | Same cause as above, triggered by a Windows username containing a space. Same fix; no need to move the project. |
+| `npm run dev` builds fine, then `Error: Electron uninstall` | The Electron binary was never downloaded — `node_modules/electron/path.txt` is missing. Run `npm run setup:electron`. The bundles building successfully means everything else is fine. |
 | `NODE_MODULE_VERSION` mismatch at startup | Should not happen — better-sqlite3 v13 is Node-API and ABI-stable. If it does, `npm run rebuild`. |
 | `fetch:sidecars` fails on the yt-dlp download | Network or proxy blocking `github.com`. The binary can be placed at `resources/bin/<platform>-<arch>/yt-dlp[.exe]` by hand. |
 | Every link fails with `EXTRACTOR_FAILED` | yt-dlp is missing or out of date. `npm run fetch:sidecars` again — TikTok changes things and yt-dlp releases often. |
