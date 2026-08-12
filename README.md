@@ -4,9 +4,10 @@ A cross-platform desktop app that takes one or many TikTok links, downloads them
 in a strictly ordered queue, refuses to silently duplicate work, and saves clean
 video files with metadata.
 
-**Status: Phase 1 of 8 — scaffold.** The engine's foundations (IPC boundary,
-database, migrations, sidecar resolution, logging, settings) are in place and
-tested. There is no queue, no extractor and no product UI yet.
+**Status: phases 1-4 of 8 complete.** The engine is functional end to end
+headlessly: links normalise and deduplicate, the queue orders and retries them,
+and files download, verify and land with metadata. There is no product UI yet —
+phase 6 — and watermark filtering is phase 5.
 
 ## Getting started
 
@@ -48,8 +49,11 @@ src/
 │  ├─ media/         sidecar resolution, ffmpeg capability probe
 │  ├─ logging/       pino + self-contained rolling file stream
 │  └─ settings/      AppConfig store with atomic writes
+│  ├─ resolve/       URL normalizer, Extractor interface + yt-dlp
+│  ├─ queue/         QueueEngine, dedup layers, rate limiter, retry policy
+│  └─ download/      selection, streaming .part downloader, verify, naming
 ├─ preload/          contextBridge surface; ~1 kB, requires only electron
-└─ renderer/         React 18 + Tailwind; a synced read model, never the truth
+└─ renderer/         React + Tailwind; a synced read model, never the truth
 ```
 
 `services.ts` deliberately has no Electron dependency, so the whole engine can
@@ -90,11 +94,10 @@ right — that a `play_addr` format is classified clean, that a 404 maps to
 watermark-free stream at all. Only a real request answers that, so the probe
 prints the actual format table and asserts a clean stream was offered.
 
-Coverage is concentrated where bugs hide silently: migrations and rollback,
-queue ordering and position reuse, crash recovery, dedup lookups, config
-validation, IPC payload rejection, and the error taxonomy's invariants. URL
-normalization, dedup and queue state transitions get their own dedicated suites
-in phases 2 and 3.
+Coverage is concentrated where bugs hide silently: URL normalization and
+canonical IDs, all four dedup layers, queue ordering and position reuse, crash
+recovery, retry and rate-limit schedules, `.part` handling, and the error
+taxonomy's invariants.
 
 ## Continuity guarantees
 
