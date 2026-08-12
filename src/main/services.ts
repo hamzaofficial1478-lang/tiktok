@@ -1,5 +1,4 @@
 import type { Logger } from 'pino';
-import { AppError } from '@shared/errors';
 import type { AppPaths } from './paths';
 import { createLogger, type LoggerHandle } from './logging/logger';
 import { ConfigStore } from './settings/config';
@@ -7,6 +6,7 @@ import { openDatabase, type DatabaseHandle } from './db/database';
 import { VideosRepository } from './db/repositories/videos';
 import { DownloadsRepository } from './db/repositories/downloads';
 import { QueueItemsRepository } from './db/repositories/queue-items';
+import { AppMetaRepository, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
 import { SidecarResolver } from './media/sidecars';
 import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
 import { UrlNormalizer } from './resolve/url-normalizer';
@@ -16,6 +16,8 @@ import { RateLimiter } from './queue/rate-limiter';
 import { systemClock } from './clock';
 import type { MediaPipeline } from './queue/types';
 import { ChildProcessRunner } from './resolve/process-runner';
+import { Ffprobe } from './media/ffprobe';
+import { DownloadPipeline } from './download/pipeline';
 import { YtDlpExtractor } from './resolve/yt-dlp-extractor';
 import { ExtractorChain } from './resolve/extractor-chain';
 import type { Extractor } from './resolve/types';
@@ -58,25 +60,9 @@ export interface CreateServicesOptions {
   isDev: boolean;
   /** Version string reported to the renderer and written into the startup log line. */
   appVersion: string;
-  /**
-   * The download pipeline. Phase 4 supplies the real implementation; until
-   * then the queue engine is fully functional but has nothing to hand a
-   * resolved video to, so a placeholder that fails loudly is injected rather
-   * than pretending a download succeeded.
-   */
+  /** Overrides the real download pipeline; used by tests and the harness. */
   pipeline?: MediaPipeline;
 }
-
-/**
- * Placeholder until phase 4. Fails with a real taxonomy code rather than
- * returning a fabricated success, so an accidental run surfaces plainly
- * instead of writing phantom rows into the user's library.
- */
-const notImplementedPipeline: MediaPipeline = {
-  process: async () => {
-    throw new AppError('INTERNAL_ERROR', 'the download pipeline is not implemented yet (phase 4)');
-  },
-};
 
 export async function createServices(options: CreateServicesOptions): Promise<AppServices> {
   const { paths, isDev } = options;
@@ -152,13 +138,34 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     redirectResolver: new HttpRedirectResolver(),
   });
 
+  const appMeta = new AppMetaRepository(database.db);
+
+  const ffprobe = new Ffprobe({
+    get binaryPath(): string | null {
+      return sidecars.resolve('ffprobe').path;
+    },
+    runner: processRunner,
+  });
+
+  const downloadPipeline =
+    options.pipeline ??
+    new DownloadPipeline({
+      config: () => config.get(),
+      runner: processRunner,
+      ffprobe,
+      // Read fresh each time so an extractor/ffmpeg update mid-session applies.
+      ffmpegPath: () => sidecars.resolve('ffmpeg').path,
+      log: logging.log.child({ scope: 'download' }),
+    });
+
   const queue = new QueueEngine({
     queueItems,
     videos: new VideosRepository(database.db),
     downloads: new DownloadsRepository(database.db),
     normalizer,
     extractor,
-    pipeline: options.pipeline ?? notImplementedPipeline,
+    pipeline: downloadPipeline,
+    onRunStateChanged: (running) => appMeta.setBoolean(QUEUE_RUNNING_KEY, running),
     rateLimiter: new RateLimiter({
       minIntervalMs: () => config.get().rateLimitMs,
       jitterMs: () => config.get().rateLimitJitterMs,
@@ -172,6 +179,26 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
   // A retryable failure interrupted mid-backoff is left `failed` on disk;
   // startup is where it gets its remaining attempts back.
   queue.requeueInterruptedRetries();
+
+  /**
+   * Pick the batch back up automatically.
+   *
+   * The queue's rows, their order and their `.part` files all survived the
+   * exit; what would otherwise be lost is the fact that the user had it
+   * *running*. Restoring that here is what makes a shutdown mid-batch resume
+   * from the exact link it stopped on instead of waiting to be told to start.
+   *
+   * Deliberately conditional: a queue the user paused before quitting stays
+   * paused, because resuming it unbidden would be its own kind of surprise.
+   */
+  const wasRunning = appMeta.getBoolean(QUEUE_RUNNING_KEY, false);
+  const pending = queue.hasPendingWork();
+  if (wasRunning && pending) {
+    log.info('resuming the queue where it left off');
+    queue.start();
+  } else if (pending) {
+    log.info('unfinished items are waiting, but the queue was not running at exit');
+  }
 
   log.info(
     {
@@ -207,7 +234,9 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       // Stop before closing the database, so no worker writes to a closed
       // handle and in-flight items get a clean `cancelled` rather than being
       // left for crash recovery.
-      await queue.stop();
+      // The process is going down, not the user pausing: keep the run
+      // state so the next launch resumes the batch.
+      await queue.stop({ keepRunState: true });
       database.close();
       await logging.close();
     },

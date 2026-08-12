@@ -96,6 +96,24 @@ validation, IPC payload rejection, and the error taxonomy's invariants. URL
 normalization, dedup and queue state transitions get their own dedicated suites
 in phases 2 and 3.
 
+## Continuity guarantees
+
+The queue is built to survive interruption:
+
+- **Sleep / screen off** — while the queue is running the app holds a
+  `prevent-app-suspension` blocker, so the display may sleep but the system
+  will not suspend under a running batch. Renderer background throttling is
+  disabled so progress stays live with the window hidden. The blocker is
+  released the moment the queue goes idle.
+- **Forced sleep** (lid close, explicit sleep) cannot be blocked by any
+  application. In-flight downloads are parked back to `queued` — keeping their
+  `.part` files and their position — and continue on wake rather than hanging
+  on dead sockets. A suspend costs no retry attempt.
+- **Shutdown or crash mid-batch** — every transition is persisted. On launch,
+  in-flight rows return to `queued` in position order, `.part` files resume via
+  HTTP `Range`, and the queue restarts automatically if it was running at exit.
+  A queue the user paused stays paused.
+
 ## Licensing constraint worth knowing before you touch post-processing
 
 The app must ship an **LGPL** ffmpeg build, which does not contain `delogo` or
@@ -111,8 +129,8 @@ filter chain or encoder.
 | 1 | Scaffold: IPC, SQLite + migrations, sidecars, logging | done |
 | 2 | URL normalization + Extractor chain (headless) | done |
 | 3 | Queue engine: ordering, retries, rate limiting, dedup | done |
-| 4 | Download pipeline: `.part` handling, verification, templating | next |
-| 5 | Post-processing: stream selection, watermark, outro | |
+| 4 | Download pipeline: `.part` handling, verification, templating | done |
+| 5 | Post-processing: watermark filtering tiers, outro detection | next |
 | 6 | UI shell: five screens on real engine state | |
 | 7 | Motion + 3D polish, 300-item performance pass | |
 | 8 | Packaging: NSIS, DMG, sidecar bundling, first run | |

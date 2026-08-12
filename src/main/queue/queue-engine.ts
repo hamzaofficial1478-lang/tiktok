@@ -39,6 +39,11 @@ export interface QueueEngineOptions {
   readonly fileExists?: (path: string) => boolean;
   readonly random?: () => number;
   readonly progressThrottleMs?: number;
+  /**
+   * Persists whether the queue is meant to be running, so an unexpected exit
+   * does not turn into a queue that quietly sits idle on next launch.
+   */
+  readonly onRunStateChanged?: (running: boolean) => void;
 }
 
 /**
@@ -63,6 +68,7 @@ export interface QueueEngineOptions {
 export class QueueEngine {
   private running = false;
   private paused = false;
+  private suspending = false;
   private activeWorkers = 0;
 
   private readonly controllers = new Map<number, AbortController>();
@@ -176,6 +182,7 @@ export class QueueEngine {
     if (this.running) return;
     this.running = true;
     this.paused = false;
+    this.options.onRunStateChanged?.(true);
     this.emitState();
     this.pump();
   }
@@ -183,6 +190,7 @@ export class QueueEngine {
   pause(): void {
     if (this.paused) return;
     this.paused = true;
+    this.options.onRunStateChanged?.(false);
     this.emitState();
     this.log.info('queue paused');
   }
@@ -192,12 +200,20 @@ export class QueueEngine {
     this.paused = false;
     // Do not serve a rate-limit debt accrued while paused.
     this.options.rateLimiter.reset();
+    this.options.onRunStateChanged?.(true);
     this.emitState();
     this.pump();
   }
 
-  /** Stops claiming and cancels everything in flight. */
-  async stop(): Promise<void> {
+  /**
+   * Stops claiming and cancels everything in flight.
+   *
+   * `keepRunState` is set when the process is going down rather than the user
+   * stopping: quitting mid-batch must not be recorded as "the user paused", or
+   * the next launch would sit idle instead of carrying on.
+   */
+  async stop(options: { keepRunState?: boolean } = {}): Promise<void> {
+    if (!options.keepRunState) this.options.onRunStateChanged?.(false);
     this.running = false;
     for (const controller of this.controllers.values()) controller.abort();
     for (const controller of this.retryTimers.values()) controller.abort();
@@ -208,6 +224,43 @@ export class QueueEngine {
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  /** True when there is work the next launch should pick straight back up. */
+  hasPendingWork(): boolean {
+    return this.options.queueItems.nextQueued() !== undefined;
+  }
+
+  /**
+   * The machine is going to sleep.
+   *
+   * In-flight sockets do not survive a suspend, so anything downloading is
+   * aborted and put back to `queued` rather than left to hang on a dead
+   * connection until a timeout eventually fires. Its `.part` is untouched, so
+   * the resumed download continues from where it stopped rather than
+   * restarting — the same mechanism crash recovery uses.
+   */
+  async suspend(): Promise<void> {
+    if (!this.running) return;
+    this.log.info({ active: this.activeWorkers }, 'system suspending; parking in-flight downloads');
+    this.suspending = true;
+    this.paused = true;
+    for (const controller of this.controllers.values()) controller.abort();
+    for (const controller of this.retryTimers.values()) controller.abort();
+    this.retryTimers.clear();
+    await this.whenIdle();
+    this.emitState();
+  }
+
+  /** The machine woke up: carry on from exactly where the queue stopped. */
+  resumeFromSuspend(): void {
+    if (!this.suspending) return;
+    this.suspending = false;
+    this.paused = false;
+    this.options.rateLimiter.reset();
+    this.log.info('system resumed; continuing the queue');
+    this.emitState();
+    this.pump();
   }
 
   get isPaused(): boolean {
@@ -451,6 +504,14 @@ export class QueueEngine {
     const attemptCount = row.attempt_count + 1;
 
     if (appError.code === 'CANCELLED') {
+      // A suspend aborts in-flight work the same way a cancel does, but it is
+      // not the user abandoning the item: put it back in the queue, keeping
+      // its position and its .part, so waking up continues rather than loses it.
+      if (this.suspending) {
+        this.update(row.id, { status: 'queued', progress: row.progress, startedAt: null });
+        this.emitItem(this.options.queueItems.findById(row.id));
+        return;
+      }
       this.finish(row.id, 'cancelled', { errorCode: 'CANCELLED', errorDetail: appError.detail ?? null });
       return;
     }
