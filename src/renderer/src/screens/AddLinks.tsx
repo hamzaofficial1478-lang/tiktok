@@ -1,9 +1,11 @@
 import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { parse } from '@shared/url-parse';
+import { scanText, suspiciousCount, type ScanReport } from '@shared/link-safety';
 import { describeError } from '@shared/errors';
 import { useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
 import { Button, EmptyState, Panel } from '../components/primitives';
+import { ScanReportPanel } from '../components/ScanReportPanel';
 
 /**
  * Add Links — spec section 10.
@@ -69,6 +71,7 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [scan, setScan] = useState<{ report: ScanReport; fileNames: string[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pushToast = useAppStore((s) => s.pushToast);
 
@@ -107,12 +110,31 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
     if (files.length === 0) return;
     try {
       const texts = await Promise.all(files.map((file) => file.text()));
-      const added = texts.join('\n');
-      setValue((current) => (current ? `${current}\n${added}` : added));
-      const names = files.map((f) => f.name).join(', ');
-      pushToast({ kind: 'info', message: `Loaded ${names}` });
+
+      // Screened before a single line reaches the textarea, so a hostile or
+      // malformed file cannot get as far as the queue — and so the counts can
+      // be reported at the moment the user picks the file rather than after
+      // rows have already appeared.
+      const report = scanText(texts.join('\n'));
+      setScan({ report, fileNames: files.map((f) => f.name) });
+
+      if (report.fatal !== null) return;
+
+      const safe = report.accepted.map((line) => line.raw).join('\n');
+      if (safe !== '') setValue((current) => (current ? `${current}\n${safe}` : safe));
+
+      const blocked = suspiciousCount(report);
+      pushToast({
+        kind: blocked > 0 ? 'warning' : 'success',
+        message:
+          `${report.accepted.length} of ${report.totalLines} lines ready` +
+          (blocked > 0 ? ` · ${blocked} disguised link${blocked === 1 ? '' : 's'} blocked` : ''),
+      });
     } catch (err) {
-      pushToast({ kind: 'error', message: `Could not read the file: ${err instanceof Error ? err.message : String(err)}` });
+      pushToast({
+        kind: 'error',
+        message: `Could not read the file: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
   }
 
@@ -187,6 +209,10 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
           </div>
         </div>
       </Panel>
+
+      {scan && (
+        <ScanReportPanel report={scan.report} fileNames={scan.fileNames} onDismiss={() => setScan(null)} />
+      )}
 
       {lines.length > 0 && (
         <Panel title={`Preview (${lines.length})`}>
