@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ERROR_CODES } from '../errors';
-import { LOG_LEVELS } from '../types';
+import { DUPLICATE_ACTIONS, LOG_LEVELS, QUEUE_STATUSES, SOURCE_STRATEGIES } from '../types';
 import { AppConfigSchema } from '../config-schema';
 import { INVOKE_CHANNELS, EVENT_CHANNELS, type InvokeChannel, type EventChannel } from './channels';
 
@@ -16,9 +16,6 @@ export type { InvokeChannel, EventChannel };
  * the renderer derives its client types from it. A channel that is not here
  * cannot be called: the preload bridge only forwards known names, so a typo in
  * the renderer is a compile error rather than a silently dead call.
- *
- * Adding a channel in later phases means adding one entry here and one handler
- * in main/ipc — nothing else.
  */
 
 /* ------------------------------------------------------------------ *
@@ -68,6 +65,79 @@ export const LogEntrySchema = z.object({
   data: z.record(z.string(), z.unknown()).optional(),
 });
 
+export const QueueItemSchema = z.object({
+  id: z.number(),
+  position: z.number(),
+  batchId: z.string(),
+  rawUrl: z.string(),
+  canonicalUrl: z.string().nullable(),
+  awemeId: z.string().nullable(),
+  status: z.enum(QUEUE_STATUSES),
+  progress: z.number(),
+  bytesDone: z.number().nullable(),
+  bytesTotal: z.number().nullable(),
+  attemptCount: z.number(),
+  errorCode: z.enum(ERROR_CODES).nullable(),
+  errorDetail: z.string().nullable(),
+  duplicateAction: z.enum(DUPLICATE_ACTIONS).nullable(),
+  createdAt: z.number(),
+  startedAt: z.number().nullable(),
+  finishedAt: z.number().nullable(),
+});
+
+export const PendingDuplicateSchema = z.object({
+  itemId: z.number(),
+  batchId: z.string(),
+  awemeId: z.string(),
+  caption: z.string().nullable(),
+  authorHandle: z.string().nullable(),
+  existingFilePath: z.string(),
+  downloadedAt: z.number(),
+});
+
+export const BatchSummarySchema = z.object({
+  batchId: z.string(),
+  completed: z.number(),
+  skipped: z.number(),
+  failed: z.number(),
+  cancelled: z.number(),
+});
+
+export const QueueStateSchema = z.object({
+  running: z.boolean(),
+  paused: z.boolean(),
+  active: z.number(),
+});
+
+export const AddLinksResultSchema = z.object({
+  batchId: z.string(),
+  added: z.number(),
+  duplicatesRemoved: z.number(),
+  alreadyInQueue: z.number(),
+  invalid: z.array(z.object({ rawUrl: z.string(), code: z.enum(ERROR_CODES) })),
+  totalFound: z.number(),
+});
+
+export const LibraryEntrySchema = z.object({
+  downloadId: z.number(),
+  awemeId: z.string(),
+  canonicalUrl: z.string(),
+  authorHandle: z.string().nullable(),
+  authorName: z.string().nullable(),
+  caption: z.string().nullable(),
+  durationMs: z.number().nullable(),
+  coverUrl: z.string().nullable(),
+  filePath: z.string(),
+  fileSize: z.number().nullable(),
+  sourceStrategy: z.enum(SOURCE_STRATEGIES).nullable(),
+  watermarkRemoved: z.boolean(),
+  outroTrimmedMs: z.number().nullable(),
+  completedAt: z.number(),
+  fileExists: z.boolean(),
+  /** Dedup layer 4: same content under a different aweme_id. */
+  possibleRepost: z.boolean(),
+});
+
 /* ------------------------------------------------------------------ *
  * Renderer -> main (request/response)
  * ------------------------------------------------------------------ */
@@ -77,6 +147,9 @@ interface InvokeSpec {
   readonly response: z.ZodType;
 }
 
+const Ok = z.object({ ok: z.literal(true) });
+const ItemId = z.object({ itemId: z.number().int().positive() });
+
 /**
  * `satisfies Record<InvokeChannel, InvokeSpec>` is what keeps channels.ts and
  * this file in lockstep: a name without a schema fails to compile, and a
@@ -84,29 +157,79 @@ interface InvokeSpec {
  * the literal shapes survive for InvokeRequest/InvokeResponse inference.
  */
 export const invokeContract = {
-  'app:getVersions': {
-    request: z.void(),
-    response: VersionsSchema,
-  },
+  'app:getVersions': { request: z.void(), response: VersionsSchema },
   'app:getSidecarStatus': {
     request: z.void(),
-    response: z.object({
-      sidecars: z.array(SidecarStatusSchema),
-      capabilities: MediaCapabilitiesSchema,
-    }),
+    response: z.object({ sidecars: z.array(SidecarStatusSchema), capabilities: MediaCapabilitiesSchema }),
   },
-  'config:get': {
+  'app:updateExtractor': {
     request: z.void(),
-    response: AppConfigSchema,
+    response: z.object({ version: z.string().nullable(), updated: z.boolean(), message: z.string() }),
   },
-  'config:update': {
-    request: AppConfigSchema.partial(),
-    response: AppConfigSchema,
-  },
+  'config:get': { request: z.void(), response: AppConfigSchema },
+  'config:update': { request: AppConfigSchema.partial(), response: AppConfigSchema },
   'log:tail': {
     request: z.object({ limit: z.number().int().min(1).max(5000) }),
     response: z.object({ entries: z.array(LogEntrySchema) }),
   },
+
+  'queue:getSnapshot': {
+    request: z.void(),
+    response: z.object({ items: z.array(QueueItemSchema), state: QueueStateSchema }),
+  },
+  'queue:addLinks': {
+    request: z.object({ urls: z.array(z.string()).max(5000) }),
+    response: AddLinksResultSchema,
+  },
+  'queue:start': { request: z.void(), response: Ok },
+  'queue:pause': { request: z.void(), response: Ok },
+  'queue:resume': { request: z.void(), response: Ok },
+  'queue:cancelItem': { request: ItemId, response: Ok },
+  'queue:retryItem': { request: ItemId, response: Ok },
+  'queue:retryAllFailed': { request: z.void(), response: z.object({ retried: z.number() }) },
+  'queue:removeItem': { request: ItemId, response: Ok },
+  'queue:removeCompleted': { request: z.void(), response: z.object({ removed: z.number() }) },
+  'queue:clear': { request: z.void(), response: z.object({ removed: z.number() }) },
+  'queue:reorder': {
+    request: z.object({ orderedIds: z.array(z.number().int().positive()).max(5000) }),
+    response: Ok,
+  },
+  'queue:getPendingDuplicates': {
+    request: z.void(),
+    response: z.object({ pending: z.array(PendingDuplicateSchema) }),
+  },
+  'queue:resolveDuplicate': {
+    request: z.object({
+      itemId: z.number().int().positive(),
+      action: z.enum(DUPLICATE_ACTIONS),
+      applyToBatch: z.boolean(),
+    }),
+    response: Ok,
+  },
+
+  'library:list': {
+    request: z.object({
+      search: z.string().max(200).optional(),
+      limit: z.number().int().min(1).max(1000).optional(),
+      offset: z.number().int().min(0).optional(),
+    }),
+    response: z.object({ entries: z.array(LibraryEntrySchema), total: z.number() }),
+  },
+  'library:deleteRecord': {
+    request: z.object({ downloadId: z.number().int().positive() }),
+    response: Ok,
+  },
+  'library:deleteFile': {
+    request: z.object({ downloadId: z.number().int().positive() }),
+    response: Ok,
+  },
+
+  'system:chooseFolder': {
+    request: z.void(),
+    response: z.object({ path: z.string().nullable() }),
+  },
+  'system:showInFolder': { request: z.object({ path: z.string() }), response: Ok },
+  'system:openPath': { request: z.object({ path: z.string() }), response: Ok },
 } as const satisfies Record<InvokeChannel, InvokeSpec>;
 
 export type InvokeContract = typeof invokeContract;
@@ -117,8 +240,7 @@ export type InvokeResponse<C extends InvokeChannel> = z.infer<InvokeContract[C][
  * Main -> renderer (push events)
  *
  * Spec section 4: "Progress and state changes flow main -> renderer as events,
- * never as polling." Phase 1 only needs log streaming; queue progress events
- * land here in phase 3.
+ * never as polling."
  * ------------------------------------------------------------------ */
 
 export const eventContract = {
@@ -128,6 +250,13 @@ export const eventContract = {
     capabilities: MediaCapabilitiesSchema,
   }),
   'config:changed': AppConfigSchema,
+  'queue:itemUpdated': QueueItemSchema,
+  'queue:itemsAdded': z.object({ batchId: z.string(), items: z.array(QueueItemSchema) }),
+  'queue:itemRemoved': z.object({ itemId: z.number() }),
+  'queue:duplicatePending': PendingDuplicateSchema,
+  'queue:duplicateResolved': z.object({ itemId: z.number(), action: z.enum(DUPLICATE_ACTIONS) }),
+  'queue:batchComplete': BatchSummarySchema,
+  'queue:state': QueueStateSchema,
 } as const satisfies Record<EventChannel, z.ZodType>;
 
 export type EventContract = typeof eventContract;
@@ -138,3 +267,9 @@ export type SidecarStatus = z.infer<typeof SidecarStatusSchema>;
 export type MediaCapabilities = z.infer<typeof MediaCapabilitiesSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;
 export type SerializedError = z.infer<typeof SerializedErrorSchema>;
+export type QueueItemDto = z.infer<typeof QueueItemSchema>;
+export type PendingDuplicateDto = z.infer<typeof PendingDuplicateSchema>;
+export type BatchSummaryDto = z.infer<typeof BatchSummarySchema>;
+export type QueueStateDto = z.infer<typeof QueueStateSchema>;
+export type AddLinksResultDto = z.infer<typeof AddLinksResultSchema>;
+export type LibraryEntryDto = z.infer<typeof LibraryEntrySchema>;

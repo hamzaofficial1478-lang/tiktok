@@ -4,6 +4,8 @@ import { buildPaths } from './paths';
 import { createServices, type AppServices } from './services';
 import { EventBus, IpcRegistry } from './ipc/registry';
 import { registerAppEvents, registerAppHandlers } from './ipc/app.handlers';
+import { registerLibraryHandlers, registerQueueEvents, registerQueueHandlers } from './ipc/queue.handlers';
+import { registerSystemHandlers } from './ipc/system.handlers';
 
 /**
  * The Electron shell — the only file in the main process that imports
@@ -120,10 +122,14 @@ if (!app.requestSingleInstanceLock()) {
     const registry = new IpcRegistry(ipcMain, services.logging.log.child({ scope: 'ipc' }));
     eventBus = new EventBus(services.logging.log.child({ scope: 'ipc' }));
     registerAppHandlers(registry, services, app.getVersion());
+    registerQueueHandlers(registry, services);
+    registerLibraryHandlers(registry, services);
     registerAppEvents(eventBus, services);
+    registerQueueEvents(eventBus, services);
 
     const window = createWindow();
     eventBus.register(window.webContents);
+    registerSystemHandlers(registry, services, () => BrowserWindow.getAllWindows()[0] ?? null);
 
     const engine = services.queue;
     const queueLog = services.log;

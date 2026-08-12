@@ -4,11 +4,12 @@ A cross-platform desktop app that takes one or many TikTok links, downloads them
 in a strictly ordered queue, refuses to silently duplicate work, and saves clean
 video files with metadata.
 
-**Status: phases 1-5 of 8 complete.** The engine is functional end to end
-headlessly: links normalise and deduplicate, the queue orders and retries them,
-files download, verify and land with metadata, and watermark/outro
-post-processing runs when a clean source was not available. There is no product
-UI yet — that is phase 6.
+**Status: phases 1-6 of 8 complete.** The app is usable end to end: paste
+links, watch them download in order, browse the library, change settings, read
+logs. Motion and the 3D background are phase 7; packaging is phase 8.
+
+The UI has never been run by its author — this environment has no display — so
+`npm run dev` on a real machine is the outstanding verification.
 
 ## Getting started
 
@@ -56,6 +57,9 @@ src/
 │  └─ settings/      AppConfig store with atomic writes
 ├─ preload/          contextBridge surface; ~1 kB, requires only electron
 └─ renderer/         React + Tailwind; a synced read model, never the truth
+   ├─ screens/       AddLinks, Queue, Library, Settings, Logs
+   ├─ components/    primitives and the duplicate modal
+   └─ store/         Zustand, hydrated from IPC events
 ```
 
 `services.ts` deliberately has no Electron dependency, so the whole engine can
@@ -148,6 +152,6 @@ filter chain or encoder.
 | 3 | Queue engine: ordering, retries, rate limiting, dedup | done |
 | 4 | Download pipeline: `.part` handling, verification, templating | done |
 | 5 | Post-processing: watermark filtering tiers, outro detection | done |
-| 6 | UI shell: five screens on real engine state | next |
-| 7 | Motion + 3D polish, 300-item performance pass | |
+| 6 | UI shell: five screens on real engine state | done |
+| 7 | Motion + 3D polish, 300-item performance pass | next |
 | 8 | Packaging: NSIS, DMG, sidecar bundling, first run | |

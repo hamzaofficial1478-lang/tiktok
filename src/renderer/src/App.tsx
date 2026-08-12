@@ -1,35 +1,87 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useAppStore } from './store/app-store';
+import { invoke } from './lib/ipc';
+import { AddLinks } from './screens/AddLinks';
+import { Queue } from './screens/Queue';
+import { Library } from './screens/Library';
+import { Settings } from './screens/Settings';
+import { Logs } from './screens/Logs';
+import { DuplicateModal } from './components/DuplicateModal';
+import { Button } from './components/primitives';
 
-/**
- * Phase-1 renderer: a system-status panel, not the product UI.
- *
- * It exists to prove the boundary end to end — four IPC round trips, a live
- * push subscription, and the ffmpeg capability report — against real services.
- * The five screens in section 10 replace this in phase 6; the token classes
- * used here are the ones those screens will build on.
- */
+type Screen = 'add' | 'queue' | 'library' | 'settings' | 'logs';
 
-function StatusDot({ ok }: { ok: boolean | null }): React.JSX.Element {
-  const color = ok === null ? 'bg-ink-500' : ok ? 'bg-mint-400' : 'bg-danger-400';
-  return <span className={`inline-block size-2 rounded-full ${color}`} aria-hidden="true" />;
-}
+const NAV: readonly { id: Screen; label: string }[] = [
+  { id: 'add', label: 'Add links' },
+  { id: 'queue', label: 'Queue' },
+  { id: 'library', label: 'Library' },
+  { id: 'settings', label: 'Settings' },
+  { id: 'logs', label: 'Logs' },
+];
 
-function Panel({ title, children }: { title: string; children: React.ReactNode }): React.JSX.Element {
+function Toasts(): React.JSX.Element {
+  const toasts = useAppStore((s) => s.toasts);
+  const dismiss = useAppStore((s) => s.dismissToast);
+
   return (
-    <section className="elevation-card p-5">
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-ink-500">{title}</h2>
-      {children}
-    </section>
+    <div className="pointer-events-none fixed bottom-6 right-6 z-40 flex flex-col gap-2" aria-live="polite">
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          className={`pointer-events-auto flex items-center gap-3 rounded-xl border px-4 py-3 text-sm shadow-[var(--shadow-card)]
+            ${
+              toast.kind === 'error'
+                ? 'border-danger-400/30 bg-danger-400/12 text-danger-400'
+                : toast.kind === 'warning'
+                  ? 'border-warn-400/30 bg-warn-400/12 text-warn-400'
+                  : toast.kind === 'success'
+                    ? 'border-mint-500/30 bg-mint-500/12 text-mint-300'
+                    : 'border-white/8 bg-base-800 text-ink-300'
+            }`}
+        >
+          <span>{toast.message}</span>
+          {toast.action && (
+            <button onClick={toast.action.run} className="font-medium underline underline-offset-2">
+              {toast.action.label}
+            </button>
+          )}
+          <button onClick={() => dismiss(toast.id)} aria-label="Dismiss" className="text-ink-500 hover:text-ink-100">
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
   );
 }
 
 export default function App(): React.JSX.Element {
-  const { ready, versions, sidecars, capabilities, config, logs, error, bootstrap } = useAppStore();
+  const { ready, bootError, queueState, pendingDuplicates, bootstrap } = useAppStore();
+  const queueCount = useAppStore((s) => s.queueItems.size);
+  const [screen, setScreen] = useState<Screen>('add');
 
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  /** Keyboard shortcuts (section 10). */
+  useEffect(() => {
+    function onKey(event: KeyboardEvent): void {
+      const target = event.target as HTMLElement | null;
+      const typing = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA';
+
+      if (event.key === ' ' && !typing) {
+        event.preventDefault();
+        void invoke(queueState.paused ? 'queue:resume' : 'queue:pause');
+      }
+      if (event.key === 'f' && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        setScreen('library');
+      }
+    }
+
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [queueState.paused]);
 
   if (!ready) {
     return (
@@ -39,120 +91,71 @@ export default function App(): React.JSX.Element {
     );
   }
 
+  if (bootError) {
+    return (
+      <div className="grid h-full place-items-center p-8">
+        <div className="max-w-md rounded-xl border border-danger-400/30 bg-danger-400/10 p-6 text-center">
+          <p className="font-medium text-danger-400">The app could not start</p>
+          <p className="mt-2 text-sm text-ink-300">{bootError}</p>
+          <div className="mt-4 flex justify-center">
+            <Button onClick={() => window.location.reload()}>Try again</Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="h-full overflow-y-auto bg-base-900 p-8">
-      <header className="mb-8">
-        <h1 className="text-2xl font-semibold tracking-tight">TikTok Downloader</h1>
-        <p className="mt-1 text-sm text-ink-500">
-          Phase 1 · scaffold, IPC boundary, database, sidecars, logging
-        </p>
+    <div className="flex h-full flex-col bg-base-900">
+      <header className="flex shrink-0 items-center gap-1 border-b border-white/5 px-4 py-2">
+        <span className="mr-4 text-sm font-semibold tracking-tight text-ink-100">TikTok Downloader</span>
+
+        <nav className="flex gap-1" aria-label="Screens">
+          {NAV.map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setScreen(item.id)}
+              aria-current={screen === item.id ? 'page' : undefined}
+              className={`relative rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                screen === item.id ? 'bg-white/8 text-ink-100' : 'text-ink-500 hover:bg-white/4 hover:text-ink-300'
+              }`}
+            >
+              {item.label}
+              {item.id === 'queue' && queueCount > 0 && (
+                <span className="ml-2 rounded bg-base-700 px-1.5 py-0.5 text-[10px] text-ink-300">{queueCount}</span>
+              )}
+            </button>
+          ))}
+        </nav>
+
+        <div className="ml-auto flex items-center gap-3">
+          {pendingDuplicates.length > 0 && (
+            <span className="rounded-md bg-warn-400/20 px-2 py-1 text-xs font-medium text-warn-400">
+              {pendingDuplicates.length} question{pendingDuplicates.length === 1 ? '' : 's'}
+            </span>
+          )}
+          {queueState.running && (
+            <span className="flex items-center gap-2 text-xs text-ink-500">
+              <span
+                className={`size-2 rounded-full ${queueState.paused ? 'bg-warn-400' : 'bg-mint-400'}`}
+                aria-hidden="true"
+              />
+              {queueState.paused ? 'Paused' : `${queueState.active} active`}
+            </span>
+          )}
+        </div>
       </header>
 
-      {error && (
-        <div
-          className="mb-6 rounded-xl border border-danger-400/40 bg-danger-400/10 p-4 text-sm text-danger-400"
-          role="alert"
-        >
-          {error}
-        </div>
-      )}
+      <main className="min-h-0 flex-1 overflow-y-auto p-6">
+        {screen === 'add' && <AddLinks onQueued={() => setScreen('queue')} />}
+        {screen === 'queue' && <Queue />}
+        {screen === 'library' && <Library />}
+        {screen === 'settings' && <Settings />}
+        {screen === 'logs' && <Logs />}
+      </main>
 
-      <div className="grid gap-5 lg:grid-cols-2">
-        <Panel title="Versions">
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            {versions &&
-              Object.entries(versions).map(([key, value]) => (
-                <div key={key} className="contents">
-                  <dt className="text-ink-500 capitalize">{key}</dt>
-                  <dd className="font-mono text-ink-300">{value ?? 'not installed'}</dd>
-                </div>
-              ))}
-          </dl>
-        </Panel>
-
-        <Panel title="Sidecars">
-          <ul className="space-y-2 text-sm">
-            {sidecars.map((sidecar) => (
-              <li key={sidecar.name} className="flex items-baseline gap-2">
-                <StatusDot ok={sidecar.present ? sidecar.checksumValid !== false : false} />
-                <span className="font-mono text-ink-300">{sidecar.name}</span>
-                <span className="text-ink-500">{sidecar.error ?? sidecar.version ?? 'ok'}</span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
-
-        <Panel title="ffmpeg capabilities">
-          {capabilities?.probed ? (
-            <div className="space-y-3 text-sm">
-              <p className="flex items-center gap-2">
-                <StatusDot ok={capabilities.isGplBuild === false} />
-                <span className="text-ink-300">
-                  {capabilities.isGplBuild === null
-                    ? 'build licence unknown'
-                    : capabilities.isGplBuild
-                      ? 'GPL build — must not ship commercially'
-                      : 'LGPL build'}
-                </span>
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {Object.entries(capabilities.filters).map(([name, present]) => (
-                  <span
-                    key={name}
-                    className={`rounded-md px-2 py-0.5 font-mono text-xs ${
-                      present ? 'bg-mint-500/15 text-mint-300' : 'bg-base-700 text-ink-500 line-through'
-                    }`}
-                  >
-                    {name}
-                  </span>
-                ))}
-              </div>
-              {capabilities.missingRequired.length > 0 && (
-                <p className="text-warn-400">Missing: {capabilities.missingRequired.join(', ')}</p>
-              )}
-            </div>
-          ) : (
-            <p className="text-sm text-ink-500">ffmpeg not available — capabilities not probed.</p>
-          )}
-        </Panel>
-
-        <Panel title="Settings">
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-            {config &&
-              Object.entries(config).map(([key, value]) => (
-                <div key={key} className="contents">
-                  <dt className="text-ink-500">{key}</dt>
-                  <dd className="truncate font-mono text-ink-300">{String(value === '' ? '—' : value)}</dd>
-                </div>
-              ))}
-          </dl>
-        </Panel>
-      </div>
-
-      <div className="mt-5">
-        <Panel title={`Logs (${logs.length})`}>
-          <div className="max-h-72 overflow-y-auto font-mono text-xs leading-relaxed" aria-live="polite">
-            {logs.map((entry, index) => (
-              <div key={`${entry.time}-${index}`} className="flex gap-3">
-                <span className="shrink-0 text-ink-500">{new Date(entry.time).toLocaleTimeString()}</span>
-                <span
-                  className={`w-12 shrink-0 uppercase ${
-                    entry.level === 'error' || entry.level === 'fatal'
-                      ? 'text-danger-400'
-                      : entry.level === 'warn'
-                        ? 'text-warn-400'
-                        : 'text-accent-400'
-                  }`}
-                >
-                  {entry.level}
-                </span>
-                <span className="shrink-0 text-ink-500">{entry.scope}</span>
-                <span className="text-ink-300">{entry.msg}</span>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      </div>
+      <DuplicateModal />
+      <Toasts />
     </div>
   );
 }

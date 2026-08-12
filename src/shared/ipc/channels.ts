@@ -16,13 +16,48 @@
 export const INVOKE_CHANNELS = [
   'app:getVersions',
   'app:getSidecarStatus',
+  'app:updateExtractor',
   'config:get',
   'config:update',
   'log:tail',
+
+  'queue:getSnapshot',
+  'queue:addLinks',
+  'queue:start',
+  'queue:pause',
+  'queue:resume',
+  'queue:cancelItem',
+  'queue:retryItem',
+  'queue:retryAllFailed',
+  'queue:removeItem',
+  'queue:removeCompleted',
+  'queue:clear',
+  'queue:reorder',
+  'queue:getPendingDuplicates',
+  'queue:resolveDuplicate',
+
+  'library:list',
+  'library:deleteRecord',
+  'library:deleteFile',
+
+  'system:chooseFolder',
+  'system:showInFolder',
+  'system:openPath',
 ] as const;
 
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[number];
 
-export const EVENT_CHANNELS = ['log:entry', 'sidecars:changed', 'config:changed'] as const;
+export const EVENT_CHANNELS = [
+  'log:entry',
+  'sidecars:changed',
+  'config:changed',
+  'queue:itemUpdated',
+  'queue:itemsAdded',
+  'queue:itemRemoved',
+  'queue:duplicatePending',
+  'queue:duplicateResolved',
+  'queue:batchComplete',
+  'queue:state',
+] as const;
 
 export type EventChannel = (typeof EVENT_CHANNELS)[number];
