@@ -47,12 +47,13 @@ src/
 │  ├─ services.ts    assembles the engine; constructible without Electron
 │  ├─ ipc/           validating handler registry + event bus
 │  ├─ db/            better-sqlite3, migration runner, repositories
-│  ├─ media/         sidecar resolution, ffmpeg capability probe
-│  ├─ logging/       pino + self-contained rolling file stream
-│  └─ settings/      AppConfig store with atomic writes
 │  ├─ resolve/       URL normalizer, Extractor interface + yt-dlp
 │  ├─ queue/         QueueEngine, dedup layers, rate limiter, retry policy
-│  └─ download/      selection, streaming .part downloader, verify, naming
+│  ├─ download/      selection, streaming .part downloader, verify, naming
+│  ├─ postprocess/   watermark tiers, outro rails, LGPL filter graphs
+│  ├─ media/         sidecar resolution, ffmpeg/ffprobe wrappers
+│  ├─ logging/       pino + self-contained rolling file stream
+│  └─ settings/      AppConfig store with atomic writes
 ├─ preload/          contextBridge surface; ~1 kB, requires only electron
 └─ renderer/         React + Tailwind; a synced read model, never the truth
 ```
