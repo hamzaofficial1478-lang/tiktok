@@ -44,7 +44,10 @@ describe('migration runner', () => {
 
     const result = runMigrations(db, MIGRATIONS);
     expect(result.from).toBe(1);
-    expect(result.applied).toEqual(['002_app_meta']);
+    // Derived from the registry so adding a migration does not make this
+    // assertion stale — what is under test is "everything after the first",
+    // not any particular migration's name.
+    expect(result.applied).toEqual(MIGRATIONS.slice(1).map((m) => m.name));
   });
 
   it('refuses to open a database created by a newer build rather than damaging it', () => {
@@ -121,6 +124,8 @@ describe('migration runner', () => {
       'created_at',
       'started_at',
       'finished_at',
+      'source_strategy',
+      'watermark_removed',
     ]);
     expect(columns('downloads')).toContain('source_strategy');
     expect(columns('downloads')).toContain('file_exists');

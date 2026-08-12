@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { LibraryEntryDto } from '@shared/ipc/contract';
 import { invoke } from '../lib/ipc';
 import { useAppStore } from '../store/app-store';
-import { Button, EmptyState, Panel, formatBytes, formatDuration } from '../components/primitives';
+import { Button, EmptyState, Panel, WatermarkBadge, formatBytes, formatDuration } from '../components/primitives';
 
 /** Library — completed downloads, searchable, with the section 7 repost badge. */
 export function Library(): React.JSX.Element {
@@ -80,22 +80,10 @@ export function Library(): React.JSX.Element {
                       @{entry.authorHandle ?? 'unknown'}
                     </p>
                     <div className="flex shrink-0 gap-1">
-                      {entry.watermarkRemoved && entry.sourceStrategy === 'clean_source' && (
-                        <span
-                          title="Downloaded from a watermark-free source; never re-encoded"
-                          className="rounded bg-mint-500/20 px-1.5 py-0.5 text-[10px] font-medium text-mint-300"
-                        >
-                          clean source
-                        </span>
-                      )}
-                      {(entry.sourceStrategy === 'removelogo' || entry.sourceStrategy === 'blur') && (
-                        <span
-                          title="The watermark was filtered out, which required re-encoding"
-                          className="rounded bg-warn-400/20 px-1.5 py-0.5 text-[10px] font-medium text-warn-400"
-                        >
-                          re-encoded
-                        </span>
-                      )}
+                      <WatermarkBadge
+                        sourceStrategy={entry.sourceStrategy}
+                        watermarkRemoved={entry.watermarkRemoved}
+                      />
                       {entry.possibleRepost && (
                         <span
                           title="Matches other content in the library; perceptual hashing can produce false positives"

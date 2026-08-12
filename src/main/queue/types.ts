@@ -65,6 +65,13 @@ export interface QueueItemSnapshot {
   readonly createdAt: number;
   readonly startedAt: number | null;
   readonly finishedAt: number | null;
+  /**
+   * How the file was obtained, written once the item completes. Null while the
+   * item is still in flight — the queue row is honest about not knowing yet,
+   * rather than defaulting to a value that would show a badge prematurely.
+   */
+  readonly sourceStrategy: SourceStrategy | null;
+  readonly watermarkRemoved: boolean | null;
 }
 
 export function toSnapshot(row: QueueItemRow): QueueItemSnapshot {
@@ -86,6 +93,8 @@ export function toSnapshot(row: QueueItemRow): QueueItemSnapshot {
     createdAt: row.created_at,
     startedAt: row.started_at,
     finishedAt: row.finished_at,
+    sourceStrategy: row.source_strategy,
+    watermarkRemoved: row.watermark_removed === null ? null : row.watermark_removed === 1,
   };
 }
 

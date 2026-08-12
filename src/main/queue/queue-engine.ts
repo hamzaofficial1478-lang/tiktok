@@ -492,7 +492,15 @@ export class QueueEngine {
       );
     }
 
-    this.finish(row.id, 'completed', { progress: 1, errorCode: null, errorDetail: null });
+    // Carried onto the queue row as well as the download record, so the Queue
+    // screen can say what happened to the watermark without a library lookup.
+    this.finish(row.id, 'completed', {
+      progress: 1,
+      errorCode: null,
+      errorDetail: null,
+      sourceStrategy: result.sourceStrategy,
+      watermarkRemoved: result.watermarkRemoved ? 1 : 0,
+    });
   }
 
   /* ---------------------------------------------------------------- *

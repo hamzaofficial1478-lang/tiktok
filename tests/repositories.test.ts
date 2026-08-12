@@ -199,3 +199,28 @@ describe('videos repository', () => {
     );
   });
 });
+
+describe('watermark verdict on a queue row (section 9)', () => {
+  it('starts unknown and survives a round trip', () => {
+    const [row] = queue.enqueue(urls(1));
+    expect(row?.source_strategy).toBeNull();
+    expect(row?.watermark_removed).toBeNull();
+
+    const updated = queue.update(row?.id as number, { sourceStrategy: 'removelogo', watermarkRemoved: 1 });
+    expect(updated?.source_strategy).toBe('removelogo');
+    expect(updated?.watermark_removed).toBe(1);
+  });
+
+  it('clears a stale verdict when the row is claimed again', () => {
+    const [row] = queue.enqueue(urls(1));
+    const id = row?.id as number;
+    queue.update(id, { status: 'queued', sourceStrategy: 'clean_source', watermarkRemoved: 1 });
+
+    // A new attempt has not decided anything yet, so the row must not carry
+    // the last attempt's answer into it.
+    const claimed = queue.claimNext();
+    expect(claimed?.id).toBe(id);
+    expect(claimed?.source_strategy).toBeNull();
+    expect(claimed?.watermark_removed).toBeNull();
+  });
+});

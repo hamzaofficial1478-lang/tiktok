@@ -4,7 +4,16 @@ import { describeError } from '@shared/errors';
 import type { QueueItemDto } from '@shared/ipc/contract';
 import { selectOrderedItems, useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
-import { Button, EmptyState, ErrorNote, Panel, ProgressRing, StatusChip, formatBytes } from '../components/primitives';
+import {
+  Button,
+  EmptyState,
+  ErrorNote,
+  Panel,
+  ProgressRing,
+  StatusChip,
+  WatermarkBadge,
+  formatBytes,
+} from '../components/primitives';
 
 /**
  * Queue — the core screen (section 10).
@@ -15,6 +24,14 @@ import { Button, EmptyState, ErrorNote, Panel, ProgressRing, StatusChip, formatB
  */
 
 const ROW_HEIGHT = 64;
+
+/** Plain-language version of `source_strategy` for the expanded row. */
+const STRATEGY_DETAIL: Record<string, string> = {
+  clean_source: 'Removed — TikTok served a watermark-free stream, so the file is untouched',
+  removelogo: 'Removed — the watermark was filtered out and the video re-encoded',
+  blur: 'Obscured — the watermark area was blurred and the video re-encoded',
+  raw: 'Still present — no clean stream was offered and removal was not attempted',
+};
 
 function speedLabel(item: QueueItemDto): string {
   if (item.status !== 'downloading' || !item.bytesTotal) return '';
@@ -53,6 +70,8 @@ function Row({
           <p className="truncate text-xs text-ink-500">{descriptor ? descriptor.title : speedLabel(item)}</p>
         </button>
 
+        <WatermarkBadge sourceStrategy={item.sourceStrategy} watermarkRemoved={item.watermarkRemoved} />
+
         <StatusChip status={item.status} />
 
         <div className="flex shrink-0 gap-1">
@@ -85,6 +104,12 @@ function Row({
             )}
             <dt className="text-ink-500">Attempts</dt>
             <dd className="text-ink-300">{item.attemptCount}</dd>
+            {item.sourceStrategy && (
+              <>
+                <dt className="text-ink-500">Watermark</dt>
+                <dd className="text-ink-300">{STRATEGY_DETAIL[item.sourceStrategy] ?? item.sourceStrategy}</dd>
+              </>
+            )}
           </dl>
 
           {item.errorCode && (

@@ -91,6 +91,55 @@ export function StatusChip({ status }: { status: string }): React.JSX.Element {
   );
 }
 
+/**
+ * What happened to the watermark, in one glance (section 9).
+ *
+ * "clean source" and "re-encoded" are deliberately different badges: the first
+ * means the untouched, watermark-free stream was downloaded byte for byte, the
+ * second means pixels were filtered and the video was encoded again. A file
+ * that still carries the watermark says so rather than showing nothing, so an
+ * absent badge only ever means "not finished yet".
+ */
+export function WatermarkBadge({
+  sourceStrategy,
+  watermarkRemoved,
+}: {
+  sourceStrategy: string | null;
+  watermarkRemoved: boolean | null;
+}): React.JSX.Element | null {
+  if (sourceStrategy === 'clean_source' && watermarkRemoved) {
+    return (
+      <span
+        title="Downloaded from a watermark-free source; never re-encoded"
+        className="shrink-0 rounded bg-mint-500/20 px-1.5 py-0.5 text-[10px] font-medium text-mint-300"
+      >
+        clean source
+      </span>
+    );
+  }
+  if (sourceStrategy === 'removelogo' || sourceStrategy === 'blur') {
+    return (
+      <span
+        title="The watermark was filtered out, which required re-encoding"
+        className="shrink-0 rounded bg-warn-400/20 px-1.5 py-0.5 text-[10px] font-medium text-warn-400"
+      >
+        re-encoded
+      </span>
+    );
+  }
+  if (sourceStrategy === 'raw') {
+    return (
+      <span
+        title="No watermark-free source was offered and removal was not attempted, so the watermark is still in the video"
+        className="shrink-0 rounded bg-base-700 px-1.5 py-0.5 text-[10px] font-medium text-ink-300"
+      >
+        watermarked
+      </span>
+    );
+  }
+  return null;
+}
+
 /** Circular progress ring for a queue row (section 10). */
 export function ProgressRing({ value, size = 28 }: { value: number; size?: number }): React.JSX.Element {
   const radius = (size - 4) / 2;

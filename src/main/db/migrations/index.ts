@@ -1,5 +1,6 @@
 import init001 from './001_init.sql?raw';
 import appMeta002 from './002_app_meta.sql?raw';
+import queueStrategy003 from './003_queue_strategy.sql?raw';
 import type { Migration } from '../migrator';
 
 /**
@@ -16,4 +17,5 @@ import type { Migration } from '../migrator';
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: '001_init', sql: init001 },
   { version: 2, name: '002_app_meta', sql: appMeta002 },
+  { version: 3, name: '003_queue_strategy', sql: queueStrategy003 },
 ];

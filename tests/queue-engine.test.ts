@@ -343,3 +343,49 @@ describe('dedup layer 4 — content-level reposts', () => {
     expect(harness.engine.getSnapshot()[0]?.status).toBe('completed');
   });
 });
+
+describe('watermark reporting on the queue row (section 9)', () => {
+  it('records how the watermark was handled, per item', async () => {
+    harness = createHarness();
+    const clean = awemeIdFor(1);
+    const filtered = awemeIdFor(2);
+    const untouched = awemeIdFor(3);
+    harness.pipeline.strategyFor(filtered, 'removelogo', true);
+    harness.pipeline.strategyFor(untouched, 'raw', false);
+
+    harness.engine.addLinks([makeUrl(1), makeUrl(2), makeUrl(3)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    const byAweme = new Map(harness.engine.getSnapshot().map((i) => [i.awemeId, i]));
+    // "clean source" and "re-encoded" are different claims and the row has to
+    // be able to tell them apart; 'raw' must not masquerade as either.
+    expect(byAweme.get(clean)).toMatchObject({ sourceStrategy: 'clean_source', watermarkRemoved: true });
+    expect(byAweme.get(filtered)).toMatchObject({ sourceStrategy: 'removelogo', watermarkRemoved: true });
+    expect(byAweme.get(untouched)).toMatchObject({ sourceStrategy: 'raw', watermarkRemoved: false });
+  });
+
+  it('says nothing until the item has actually finished', async () => {
+    harness = createHarness();
+    harness.engine.addLinks([makeUrl(1)]);
+
+    // A queued row has no answer yet, and must not imply one.
+    expect(harness.engine.getSnapshot()[0]).toMatchObject({
+      sourceStrategy: null,
+      watermarkRemoved: null,
+    });
+  });
+
+  it('does not claim a verdict for an item that failed', async () => {
+    harness = createHarness();
+    harness.pipeline.failFor(awemeIdFor(1), ['DISK_FULL']);
+    harness.engine.addLinks([makeUrl(1)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    const row = harness.engine.getSnapshot()[0];
+    expect(row?.status).toBe('failed');
+    expect(row?.sourceStrategy).toBeNull();
+    expect(row?.watermarkRemoved).toBeNull();
+  });
+});

@@ -1,5 +1,11 @@
 import type { Database } from 'better-sqlite3';
-import { ACTIVE_FOR_DEDUP_STATUSES, IN_FLIGHT_STATUSES, type DuplicateAction, type QueueStatus } from '@shared/types';
+import {
+  ACTIVE_FOR_DEDUP_STATUSES,
+  IN_FLIGHT_STATUSES,
+  type DuplicateAction,
+  type QueueStatus,
+  type SourceStrategy,
+} from '@shared/types';
 import type { ErrorCode } from '@shared/errors';
 
 export interface QueueItemRow {
@@ -20,6 +26,8 @@ export interface QueueItemRow {
   created_at: number;
   started_at: number | null;
   finished_at: number | null;
+  source_strategy: SourceStrategy | null;
+  watermark_removed: number | null;
 }
 
 export interface EnqueueInput {
@@ -43,6 +51,8 @@ export interface QueueItemPatch {
   duplicateAction?: DuplicateAction | null;
   startedAt?: number | null;
   finishedAt?: number | null;
+  sourceStrategy?: SourceStrategy | null;
+  watermarkRemoved?: number | null;
 }
 
 const POSITION_SEQ_KEY = 'queue_position_seq';
@@ -140,12 +150,15 @@ export class QueueItemsRepository {
    * 4, a read-then-write would let two workers claim the same row and download
    * it twice. RETURNING gives back the row as claimed, so the caller never has
    * to re-read and wonder whether it changed underneath.
+   *
+   * The watermark columns are cleared on claim so a retry never displays the
+   * previous attempt's badge while the new attempt is still running.
    */
   claimNext(now: number = Date.now()): QueueItemRow | undefined {
     return this.db
       .prepare<[number], QueueItemRow>(
         `UPDATE queue_items
-            SET status = 'resolving', started_at = ?
+            SET status = 'resolving', started_at = ?, source_strategy = NULL, watermark_removed = NULL
           WHERE id = (SELECT id FROM queue_items WHERE status = 'queued' ORDER BY position ASC LIMIT 1)
       RETURNING *`,
       )
@@ -191,6 +204,8 @@ export class QueueItemsRepository {
       duplicateAction: 'duplicate_action',
       startedAt: 'started_at',
       finishedAt: 'finished_at',
+      sourceStrategy: 'source_strategy',
+      watermarkRemoved: 'watermark_removed',
     };
 
     const sets: string[] = [];

@@ -13,6 +13,7 @@ import { QueueEngine, type QueueEngineOptions } from '@main/queue/queue-engine';
 import type { MediaPipeline, PipelineInput, PipelineResult, QueueEvent } from '@main/queue/types';
 import { DEFAULT_CONFIG, type AppConfig } from '@shared/config-schema';
 import { AppError, type ErrorCode } from '@shared/errors';
+import type { SourceStrategy } from '@shared/types';
 import type { Clock } from '@main/clock';
 
 export const silent = pino({ level: 'silent' });
@@ -97,6 +98,7 @@ export class FakePipeline implements MediaPipeline {
   readonly processed: string[] = [];
   private failures = new Map<string, ErrorCode[]>();
   private hangs = new Set<string>();
+  private strategies = new Map<string, { sourceStrategy: SourceStrategy; watermarkRemoved: boolean }>();
 
   /**
    * Shares the harness's virtual filesystem so a completed download actually
@@ -121,6 +123,11 @@ export class FakePipeline implements MediaPipeline {
    */
   clearHangs(): void {
     this.hangs.clear();
+  }
+
+  /** Stands in for a video TikTok only offers with the watermark burnt in. */
+  strategyFor(awemeId: string, sourceStrategy: SourceStrategy, watermarkRemoved: boolean): void {
+    this.strategies.set(awemeId, { sourceStrategy, watermarkRemoved });
   }
 
   async process(input: PipelineInput): Promise<PipelineResult> {
@@ -150,8 +157,7 @@ export class FakePipeline implements MediaPipeline {
       fileSize: 1_000_000,
       sha256: `sha-${awemeId}`,
       phash: `phash-${awemeId}`,
-      sourceStrategy: 'clean_source',
-      watermarkRemoved: true,
+      ...(this.strategies.get(awemeId) ?? { sourceStrategy: 'clean_source' as SourceStrategy, watermarkRemoved: true }),
       outroTrimmedMs: null,
     };
   }

@@ -83,6 +83,8 @@ export const QueueItemSchema = z.object({
   createdAt: z.number(),
   startedAt: z.number().nullable(),
   finishedAt: z.number().nullable(),
+  sourceStrategy: z.enum(SOURCE_STRATEGIES).nullable(),
+  watermarkRemoved: z.boolean().nullable(),
 });
 
 export const PendingDuplicateSchema = z.object({
