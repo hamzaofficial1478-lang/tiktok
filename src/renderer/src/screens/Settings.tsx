@@ -1,5 +1,6 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { AppConfig } from '@shared/config-schema';
+import type { InvokeResponse } from '@shared/ipc/contract';
 import { previewTemplate } from '@shared/filename-template';
 import { useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
@@ -16,6 +17,8 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   );
 }
 
+type ProxyTestState = InvokeResponse<'system:testProxy'> | 'testing' | null;
+
 const inputClass =
   'rounded-lg border border-white/8 bg-base-900/60 px-3 py-2 text-sm text-ink-100 focus:border-accent-500/50 focus:outline-none';
 
@@ -26,8 +29,31 @@ export function Settings(): React.JSX.Element {
   const versions = useAppStore((s) => s.versions);
   const capabilities = useAppStore((s) => s.capabilities);
   const [updating, setUpdating] = useState(false);
+  /** null = not tested since the URL last changed; 'testing' = in flight. */
+  const [proxyTest, setProxyTest] = useState<ProxyTestState>(null);
+  const proxyUrl = config?.proxyUrl ?? '';
+
+  // A result describes one specific proxy URL, so editing the field invalidates
+  // it. Showing a stale green tick against a changed proxy would be a lie.
+  useEffect(() => {
+    setProxyTest(null);
+  }, [proxyUrl]);
 
   if (!config) return <div className="p-8 text-ink-500">Loading settings…</div>;
+
+  async function testProxy(): Promise<void> {
+    setProxyTest('testing');
+    try {
+      const result = await invoke('system:testProxy', { proxyUrl });
+      setProxyTest(result);
+    } catch (err) {
+      setProxyTest({
+        ok: false,
+        message: err instanceof Error ? err.message : String(err),
+        latencyMs: null,
+      });
+    }
+  }
 
   async function set<K extends keyof AppConfig>(key: K, value: AppConfig[K]): Promise<void> {
     try {
@@ -110,13 +136,44 @@ export function Settings(): React.JSX.Element {
             />
           </Field>
 
-          <Field label="Proxy" hint="http(s):// or socks5://. Leave empty for none.">
-            <input
-              value={config.proxyUrl}
-              onChange={(event) => void set('proxyUrl', event.target.value)}
-              placeholder="socks5://127.0.0.1:9050"
-              className={inputClass}
-            />
+          <Field
+            label="Proxy"
+            hint="http(s):// or socks5://. Leave empty for none. Used for resolving links and downloading."
+          >
+            <div className="flex gap-2">
+              <input
+                value={config.proxyUrl}
+                onChange={(event) => void set('proxyUrl', event.target.value)}
+                placeholder="socks5://127.0.0.1:9050"
+                className={`${inputClass} min-w-0 flex-1`}
+              />
+              <Button
+                variant="secondary"
+                disabled={config.proxyUrl.trim() === '' || proxyTest === 'testing'}
+                onClick={() => void testProxy()}
+              >
+                {proxyTest === 'testing' ? 'Testing…' : 'Test'}
+              </Button>
+            </div>
+
+            {/* A proxy that parses but does not work is the failure this
+                setting invites, so its state is always on screen. */}
+            {config.proxyUrl.trim() === '' ? (
+              <p className="mt-2 text-xs text-ink-500">
+                No proxy — connecting to TikTok directly.
+              </p>
+            ) : proxyTest === 'testing' ? (
+              <p className="mt-2 text-xs text-ink-300">Contacting TikTok through the proxy…</p>
+            ) : proxyTest === null ? (
+              <p className="mt-2 text-xs text-warn-400">
+                Proxy is active but untested — press Test to confirm it reaches TikTok.
+              </p>
+            ) : (
+              <p className={`mt-2 text-xs ${proxyTest.ok ? 'text-mint-300' : 'text-danger-400'}`}>
+                {proxyTest.ok ? '✓ ' : '✕ '}
+                {proxyTest.message}
+              </p>
+            )}
           </Field>
         </div>
       </Panel>

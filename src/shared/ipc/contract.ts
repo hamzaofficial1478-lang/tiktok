@@ -232,6 +232,15 @@ export const invokeContract = {
   },
   'system:showInFolder': { request: z.object({ path: z.string() }), response: Ok },
   'system:openPath': { request: z.object({ path: z.string() }), response: Ok },
+  'system:testProxy': {
+    request: z.object({ proxyUrl: z.string() }),
+    response: z.object({
+      ok: z.boolean(),
+      /** Ready to show verbatim; says what was reached and how, or what failed. */
+      message: z.string(),
+      latencyMs: z.number().nullable(),
+    }),
+  },
 } as const satisfies Record<InvokeChannel, InvokeSpec>;
 
 export type InvokeContract = typeof invokeContract;

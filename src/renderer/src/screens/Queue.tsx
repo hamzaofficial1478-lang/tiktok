@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { describeError } from '@shared/errors';
 import type { QueueItemDto } from '@shared/ipc/contract';
-import { selectOrderedItems, useAppStore } from '../store/app-store';
+import { orderedItems, useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
 import {
   Button,
@@ -139,7 +139,10 @@ function Row({
 }
 
 export function Queue(): React.JSX.Element {
-  const items = useAppStore(selectOrderedItems);
+  // Subscribe to the Map, sort in a memo. Sorting inside the selector would
+  // hand zustand a new array every render — see orderedItems' note.
+  const queueItems = useAppStore((s) => s.queueItems);
+  const items = useMemo(() => orderedItems(queueItems), [queueItems]);
   const queueState = useAppStore((s) => s.queueState);
   const pending = useAppStore((s) => s.pendingDuplicates);
   const [expandedId, setExpandedId] = useState<number | null>(null);

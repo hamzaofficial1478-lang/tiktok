@@ -43,6 +43,7 @@ export const INVOKE_CHANNELS = [
   'system:chooseFolder',
   'system:showInFolder',
   'system:openPath',
+  'system:testProxy',
 ] as const;
 
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[number];

@@ -1,4 +1,4 @@
-import { dialog, shell, type BrowserWindow } from 'electron';
+import { dialog, session, shell, type BrowserWindow } from 'electron';
 import { AppError } from '@shared/errors';
 import type { AppServices } from '../services';
 import type { IpcRegistry } from './registry';
@@ -34,6 +34,92 @@ export function registerSystemHandlers(
     const error = await shell.openPath(path);
     if (error) throw new AppError('PERMISSION_DENIED', `could not open ${path}: ${error}`);
     return { ok: true as const };
+  });
+
+  /**
+   * "Test proxy" — answers the only question that matters about a proxy
+   * setting: does TikTok actually come back through it?
+   *
+   * A syntactic check on the URL is close to worthless here; a typo'd port and
+   * a dead SOCKS server both parse perfectly and both fail silently later, as a
+   * pile of network errors on individual videos. So this makes a real request
+   * to TikTok through a throwaway session configured with exactly this proxy,
+   * and reports what came back.
+   *
+   * The session is partitioned and short-lived so testing a proxy never
+   * disturbs the one the app is really using, and a rejected proxy leaves no
+   * trace in the app's own networking.
+   */
+  registry.handle('system:testProxy', async ({ proxyUrl }) => {
+    const trimmed = proxyUrl.trim();
+    if (trimmed === '') {
+      return { ok: false, message: 'No proxy is set, so nothing was tested.', latencyMs: null };
+    }
+
+    const partition = `proxy-test-${Date.now()}`;
+    const testSession = session.fromPartition(partition, { cache: false });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12_000);
+    const startedAt = Date.now();
+
+    try {
+      // proxyRules takes host:port style rules; the scheme is honoured for
+      // socks5:// and http(s)://, which is exactly what the config allows.
+      await testSession.setProxy({ proxyRules: trimmed });
+
+      // Session.fetch, not net.fetch: only the session-scoped call routes
+      // through the proxy configured above.
+      const response = await testSession.fetch('https://www.tiktok.com/', {
+        method: 'HEAD',
+        signal: controller.signal,
+        // A redirect still proves the proxy carried the request there.
+        redirect: 'manual',
+      });
+
+      const latencyMs = Date.now() - startedAt;
+
+      if (response.status >= 500) {
+        return {
+          ok: false,
+          message: `The proxy connected but TikTok replied ${response.status}. The proxy may be blocked.`,
+          latencyMs,
+        };
+      }
+      if (response.status === 403) {
+        return {
+          ok: false,
+          message: 'The proxy works, but TikTok refused it (403). Try a proxy in a different country.',
+          latencyMs,
+        };
+      }
+
+      return {
+        ok: true,
+        message: `Reached TikTok through the proxy in ${latencyMs} ms (HTTP ${response.status}).`,
+        latencyMs,
+      };
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const aborted = controller.signal.aborted;
+      services.log.warn({ err: detail }, 'proxy test failed');
+      return {
+        ok: false,
+        message: aborted
+          ? 'Timed out after 12s. The proxy is unreachable, or too slow to be usable.'
+          : `Could not connect through the proxy: ${detail}`,
+        latencyMs: null,
+      };
+    } finally {
+      clearTimeout(timeout);
+      // Leaving a configured session around would keep the proxy alive for any
+      // later request that happened to pick this partition.
+      try {
+        await testSession.closeAllConnections();
+        await testSession.clearStorageData();
+      } catch {
+        // Best effort; the partition is discarded either way.
+      }
+    }
   });
 
   /**

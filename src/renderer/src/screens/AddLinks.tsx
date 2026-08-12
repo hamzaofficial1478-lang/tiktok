@@ -1,4 +1,4 @@
-import { useMemo, useState, type ChangeEvent, type DragEvent } from 'react';
+import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
 import { parse } from '@shared/url-parse';
 import { describeError } from '@shared/errors';
 import { useAppStore } from '../store/app-store';
@@ -68,6 +68,8 @@ const DOT: Record<LineStatus, string> = {
 export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Element {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const pushToast = useAppStore((s) => s.pushToast);
 
   const lines = useMemo(() => analyse(value), [value]);
@@ -96,13 +98,34 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
     }
   }
 
+  /**
+   * .txt/.csv import, section 12. Read in the renderer because a File the user
+   * chose or dropped is already in memory — no filesystem access is involved,
+   * so this does not need to cross IPC.
+   */
+  async function importFiles(files: readonly File[]): Promise<void> {
+    if (files.length === 0) return;
+    try {
+      const texts = await Promise.all(files.map((file) => file.text()));
+      const added = texts.join('\n');
+      setValue((current) => (current ? `${current}\n${added}` : added));
+      const names = files.map((f) => f.name).join(', ');
+      pushToast({ kind: 'info', message: `Loaded ${names}` });
+    } catch (err) {
+      pushToast({ kind: 'error', message: `Could not read the file: ${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
   function onDrop(event: DragEvent<HTMLTextAreaElement>): void {
     event.preventDefault();
-    const file = event.dataTransfer.files[0];
-    if (!file) return;
-    // .txt/.csv import, section 12. Read in the renderer because a dropped
-    // File is already in memory — no filesystem access is involved.
-    void file.text().then((text) => setValue((current) => (current ? `${current}\n${text}` : text)));
+    setDragging(false);
+    void importFiles([...event.dataTransfer.files]);
+  }
+
+  function onFileInput(event: ChangeEvent<HTMLInputElement>): void {
+    void importFiles([...(event.target.files ?? [])]);
+    // Reset so picking the same file twice fires change again.
+    event.target.value = '';
   }
 
   return (
@@ -112,12 +135,18 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
           value={value}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setValue(event.target.value)}
           onDrop={onDrop}
-          onDragOver={(event) => event.preventDefault()}
+          onDragOver={(event) => {
+            event.preventDefault();
+            if (!dragging) setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
           spellCheck={false}
-          placeholder={'https://www.tiktok.com/@creator/video/7123456789012345678\nhttps://vm.tiktok.com/ZMabcdef/\n\nOr drop a .txt or .csv file here.'}
+          placeholder={'https://www.tiktok.com/@creator/video/7123456789012345678\nhttps://vm.tiktok.com/ZMabcdef/\n\nPaste as many as you like, one per line — or use Import file.'}
           aria-label="TikTok links, one per line"
-          className="h-56 w-full resize-none rounded-xl border border-white/8 bg-base-900/60 p-4 font-mono text-sm
-            text-ink-100 placeholder:text-ink-500/60 focus:border-accent-500/50 focus:outline-none"
+          className={`h-56 w-full resize-none rounded-xl border bg-base-900/60 p-4 font-mono text-sm
+            text-ink-100 placeholder:text-ink-500/60 focus:outline-none ${
+              dragging ? 'border-accent-500 bg-accent-500/5' : 'border-white/8 focus:border-accent-500/50'
+            }`}
         />
 
         <div className="mt-4 flex flex-wrap items-center gap-4">
@@ -134,6 +163,19 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
           </span>
 
           <div className="ml-auto flex gap-2">
+            {/* A real file picker, not just the drop target: dropping a file is
+                undiscoverable unless you already know it works. */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.csv,text/plain,text/csv"
+              multiple
+              onChange={onFileInput}
+              className="hidden"
+            />
+            <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
+              Import file…
+            </Button>
             {value !== '' && (
               <Button variant="ghost" onClick={() => setValue('')}>
                 Clear

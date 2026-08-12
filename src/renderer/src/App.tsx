@@ -8,6 +8,7 @@ import { Library } from './screens/Library';
 import { Settings } from './screens/Settings';
 import { Logs } from './screens/Logs';
 import { DuplicateModal } from './components/DuplicateModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { Button } from './components/primitives';
 import { transition, usePrefersReducedMotion } from './lib/motion-prefs';
 
@@ -76,6 +77,7 @@ function Toasts(): React.JSX.Element {
 export default function App(): React.JSX.Element {
   const { ready, bootError, queueState, pendingDuplicates, bootstrap } = useAppStore();
   const queueCount = useAppStore((s) => s.queueItems.size);
+  const proxyUrl = useAppStore((s) => s.config?.proxyUrl ?? '');
   const [screen, setScreen] = useState<Screen>('add');
   const reducedMotion = usePrefersReducedMotion();
   const setDuplicatePromptDismissed = useAppStore((s) => s.setDuplicatePromptDismissed);
@@ -157,6 +159,17 @@ export default function App(): React.JSX.Element {
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
+          {/* Routing through a proxy changes what TikTok serves and how fast,
+              so it is never left invisible. */}
+          {proxyUrl.trim() !== '' && (
+            <button
+              onClick={() => setScreen('settings')}
+              title={`All requests go through ${proxyUrl}`}
+              className="rounded-md bg-accent-500/15 px-2 py-1 text-xs font-medium text-accent-300 hover:bg-accent-500/25"
+            >
+              proxy on
+            </button>
+          )}
           {pendingDuplicates.length > 0 && (
             // The way back to a question dismissed with "Later".
             <button
@@ -179,11 +192,13 @@ export default function App(): React.JSX.Element {
       </header>
 
       <main className="min-h-0 flex-1 overflow-y-auto p-6">
-        {screen === 'add' && <AddLinks onQueued={() => setScreen('queue')} />}
-        {screen === 'queue' && <Queue />}
-        {screen === 'library' && <Library />}
-        {screen === 'settings' && <Settings />}
-        {screen === 'logs' && <Logs />}
+        <ErrorBoundary screenKey={screen}>
+          {screen === 'add' && <AddLinks onQueued={() => setScreen('queue')} />}
+          {screen === 'queue' && <Queue />}
+          {screen === 'library' && <Library />}
+          {screen === 'settings' && <Settings />}
+          {screen === 'logs' && <Logs />}
+        </ErrorBoundary>
       </main>
 
       <DuplicateModal />

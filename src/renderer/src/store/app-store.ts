@@ -197,7 +197,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 }));
 
-/** Queue rows in processing order. Sorting by position is a hard guarantee. */
-export function selectOrderedItems(state: AppState): QueueItemDto[] {
-  return [...state.queueItems.values()].sort((a, b) => a.position - b.position);
+/**
+ * Queue rows in processing order. Sorting by position is a hard guarantee.
+ *
+ * Deliberately NOT a zustand selector. It builds a new array on every call, and
+ * zustand v5 compares snapshots with `Object.is` — passing this to
+ * `useAppStore()` makes React see a changed snapshot on every render, which is
+ * an infinite render loop, not a stale-data bug. Callers subscribe to the
+ * `queueItems` Map (a stable reference between store writes) and run this
+ * inside `useMemo`.
+ */
+export function orderedItems(items: ReadonlyMap<number, QueueItemDto>): QueueItemDto[] {
+  return [...items.values()].sort((a, b) => a.position - b.position);
 }
