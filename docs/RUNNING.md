@@ -41,10 +41,11 @@ If it prints anything lower than `v20`, install the LTS from
 
 **Git**, from <https://git-scm.com> if you do not already have it.
 
-**Windows only, and only if step 3 fails:** the "Desktop development with C++"
-workload from the Visual Studio Build Tools. You almost certainly will not need
-it — `better-sqlite3` ships a prebuilt binary for Windows x64. Do not install it
-pre-emptively.
+**That is the whole list.** No Visual Studio, no C++ build tools, no Python.
+The one native module in the app, `better-sqlite3`, is built against Node-API
+and ships a ready-made binary for every platform, so nothing is compiled during
+install. If some guide tells you to install Visual Studio Build Tools for this
+project, it is out of date.
 
 ## Step 2 — Get the code
 
@@ -62,10 +63,9 @@ npm install
 
 This takes a few minutes. Electron is a large download.
 
-The `postinstall` script runs `electron-builder install-app-deps`, which
-recompiles `better-sqlite3` against Electron's ABI rather than Node's. If you
-later see a `NODE_MODULE_VERSION` mismatch when the app starts, that step did
-not take — run `npm run rebuild`.
+Nothing is compiled from source, so there is no build-tool step and no
+`postinstall`. If this command finishes without a red `npm error`, you are
+done — move on.
 
 ## Step 4 — Fetch yt-dlp
 
@@ -226,7 +226,9 @@ testing any recent build will do. `docs/SIDECARS.md` covers what to ship.
 
 | Symptom | Cause and fix |
 | ------- | ------------- |
-| `NODE_MODULE_VERSION` mismatch at startup | `better-sqlite3` was built for Node, not Electron. `npm run rebuild`. |
+| `npm install` fails on `node-gyp`, `MSBuild`, or "Could not find any Visual Studio installation" | Nothing here needs compiling, so this is a stale `postinstall` trying to rebuild `better-sqlite3`. Pull the latest commit — it was removed. The install itself already succeeded: check `dir node_modules\.bin` and carry on. |
+| "Attempting to build a module with a space in the path" | Same cause as above, triggered by a Windows username containing a space. Same fix; no need to move the project. |
+| `NODE_MODULE_VERSION` mismatch at startup | Should not happen — better-sqlite3 v13 is Node-API and ABI-stable. If it does, `npm run rebuild`. |
 | `fetch:sidecars` fails on the yt-dlp download | Network or proxy blocking `github.com`. The binary can be placed at `resources/bin/<platform>-<arch>/yt-dlp[.exe]` by hand. |
 | Every link fails with `EXTRACTOR_FAILED` | yt-dlp is missing or out of date. `npm run fetch:sidecars` again — TikTok changes things and yt-dlp releases often. |
 | Links fail with `RATE_LIMITED` | Too many requests too fast. Raise the request delay in Settings; the default is 1.5s. |

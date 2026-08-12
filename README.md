@@ -61,9 +61,18 @@ before a phase is considered done.
 
 ### Native module note
 
-`better-sqlite3` is a native module and must be compiled against Electron's ABI,
-not Node's. `npm install` handles this via `electron-builder install-app-deps`.
-If the app starts with a `NODE_MODULE_VERSION` mismatch, run `npm run rebuild`.
+`better-sqlite3` is the only native module that runs inside Electron, and as of
+v13 it is built against **Node-API**, whose ABI is stable across both Node and
+Electron versions. The npm package ships a prebuilt binary for every platform
+(`node_modules/better-sqlite3/prebuilds/`) and has no install script, so there
+is **nothing to compile** — no Visual Studio, no Xcode, no Python, no node-gyp.
+
+This is why there is no `postinstall` step. An earlier version of this file ran
+`electron-builder install-app-deps`, which is what older, ABI-specific
+better-sqlite3 releases needed. Against v13 it compiles nothing useful and
+merely fails the install on any machine without a C++ toolchain. `npm run
+rebuild` remains available as a manual escape hatch if a future dependency
+genuinely needs an ABI-specific build.
 
 ## Architecture
 
