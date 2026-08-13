@@ -28,6 +28,7 @@ export function Settings(): React.JSX.Element {
   const pushToast = useAppStore((s) => s.pushToast);
   const versions = useAppStore((s) => s.versions);
   const capabilities = useAppStore((s) => s.capabilities);
+  const ffmpegMissing = useAppStore((s) => !s.sidecars.find((sc) => sc.name === 'ffmpeg')?.present);
   const [updating, setUpdating] = useState(false);
   /** null = not tested since the URL last changed; 'testing' = in flight. */
   const [proxyTest, setProxyTest] = useState<ProxyTestState>(null);
@@ -214,6 +215,18 @@ export function Settings(): React.JSX.Element {
             </select>
           </Field>
         </div>
+
+        {/* Both of the settings above degrade silently without ffmpeg, which is
+            the worst way for a feature to be unavailable: the user sets it,
+            nothing happens, and nothing says why. */}
+        {ffmpegMissing && (
+          <p className="mt-4 rounded-lg border border-warn-400/30 bg-warn-400/10 p-3 text-xs text-warn-400">
+            <strong className="font-medium">ffmpeg is not installed.</strong> Watermark-free downloads still work
+            — those come from a clean source and need no processing. But filtering a watermark out of the pixels,
+            and trimming a TikTok end card, both require ffmpeg. Without it those two steps are skipped and the
+            video is saved exactly as TikTok served it. See docs/SIDECARS.md.
+          </p>
+        )}
 
         <div className="mt-4 grid gap-2">
           {(

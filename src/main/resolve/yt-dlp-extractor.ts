@@ -69,6 +69,50 @@ interface YtDlpPayload {
   entries?: unknown[];
 }
 
+/**
+ * One way of asking TikTok for a video.
+ *
+ * yt-dlp's default route scrapes the web page, and that is the route that
+ * breaks first: TikTok changes the page, or serves an interstitial instead of
+ * it, and the result is "Unexpected response from webpage request" for every
+ * link regardless of how current the extractor is. Its mobile API route is a
+ * different endpoint with a different response shape, and it commonly keeps
+ * working when the web one does not.
+ *
+ * Registering these as separate extractors in the chain is what turns "the app
+ * cannot download anything" into "the first route failed, the second worked",
+ * which is how a downloader survives TikTok changing something. Asking every
+ * user to find a proxy is not a substitute for having a second route.
+ */
+const BROWSER_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+
+export interface YtDlpStrategy {
+  /** Appears in the log and in the extractor's name. */
+  readonly label: string;
+  /** Extra arguments placed before the URL. */
+  readonly args: readonly string[];
+}
+
+/**
+ * Ordered cheapest-and-most-likely first.
+ *
+ * The API hostnames are TikTok's own regional endpoints. They are worth trying
+ * in sequence because availability differs by region — the exact situation
+ * where a user is told to go and find a proxy today.
+ */
+export const YT_DLP_STRATEGIES: readonly YtDlpStrategy[] = [
+  { label: 'web', args: [] },
+  {
+    label: 'mobile api',
+    args: ['--extractor-args', 'tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com'],
+  },
+  {
+    label: 'mobile api (alt region)',
+    args: ['--extractor-args', 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com'],
+  },
+];
+
 export interface YtDlpExtractorOptions {
   /** Absolute path to the sidecar, or null when it is not installed. */
   readonly binaryPath: string | null;
@@ -80,12 +124,16 @@ export interface YtDlpExtractorOptions {
   readonly proxyUrl?: string | (() => string | undefined);
   readonly timeoutMs?: number;
   readonly log?: Logger;
+  /** Which route this instance uses. Defaults to the plain web one. */
+  readonly strategy?: YtDlpStrategy;
 }
 
 export class YtDlpExtractor implements Extractor {
-  readonly name = 'yt-dlp';
+  readonly name: string;
 
-  constructor(private readonly options: YtDlpExtractorOptions) {}
+  constructor(private readonly options: YtDlpExtractorOptions) {
+    this.name = options.strategy ? `yt-dlp (${options.strategy.label})` : 'yt-dlp';
+  }
 
   async isAvailable(): Promise<boolean> {
     return this.options.binaryPath !== null;
@@ -106,7 +154,14 @@ export class YtDlpExtractor implements Extractor {
       '--skip-download',
       '--socket-timeout',
       '15',
+      // TikTok rejects requests that do not look like a browser, and yt-dlp's
+      // default agent is one of the first things a site starts filtering on.
+      '--user-agent',
+      BROWSER_USER_AGENT,
     ];
+
+    if (this.options.strategy) args.push(...this.options.strategy.args);
+
     const proxy = typeof this.options.proxyUrl === 'function' ? this.options.proxyUrl() : this.options.proxyUrl;
     if (proxy) args.push('--proxy', proxy);
     args.push(canonicalUrl);

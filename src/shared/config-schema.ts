@@ -86,7 +86,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   rateLimitJitterMs: 400,
 
   watermarkMode: 'auto',
-  outroMode: 'never',
+  // On by default: a TikTok end card is not part of the video anyone wanted,
+  // and the rails in outro-detector.ts are strict enough that the failure mode
+  // is "did nothing" rather than "cut something real".
+  outroMode: 'always',
 
   audioOnly: false,
   detectReposts: false,

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { YtDlpExtractor } from '@main/resolve/yt-dlp-extractor';
+import { isTerminalForChain } from '@main/resolve/yt-dlp-errors';
+import { YtDlpExtractor, YT_DLP_STRATEGIES } from '@main/resolve/yt-dlp-extractor';
 import type { ProcessResult, ProcessRunner } from '@main/resolve/process-runner';
 import {
   AWEME_ID,
@@ -283,5 +284,78 @@ describe('failure diagnostics', () => {
 
     // An empty stderr must not produce a log line that says nothing.
     expect(entries[0]).toContain('no output');
+  });
+});
+
+describe('multiple routes to TikTok', () => {
+  const url = 'https://www.tiktok.com/@a/video/7123456789012345678';
+
+  function capturing(results: Partial<ProcessResult>[]): { runner: ProcessRunner; calls: string[][] } {
+    const calls: string[][] = [];
+    let index = 0;
+    return {
+      calls,
+      runner: {
+        run: async (_cmd, args) => {
+          calls.push([...args]);
+          const result = results[Math.min(index++, results.length - 1)] ?? {};
+          return { stdout: '', stderr: '', exitCode: 1, timedOut: false, ...result };
+        },
+      },
+    };
+  }
+
+  it('names each route so the log says which one was used', () => {
+    const names = YT_DLP_STRATEGIES.map(
+      (strategy) => new YtDlpExtractor({ binaryPath: '/fake', runner: capturing([]).runner, strategy }).name,
+    );
+
+    expect(names).toEqual(['yt-dlp (web)', 'yt-dlp (mobile api)', 'yt-dlp (mobile api (alt region))']);
+    // Distinct names matter: the chain logs which extractor failed, and three
+    // identically named ones would make that log useless.
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('sends the API hostname only for the routes that use one', async () => {
+    for (const strategy of YT_DLP_STRATEGIES) {
+      const { runner, calls } = capturing([{ exitCode: 1, stderr: 'ERROR: nope' }]);
+      const extractor = new YtDlpExtractor({ binaryPath: '/fake', runner, strategy });
+
+      await extractor.resolve(url).catch(() => undefined);
+
+      const args = calls[0] ?? [];
+      if (strategy.label === 'web') {
+        expect(args).not.toContain('--extractor-args');
+      } else {
+        expect(args).toContain('--extractor-args');
+        expect(args.some((a) => a.startsWith('tiktok:api_hostname='))).toBe(true);
+      }
+      // Every route presents as a browser; a default agent is among the first
+      // things a site filters on.
+      expect(args).toContain('--user-agent');
+      // The URL is always last, after every flag.
+      expect(args[args.length - 1]).toBe(url);
+    }
+  });
+
+  it('is exactly the failure the web route hit that the others exist for', async () => {
+    // The real stderr from the user's machine, verbatim.
+    const webFailure = {
+      exitCode: 1,
+      stderr:
+        'ERROR: [TikTok] 7123456789012345678: Unexpected response from webpage request; please report this issue on https://github.com/yt-dlp/yt-dlp/issues',
+    };
+
+    const { runner } = capturing([webFailure]);
+    const extractor = new YtDlpExtractor({
+      binaryPath: '/fake',
+      runner,
+      strategy: YT_DLP_STRATEGIES[0] as (typeof YT_DLP_STRATEGIES)[number],
+    });
+
+    // EXTRACTOR_FAILED is deliberately not terminal for the chain, so the
+    // mobile routes get their turn rather than the item failing outright.
+    await expect(extractor.resolve(url)).rejects.toMatchObject({ code: 'EXTRACTOR_FAILED' });
+    expect(isTerminalForChain('EXTRACTOR_FAILED')).toBe(false);
   });
 });

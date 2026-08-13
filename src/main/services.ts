@@ -21,7 +21,7 @@ import { ChildProcessRunner } from './resolve/process-runner';
 import { Ffprobe } from './media/ffprobe';
 import { DownloadPipeline } from './download/pipeline';
 import { PostProcessor } from './postprocess/processor';
-import { YtDlpExtractor } from './resolve/yt-dlp-extractor';
+import { YtDlpExtractor, YT_DLP_STRATEGIES } from './resolve/yt-dlp-extractor';
 import { ExtractorChain } from './resolve/extractor-chain';
 import type { Extractor } from './resolve/types';
 import type { MediaCapabilities, SidecarStatus } from '@shared/ipc/contract';
@@ -212,17 +212,30 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     log: logging.log.child({ scope: 'extractor-update' }),
   });
 
+  /**
+   * One extractor per route, tried in order.
+   *
+   * A single route is a single point of failure, and it is the one that failed:
+   * yt-dlp's web path returned "Unexpected response from webpage request" for
+   * every link while the extractor itself was perfectly current. The mobile API
+   * routes below hit different endpoints with a different response shape and
+   * commonly work when the web page does not, which is the difference between
+   * a downloader that survives a TikTok change and one that tells its users to
+   * go and find a proxy.
+   */
   const extractor = new ExtractorChain(
-    [
-      new YtDlpExtractor({
-        get binaryPath(): string | null {
-          return sidecars.resolve('yt-dlp').path;
-        },
-        runner: processRunner,
-        proxyUrl: () => config.get().proxyUrl || undefined,
-        log: logging.log.child({ scope: 'yt-dlp' }),
-      }),
-    ],
+    YT_DLP_STRATEGIES.map(
+      (strategy) =>
+        new YtDlpExtractor({
+          get binaryPath(): string | null {
+            return sidecars.resolve('yt-dlp').path;
+          },
+          runner: processRunner,
+          strategy,
+          proxyUrl: () => config.get().proxyUrl || undefined,
+          log: logging.log.child({ scope: `yt-dlp/${strategy.label}` }),
+        }),
+    ),
     logging.log.child({ scope: 'extractor' }),
   );
 

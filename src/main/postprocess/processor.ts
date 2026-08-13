@@ -143,12 +143,22 @@ export class PostProcessor {
     }
 
     /**
-     * Outro detection only runs on watermarked sources (section 9): a clean
-     * `play_addr` stream typically has no end card, and running an aggressive
-     * trimmer over it risks a false positive for no benefit.
+     * Outro detection only runs on watermarked sources (section 9).
+     *
+     * The end card and the watermark come from the same place: TikTok's
+     * `download_addr` variant, the one built for sharing. The clean
+     * `play_addr` stream is the raw upload and carries neither, so trimming it
+     * would mean decoding and re-encoding a file that is already correct, for
+     * a cut that has nothing to remove — and every extra pass is another chance
+     * to take three seconds of someone's actual video.
      */
     let outroTrimmedMs: number | null = null;
     let outroCutAtMs: number | null = null;
+
+    if (input.outroMode !== 'never' && input.sourceStrategy === 'clean_source') {
+      log.info('clean source: no end card to trim');
+    }
+
     if (input.outroMode !== 'never' && input.sourceStrategy !== 'clean_source') {
       const signals = await sampleOutroSignals(input.filePath, durationMs, {
         ffmpegPath,
