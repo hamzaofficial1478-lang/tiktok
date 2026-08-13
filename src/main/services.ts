@@ -9,6 +9,7 @@ import { DownloadsRepository } from './db/repositories/downloads';
 import { QueueItemsRepository } from './db/repositories/queue-items';
 import { AppMetaRepository, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
 import { SidecarResolver } from './media/sidecars';
+import { ExtractorUpdater, extractorAgeDays } from './media/extractor-updater';
 import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
 import { UrlNormalizer } from './resolve/url-normalizer';
 import { HttpRedirectResolver } from './resolve/redirect-resolver';
@@ -52,6 +53,7 @@ export interface AppServices {
   };
   readonly queue: QueueEngine;
   /** Latest sidecar snapshot; refreshed on demand and after an extractor update. */
+  readonly extractorUpdater: ExtractorUpdater;
   getSidecarStatus(): { sidecars: SidecarStatus[]; capabilities: MediaCapabilities };
   refreshSidecars(): Promise<{ sidecars: SidecarStatus[]; capabilities: MediaCapabilities }>;
   shutdown(): Promise<void>;
@@ -64,10 +66,32 @@ export interface CreateServicesOptions {
   appVersion: string;
   /** Overrides the real download pipeline; used by tests and the harness. */
   pipeline?: MediaPipeline;
+  /**
+   * Called when a background extractor update changes the sidecar picture, so
+   * the Settings screen reflects the new version without a restart.
+   */
+  onSidecarsChanged?: (snapshot: { sidecars: SidecarStatus[]; capabilities: MediaCapabilities }) => void;
+  /**
+   * Permits the start-up extractor check to make a network request.
+   *
+   * Off by default so that tests, harnesses and any future embedding of these
+   * services are hermetic — only the real app opts in. The user's own
+   * `autoUpdateExtractor` setting still gates it on top of this.
+   */
+  allowBackgroundUpdates?: boolean;
 }
 
+/**
+ * How old a yt-dlp build may be before start-up checks for a newer one.
+ *
+ * Short, because the cost of being wrong is asymmetric: an unnecessary check is
+ * one HTTP request in the background, while a stale extractor is every download
+ * failing with a message that reads like the app is broken.
+ */
+const EXTRACTOR_STALE_DAYS = 7;
+
 export async function createServices(options: CreateServicesOptions): Promise<AppServices> {
-  const { paths, isDev } = options;
+  const { paths, isDev, onSidecarsChanged } = options;
 
   // Logging comes up first so that everything after it, including failures in
   // config or the database, lands in a file the user can send us.
@@ -103,6 +127,9 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
 
   const sidecars = new SidecarResolver({
     resourcesRoot: paths.resources,
+    // Updates land in userData and win over the bundled copy, so an installed
+    // app can update an extractor it has no permission to overwrite in place.
+    overrideRoot: paths.userData,
     allowPathFallback: isDev,
     log: logging.log.child({ scope: 'sidecars' }),
   });
@@ -126,6 +153,47 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
   await refreshSidecars();
 
   /**
+   * Keep the extractor current without being asked.
+   *
+   * yt-dlp versions are release dates, and TikTok breaks builds within weeks —
+   * the failure it produces, "Unexpected response from webpage request", is
+   * indistinguishable from a broken app to anyone who does not know to go and
+   * press a button in Settings. Checking on start turns the most common cause
+   * of "nothing downloads" into something that fixes itself.
+   *
+   * Deliberately not awaited: a slow or unreachable release server must not
+   * delay the window, and a failed check is a logged warning, never a blocked
+   * launch. The extractor path is read fresh on every resolve, so a mid-session
+   * replacement is picked up by the next item without a restart.
+   */
+  const maybeUpdateExtractor = (): void => {
+    if (!config.get().autoUpdateExtractor) return;
+
+    const current = snapshot.sidecars.find((s) => s.name === 'yt-dlp')?.version ?? null;
+    const age = extractorAgeDays(current);
+    if (age !== null && age < EXTRACTOR_STALE_DAYS) {
+      log.info({ version: current, ageDays: age }, 'extractor is recent; skipping the update check');
+      return;
+    }
+
+    log.info({ version: current, ageDays: age }, 'extractor looks stale; updating in the background');
+    void extractorUpdater
+      .update(current)
+      .then(async (result) => {
+        if (result.updated) {
+          await refreshSidecars();
+          onSidecarsChanged?.(snapshot);
+        }
+        log.info({ result: result.message }, 'background extractor check finished');
+      })
+      .catch((err: unknown) => {
+        // Never fatal: a stale extractor still works for anything TikTok has
+        // not changed yet, and the user can retry from Settings.
+        log.warn({ err: err instanceof Error ? err.message : String(err) }, 'background extractor update failed');
+      });
+  };
+
+  /**
    * The extractor chain. yt-dlp is the only implementation today; section 2
    * requires the seam so a second one can be slotted in ahead of or behind it
    * when TikTok next changes, without touching the queue.
@@ -134,6 +202,13 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
    * so a "Update extractor" run mid-session takes effect immediately.
    */
   const processRunner = new ChildProcessRunner();
+
+  const extractorUpdater = new ExtractorUpdater({
+    overrideRoot: paths.userData,
+    runner: processRunner,
+    log: logging.log.child({ scope: 'extractor-update' }),
+  });
+
   const extractor = new ExtractorChain(
     [
       new YtDlpExtractor({
@@ -214,6 +289,10 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
    * Deliberately conditional: a queue the user paused before quitting stays
    * paused, because resuming it unbidden would be its own kind of surprise.
    */
+  // Fired before any queue resume, so a stale extractor gets a chance to be
+  // replaced before it fails the first item of a restored batch.
+  if (options.allowBackgroundUpdates) maybeUpdateExtractor();
+
   const wasRunning = appMeta.getBoolean(QUEUE_RUNNING_KEY, false);
   const pending = queue.hasPendingWork();
   if (wasRunning && pending) {
@@ -249,6 +328,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       queueItems,
     },
     sidecars,
+    extractorUpdater,
     resolution: { normalizer, extractor },
     queue,
     getSidecarStatus: () => snapshot,

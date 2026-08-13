@@ -158,32 +158,13 @@ export function registerSystemHandlers(
   registry.handle('app:updateExtractor', async () => {
     const before = services.getSidecarStatus().sidecars.find((s) => s.name === 'yt-dlp')?.version ?? null;
 
-    const { spawn } = await import('node:child_process');
-    const scriptPath = new URL('../../scripts/fetch-sidecars.mjs', import.meta.url).pathname;
-
-    const exitCode = await new Promise<number>((resolve) => {
-      const child = spawn(process.execPath, [scriptPath, '--only=yt-dlp'], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-        windowsHide: true,
-      });
-      child.on('error', () => resolve(-1));
-      child.on('close', (code) => resolve(code ?? -1));
-    });
-
-    if (exitCode !== 0) {
-      throw new AppError(
-        'EXTRACTOR_FAILED',
-        'the extractor could not be updated. Check the network connection and the Logs screen.',
-      );
-    }
-
-    const refreshed = await services.refreshSidecars();
-    const after = refreshed.sidecars.find((s) => s.name === 'yt-dlp')?.version ?? null;
-
-    return {
-      version: after,
-      updated: after !== before,
-      message: after === before ? 'The extractor is already up to date.' : `Updated the extractor to ${after ?? '?'}.`,
-    };
+    // Downloaded in process. This previously spawned scripts/fetch-sidecars.mjs
+    // via `new URL(...).pathname`, which on Windows yields a leading slash and
+    // percent-encoded spaces — so for anyone whose home directory contains a
+    // space the script could never be found, and the failure was reported as a
+    // network problem. A packaged build has no scripts/ directory either.
+    const result = await services.extractorUpdater.update(before);
+    await services.refreshSidecars();
+    return result;
   });
 }

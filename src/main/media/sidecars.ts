@@ -50,6 +50,11 @@ export interface SidecarResolverOptions {
   /** Root that contains `bin/` — the repo's `resources/` in dev, `process.resourcesPath` when packaged. */
   resourcesRoot: string;
   /**
+   * Writable root that holds updated binaries, checked before the bundled
+   * ones. userData in the app; omitted in tests that only exercise bundling.
+   */
+  overrideRoot?: string;
+  /**
    * Allow falling back to a binary on PATH when the bundled one is absent.
    * On in development; a packaged build must use its own binaries so that what
    * we test is what the user runs.
@@ -63,7 +68,7 @@ export interface SidecarResolverOptions {
 export interface ResolvedSidecar {
   readonly name: SidecarName;
   readonly path: string | null;
-  readonly source: 'bundled' | 'path' | 'missing';
+  readonly source: 'updated' | 'bundled' | 'path' | 'missing';
 }
 
 /** Locate an executable on PATH without shelling out (`which`/`where` are not portable). */
@@ -118,6 +123,20 @@ export class SidecarResolver {
 
   resolve(name: SidecarName): ResolvedSidecar {
     const filename = binaryFilename(name, this.platform);
+
+    /**
+     * An updated binary wins over the bundled one.
+     *
+     * Updates are written under userData because an installed app sits in a
+     * directory the user cannot write to. If the bundled copy were still
+     * preferred here, "Update extractor" would download successfully and then
+     * change nothing, which is worse than failing.
+     */
+    if (this.options.overrideRoot) {
+      const updated = join(this.options.overrideRoot, 'bin', platformDir(this.platform, this.arch), filename);
+      if (existsSync(updated)) return { name, path: updated, source: 'updated' };
+    }
+
     const bundled = join(this.binRoot, platformDir(this.platform, this.arch), filename);
     if (existsSync(bundled)) return { name, path: bundled, source: 'bundled' };
 

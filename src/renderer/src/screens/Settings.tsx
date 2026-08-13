@@ -218,6 +218,7 @@ export function Settings(): React.JSX.Element {
         <div className="mt-4 grid gap-2">
           {(
             [
+              ['autoUpdateExtractor', 'Keep the extractor up to date automatically'],
               ['audioOnly', 'Extract audio only (MP3/M4A)'],
               ['detectReposts', 'Detect reposts (slower: decodes each video again)'],
               ['hardwareAcceleration', 'Use hardware encoding when available'],

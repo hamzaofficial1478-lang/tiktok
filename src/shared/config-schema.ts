@@ -54,6 +54,8 @@ export const AppConfigSchema = z.object({
    * over every file, for a badge most users never look at.
    */
   detectReposts: z.boolean(),
+  /** Check for a newer yt-dlp at start-up. On by default: a stale extractor is the most common cause of every download failing. */
+  autoUpdateExtractor: z.boolean(),
 
   hardwareAcceleration: z.boolean(),
   /** Empty string means no proxy. Validated as a URL only when non-empty. */
@@ -70,7 +72,7 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
-export const CONFIG_SCHEMA_VERSION = 2;
+export const CONFIG_SCHEMA_VERSION = 3;
 
 export const DEFAULT_CONFIG: AppConfig = {
   outputDir: '',
@@ -88,6 +90,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 
   audioOnly: false,
   detectReposts: false,
+  autoUpdateExtractor: true,
 
   hardwareAcceleration: true,
   proxyUrl: '',

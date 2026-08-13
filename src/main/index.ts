@@ -144,7 +144,15 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(async () => {
     const paths = buildPaths(app.getPath('userData'), resolveResourcesRoot(), safeVideosPath());
-    services = await createServices({ paths, isDev, appVersion: app.getVersion() });
+    services = await createServices({
+      paths,
+      isDev,
+      appVersion: app.getVersion(),
+      allowBackgroundUpdates: true,
+      // Fires only once the background check finishes, by which point the bus
+      // below has been created; the optional chain covers a quit before then.
+      onSidecarsChanged: (snapshot) => eventBus?.emit('sidecars:changed', snapshot),
+    });
 
     const registry = new IpcRegistry(ipcMain, services.logging.log.child({ scope: 'ipc' }));
     eventBus = new EventBus(services.logging.log.child({ scope: 'ipc' }));
