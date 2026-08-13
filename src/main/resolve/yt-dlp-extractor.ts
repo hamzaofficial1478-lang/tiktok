@@ -42,6 +42,8 @@ interface YtDlpFormat {
   vcodec?: string | null;
   acodec?: string | null;
   preference?: number | null;
+  /** Headers TikTok's CDN requires for this URL: Referer, User-Agent, Cookie. */
+  http_headers?: Record<string, unknown> | null;
 }
 
 interface YtDlpPayload {
@@ -248,6 +250,29 @@ export class YtDlpExtractor implements Extractor {
   }
 }
 
+/**
+ * Keeps only the headers that are safe and useful to replay on the download.
+ *
+ * Everything yt-dlp reports here is needed by TikTok's CDN, but a blanket
+ * copy would also carry hop-by-hop headers that break a second request made by
+ * a different HTTP client — Accept-Encoding in particular, since our fetch
+ * negotiates its own compression and would then be handed a body it did not
+ * ask for. Range is excluded because the downloader sets its own when resuming.
+ */
+const REPLAYABLE_HEADERS = new Set(['user-agent', 'referer', 'cookie', 'origin', 'accept', 'accept-language']);
+
+function sanitiseHeaders(raw: Record<string, unknown> | null | undefined): Record<string, string> {
+  if (!raw || typeof raw !== 'object') return {};
+
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value !== 'string' || value === '') continue;
+    if (!REPLAYABLE_HEADERS.has(key.toLowerCase())) continue;
+    headers[key.toLowerCase()] = value;
+  }
+  return headers;
+}
+
 function toStream(format: YtDlpFormat): StreamCandidate {
   const formatId = format.format_id ?? 'unknown';
   const note = format.format_note ?? '';
@@ -273,6 +298,7 @@ function toStream(format: YtDlpFormat): StreamCandidate {
     // A clean stream always outranks a watermarked one, whatever yt-dlp's own
     // preference says; resolution breaks ties within each group.
     preference: (watermarked ? 0 : 1_000_000) + (format.height ?? 0) * 10 + (format.preference ?? 0),
+    headers: sanitiseHeaders(format.http_headers),
   };
 }
 

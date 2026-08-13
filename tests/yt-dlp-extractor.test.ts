@@ -359,3 +359,68 @@ describe('multiple routes to TikTok', () => {
     expect(isTerminalForChain('EXTRACTOR_FAILED')).toBe(false);
   });
 });
+
+describe('CDN headers', () => {
+  it('captures the headers TikTok requires on the stream URL', async () => {
+    // Without these the CDN answers 403 even though extraction just succeeded
+    // and the video is public — the failure that looked like a geo-block.
+    const payload = {
+      ...CLEAN_AND_WATERMARKED,
+      formats: [
+        {
+          format_id: 'play_addr',
+          url: 'https://v16.tiktokcdn.com/clean.mp4',
+          ext: 'mp4',
+          height: 1920,
+          vcodec: 'h264',
+          http_headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+            Referer: 'https://www.tiktok.com/',
+            Cookie: 'ttwid=1%7Cabcdef',
+          },
+        },
+      ],
+    };
+
+    const resolved = await extractorFor(payload).resolve(CANONICAL);
+    const headers = resolved.streams[0]?.headers ?? {};
+
+    expect(headers['referer']).toBe('https://www.tiktok.com/');
+    expect(headers['cookie']).toBe('ttwid=1%7Cabcdef');
+    // Lowercased so the downloader's own defaults are overridden, not doubled.
+    expect(headers['user-agent']).toContain('Mozilla/5.0');
+  });
+
+  it('drops headers that must not be replayed by a different HTTP client', async () => {
+    const payload = {
+      ...CLEAN_AND_WATERMARKED,
+      formats: [
+        {
+          format_id: 'play_addr',
+          url: 'https://v16.tiktokcdn.com/clean.mp4',
+          vcodec: 'h264',
+          http_headers: {
+            Referer: 'https://www.tiktok.com/',
+            // Our fetch negotiates its own encoding and sets its own Range when
+            // resuming; replaying these corrupts the transfer.
+            'Accept-Encoding': 'gzip, deflate',
+            Range: 'bytes=0-100',
+            Connection: 'keep-alive',
+          },
+        },
+      ],
+    };
+
+    const headers = (await extractorFor(payload).resolve(CANONICAL)).streams[0]?.headers ?? {};
+
+    expect(headers['referer']).toBe('https://www.tiktok.com/');
+    expect(headers['accept-encoding']).toBeUndefined();
+    expect(headers['range']).toBeUndefined();
+    expect(headers['connection']).toBeUndefined();
+  });
+
+  it('yields an empty set rather than undefined when a format reports none', async () => {
+    const resolved = await extractorFor(CLEAN_AND_WATERMARKED).resolve(CANONICAL);
+    expect(resolved.streams[0]?.headers).toEqual({});
+  });
+});

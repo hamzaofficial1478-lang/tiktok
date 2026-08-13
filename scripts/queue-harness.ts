@@ -92,6 +92,7 @@ class HarnessExtractor implements Extractor {
           filesize: 3_000_000,
           ext: 'mp4',
           codec: 'h264',
+          headers: {},
           hasAudio: true,
           preference: 1_000_000,
         },

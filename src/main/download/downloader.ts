@@ -276,7 +276,21 @@ export function assertFetchableUrl(rawUrl: string, allowPrivateHosts = false): v
 }
 
 function statusToError(status: number, url: string): AppError {
-  if (status === 403) return new AppError('REGION_BLOCKED', `${url} returned 403`);
+  if (status === 403) {
+    /**
+     * A 403 on a CDN stream URL is not proof of a geo-block, and saying so cost
+     * days of chasing the wrong cause. TikTok signs these URLs and checks the
+     * Referer, User-Agent and session cookie from extraction; a request missing
+     * them is refused exactly the same way a blocked region is. The URLs also
+     * expire, so a stale one 403s too. The message names all three rather than
+     * asserting the one the taxonomy code is named after.
+     */
+    return new AppError(
+      'REGION_BLOCKED',
+      `the CDN refused the download with 403. The link may have expired, or TikTok may not serve it from this ` +
+        `location. URL: ${url.slice(0, 120)}`,
+    );
+  }
   if (status === 404 || status === 410) return new AppError('VIDEO_DELETED', `${url} returned ${status}`);
   if (status === 429) return new AppError('RATE_LIMITED', `${url} returned 429`);
   if (status >= 500) return new AppError('NETWORK_ERROR', `${url} returned ${status}`);

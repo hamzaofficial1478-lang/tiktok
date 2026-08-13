@@ -95,6 +95,16 @@ export class DownloadPipeline implements MediaPipeline {
       signal: input.signal,
       expectedBytes: selection.stream.filesize,
       skipSpaceCheck: true,
+      /**
+       * The headers the extractor said this URL needs.
+       *
+       * TikTok's CDN checks Referer, User-Agent and the session cookie issued
+       * during extraction before it serves a stream. Fetching the URL without
+       * them returns 403 even though the URL is valid, the video is public and
+       * extraction just succeeded — which is what made a resolved item fail one
+       * second later, reported as REGION_BLOCKED.
+       */
+      headers: selection.stream.headers,
       ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
       onProgress: (progress) =>
         input.onProgress({

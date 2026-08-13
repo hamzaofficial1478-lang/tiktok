@@ -44,6 +44,16 @@ export interface StreamCandidate {
   readonly hasAudio: boolean;
   /** Extractor-supplied ordering hint; higher is better. */
   readonly preference: number;
+  /**
+   * Headers the extractor says this URL needs.
+   *
+   * TikTok's CDN does not serve a stream URL to just anyone who has it: it
+   * checks Referer, User-Agent and the session cookie issued during
+   * extraction. yt-dlp reports them per format precisely because the download
+   * has to repeat them, and a request without them comes back 403 even though
+   * the URL is valid and the video is public.
+   */
+  readonly headers: Readonly<Record<string, string>>;
 }
 
 export interface VideoMetadata {

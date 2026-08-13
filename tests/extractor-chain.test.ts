@@ -23,6 +23,7 @@ function resolved(name: string): ResolvedVideo {
         filesize: 1000,
         ext: 'mp4',
         codec: 'h264',
+        headers: {},
         hasAudio: true,
         preference: 1_000_000,
       },

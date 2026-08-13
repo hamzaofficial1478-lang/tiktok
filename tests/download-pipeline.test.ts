@@ -14,6 +14,7 @@ function stream(overrides: Partial<StreamCandidate>): StreamCandidate {
   return {
     id: 'play_addr',
     url: 'https://cdn/x.mp4',
+    headers: {},
     watermarked: false,
     kind: 'video',
     width: 1080,
@@ -329,5 +330,21 @@ describe('disk space (section 9 step 5)', () => {
     expect(formatBytes(0)).toBe('0B');
     expect(formatBytes(1_536)).toBe('1.5KB');
     expect(formatBytes(5 * 1024 * 1024 * 1024)).toBe('5.0GB');
+  });
+});
+
+describe('CDN headers from the extractor', () => {
+  it('carries the headers a stream says it needs', () => {
+    // The exact shape yt-dlp reports on a TikTok format.
+    const candidate = stream({
+      headers: {
+        'user-agent': 'Mozilla/5.0 …',
+        referer: 'https://www.tiktok.com/',
+        cookie: 'ttwid=1%7Cabc',
+      },
+    });
+
+    expect(candidate.headers.referer).toBe('https://www.tiktok.com/');
+    expect(candidate.headers.cookie).toContain('ttwid');
   });
 });
