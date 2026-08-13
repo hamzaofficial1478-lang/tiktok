@@ -168,6 +168,10 @@ export const invokeContract = {
     request: z.void(),
     response: z.object({ version: z.string().nullable(), updated: z.boolean(), message: z.string() }),
   },
+  'app:installFfmpeg': {
+    request: z.void(),
+    response: z.object({ installed: z.boolean(), version: z.string().nullable(), message: z.string() }),
+  },
   'config:get': { request: z.void(), response: AppConfigSchema },
   'config:update': { request: AppConfigSchema.partial(), response: AppConfigSchema },
   'log:tail': {
@@ -273,6 +277,13 @@ export const eventContract = {
   'sidecars:changed': z.object({
     sidecars: z.array(SidecarStatusSchema),
     capabilities: MediaCapabilitiesSchema,
+  }),
+  'sidecars:installProgress': z.object({
+    name: z.string(),
+    phase: z.enum(['downloading', 'extracting', 'verifying', 'done', 'failed']),
+    receivedBytes: z.number(),
+    totalBytes: z.number().nullable(),
+    message: z.string().nullable(),
   }),
   'config:changed': AppConfigSchema,
   'queue:itemUpdated': QueueItemSchema,

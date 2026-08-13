@@ -33,6 +33,14 @@ export interface LiveProgress {
   readonly etaMs: number | null;
 }
 
+export interface InstallState {
+  readonly name: string;
+  readonly phase: 'downloading' | 'extracting' | 'verifying' | 'done' | 'failed';
+  readonly receivedBytes: number;
+  readonly totalBytes: number | null;
+  readonly message: string | null;
+}
+
 export interface Toast {
   readonly id: number;
   readonly kind: 'info' | 'success' | 'warning' | 'error';
@@ -64,6 +72,8 @@ interface AppState {
   toasts: Toast[];
   /** True while the user has chosen 'Later' on the duplicate question. */
   duplicatePromptDismissed: boolean;
+  /** Live state of an ffmpeg install, or null when none is running. */
+  install: InstallState | null;
 
   bootstrap(): Promise<void>;
   setDuplicatePromptDismissed(dismissed: boolean): void;
@@ -100,6 +110,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   lastBatch: null,
   toasts: [],
   duplicatePromptDismissed: false,
+  install: null,
 
   async bootstrap(): Promise<void> {
     if (bootstrapped) return;
@@ -133,6 +144,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
       subscribe('config:changed', (config) => set({ config }));
       subscribe('sidecars:changed', ({ sidecars, capabilities }) => set({ sidecars, capabilities }));
+      subscribe('sidecars:installProgress', (progress) => {
+        set({ install: progress.phase === 'done' || progress.phase === 'failed' ? null : progress });
+        if (progress.message) {
+          get().pushToast({ kind: progress.phase === 'failed' ? 'error' : 'success', message: progress.message });
+        }
+      });
 
       subscribe('queue:itemUpdated', (item) => {
         const items = new Map(get().queueItems);

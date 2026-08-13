@@ -10,6 +10,7 @@ import { QueueItemsRepository } from './db/repositories/queue-items';
 import { AppMetaRepository, EXTRACTOR_CHECKED_AT_KEY, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
 import { SidecarResolver } from './media/sidecars';
 import { ExtractorUpdater, shouldCheckExtractor } from './media/extractor-updater';
+import { FfmpegInstaller, type InstallProgress } from './media/ffmpeg-installer';
 import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
 import { UrlNormalizer } from './resolve/url-normalizer';
 import { HttpRedirectResolver } from './resolve/redirect-resolver';
@@ -54,6 +55,9 @@ export interface AppServices {
   readonly queue: QueueEngine;
   /** Latest sidecar snapshot; refreshed on demand and after an extractor update. */
   readonly extractorUpdater: ExtractorUpdater;
+  readonly ffmpegInstaller: FfmpegInstaller;
+  /** Set by the Electron shell so install progress reaches the window. */
+  onInstallProgress?: (progress: SidecarInstallProgress) => void;
   getSidecarStatus(): { sidecars: SidecarStatus[]; capabilities: MediaCapabilities };
   refreshSidecars(): Promise<{ sidecars: SidecarStatus[]; capabilities: MediaCapabilities }>;
   shutdown(): Promise<void>;
@@ -79,6 +83,14 @@ export interface CreateServicesOptions {
    * `autoUpdateExtractor` setting still gates it on top of this.
    */
   allowBackgroundUpdates?: boolean;
+}
+
+export interface SidecarInstallProgress {
+  readonly name: string;
+  readonly phase: 'downloading' | 'extracting' | 'verifying' | 'done' | 'failed';
+  readonly receivedBytes: number;
+  readonly totalBytes: number | null;
+  readonly message: string | null;
 }
 
 export async function createServices(options: CreateServicesOptions): Promise<AppServices> {
@@ -210,6 +222,12 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     overrideRoot: paths.userData,
     runner: processRunner,
     log: logging.log.child({ scope: 'extractor-update' }),
+  });
+
+  const ffmpegInstaller = new FfmpegInstaller({
+    overrideRoot: paths.userData,
+    runner: processRunner,
+    log: logging.log.child({ scope: 'ffmpeg-install' }),
   });
 
   /**
@@ -345,6 +363,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     },
     sidecars,
     extractorUpdater,
+    ffmpegInstaller,
     resolution: { normalizer, extractor },
     queue,
     getSidecarStatus: () => snapshot,

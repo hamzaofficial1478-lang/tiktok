@@ -17,6 +17,7 @@ export const INVOKE_CHANNELS = [
   'app:getVersions',
   'app:getSidecarStatus',
   'app:updateExtractor',
+  'app:installFfmpeg',
   'config:get',
   'config:update',
   'log:tail',
@@ -52,6 +53,7 @@ export type InvokeChannel = (typeof INVOKE_CHANNELS)[number];
 export const EVENT_CHANNELS = [
   'log:entry',
   'sidecars:changed',
+  'sidecars:installProgress',
   'config:changed',
   'queue:itemUpdated',
   'queue:itemProgress',

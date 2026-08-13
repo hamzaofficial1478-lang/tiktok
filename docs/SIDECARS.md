@@ -48,8 +48,31 @@ time rather than mid-batch.
 
 ## Configuring ffmpeg sources
 
-Because every convenient prebuild (BtbN, gyan, evermeet) is GPL, the fetch
-script refuses to guess. Create `resources/sidecar-sources.json`:
+**The app installs ffmpeg for you.** Settings shows an *Install ffmpeg* button
+whenever it is missing, which fetches BtbN's **LGPL** build, verifies it runs,
+and installs it under the user's app-data folder. Nothing below is needed for
+normal use.
+
+An earlier version of this page claimed every convenient prebuild was GPL and
+that an LGPL build therefore had to be compiled by hand. That was wrong, and it
+is why the sidecar had to be configured manually for so long. BtbN publishes an
+explicit LGPL variant alongside the GPL one, and it was verified to carry
+exactly what this pipeline needs:
+
+| Checked | Result |
+| ------- | ------ |
+| `--enable-gpl` in the build configuration | absent |
+| `removelogo`, `gblur`, `overlay`, `crop`, `split` | all present |
+| `delogo`, `boxblur` (GPL-only) | absent, confirming it is genuinely the LGPL build |
+| H.264 encoders | libopenh264, h264_nvenc, h264_qsv, h264_amf, h264_vaapi |
+
+macOS is the exception: no LGPL prebuild is published for it, so the installer
+reports that rather than silently fetching a GPL one.
+
+## Configuring a different source by hand
+
+Only needed to pin a specific build, or on a platform the installer does not
+cover. Create `resources/sidecar-sources.json`:
 
 ```json
 {

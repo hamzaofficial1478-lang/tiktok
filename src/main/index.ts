@@ -154,6 +154,8 @@ if (!app.requestSingleInstanceLock()) {
       onSidecarsChanged: (snapshot) => eventBus?.emit('sidecars:changed', snapshot),
     });
 
+    services.onInstallProgress = (progress) => eventBus?.emit('sidecars:installProgress', progress);
+
     const registry = new IpcRegistry(ipcMain, services.logging.log.child({ scope: 'ipc' }));
     eventBus = new EventBus(services.logging.log.child({ scope: 'ipc' }));
     registerAppHandlers(registry, services, app.getVersion());

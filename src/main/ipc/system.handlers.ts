@@ -167,4 +167,34 @@ export function registerSystemHandlers(
     await services.refreshSidecars();
     return result;
   });
+
+  /**
+   * "Install ffmpeg" — the button that makes watermark filtering and end-card
+   * trimming available without the user sourcing a binary by hand.
+   *
+   * The download is ~100 MB, so progress is pushed as it happens rather than
+   * leaving a button spinning for minutes with no sign of life.
+   */
+  registry.handle('app:installFfmpeg', async () => {
+    const result = await services.ffmpegInstaller.install((progress) => {
+      services.onInstallProgress?.({
+        name: 'ffmpeg',
+        phase: progress.phase,
+        receivedBytes: progress.receivedBytes,
+        totalBytes: progress.totalBytes,
+        message: null,
+      });
+    });
+
+    // Re-probe so the capability list reflects the new binary immediately.
+    await services.refreshSidecars();
+    services.onInstallProgress?.({
+      name: 'ffmpeg',
+      phase: 'done',
+      receivedBytes: 0,
+      totalBytes: null,
+      message: result.message,
+    });
+    return result;
+  });
 }

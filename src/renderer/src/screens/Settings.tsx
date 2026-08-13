@@ -4,7 +4,7 @@ import type { InvokeResponse } from '@shared/ipc/contract';
 import { previewTemplate } from '@shared/filename-template';
 import { useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
-import { Button, Panel } from '../components/primitives';
+import { Button, Panel, formatBytes } from '../components/primitives';
 
 /** Settings — section 10. Every control writes through the single AppConfig. */
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }): React.JSX.Element {
@@ -29,6 +29,8 @@ export function Settings(): React.JSX.Element {
   const versions = useAppStore((s) => s.versions);
   const capabilities = useAppStore((s) => s.capabilities);
   const ffmpegMissing = useAppStore((s) => !s.sidecars.find((sc) => sc.name === 'ffmpeg')?.present);
+  const install = useAppStore((s) => s.install);
+  const [installing, setInstalling] = useState(false);
   const [updating, setUpdating] = useState(false);
   /** null = not tested since the URL last changed; 'testing' = in flight. */
   const [proxyTest, setProxyTest] = useState<ProxyTestState>(null);
@@ -41,6 +43,18 @@ export function Settings(): React.JSX.Element {
   }, [proxyUrl]);
 
   if (!config) return <div className="p-8 text-ink-500">Loading settings…</div>;
+
+  async function installFfmpeg(): Promise<void> {
+    setInstalling(true);
+    try {
+      const result = await invoke('app:installFfmpeg');
+      pushToast({ kind: 'success', message: result.message });
+    } catch (err) {
+      pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setInstalling(false);
+    }
+  }
 
   async function testProxy(): Promise<void> {
     setProxyTest('testing');
@@ -220,12 +234,32 @@ export function Settings(): React.JSX.Element {
             the worst way for a feature to be unavailable: the user sets it,
             nothing happens, and nothing says why. */}
         {ffmpegMissing && (
-          <p className="mt-4 rounded-lg border border-warn-400/30 bg-warn-400/10 p-3 text-xs text-warn-400">
-            <strong className="font-medium">ffmpeg is not installed.</strong> Watermark-free downloads still work
-            — those come from a clean source and need no processing. But filtering a watermark out of the pixels,
-            and trimming a TikTok end card, both require ffmpeg. Without it those two steps are skipped and the
-            video is saved exactly as TikTok served it. See docs/SIDECARS.md.
-          </p>
+          <div className="mt-4 rounded-lg border border-warn-400/30 bg-warn-400/10 p-3">
+            <p className="text-xs text-warn-400">
+              <strong className="font-medium">ffmpeg is not installed.</strong> Watermark-free downloads still
+              work — those come from a clean source and need no processing. But filtering a watermark out of the
+              pixels, and trimming a TikTok end card, both need ffmpeg.
+            </p>
+
+            {install ? (
+              <p className="mt-3 text-xs text-ink-300" aria-live="polite">
+                {install.phase === 'downloading'
+                  ? `Downloading ffmpeg… ${formatBytes(install.receivedBytes)}${
+                      install.totalBytes ? ` of ${formatBytes(install.totalBytes)}` : ''
+                    }`
+                  : install.phase === 'extracting'
+                    ? 'Unpacking…'
+                    : 'Checking it runs…'}
+              </p>
+            ) : (
+              <div className="mt-3 flex items-center gap-3">
+                <Button variant="primary" disabled={installing} onClick={() => void installFfmpeg()}>
+                  {installing ? 'Installing…' : 'Install ffmpeg'}
+                </Button>
+                <span className="text-xs text-ink-500">About 100 MB, once. Nothing else to configure.</span>
+              </div>
+            )}
+          </div>
         )}
 
         <div className="mt-4 grid gap-2">
