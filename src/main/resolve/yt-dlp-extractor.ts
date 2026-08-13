@@ -118,9 +118,29 @@ export class YtDlpExtractor implements Extractor {
 
     if (result.exitCode !== 0 || result.stdout.trim() === '') {
       const classified = classifyYtDlpFailure(result);
+      const reason = firstMeaningfulLine(result.stderr);
+
+      /**
+       * The stderr text is the log line, not a field beside it.
+       *
+       * This classifier matches on prose that upstream rewords freely, so its
+       * fallback — "unrecognised extractor failure" — is precisely the case
+       * where someone needs to read what yt-dlp actually said, either to fix
+       * their setup or to add a rule. Recording only the code we guessed threw
+       * away the one piece of information that had any diagnostic value, and
+       * left the UI asserting "Extractor out of date" about a failure nobody
+       * had identified.
+       */
       this.options.log?.warn(
-        { canonicalUrl, exitCode: result.exitCode, code: classified.code, why: classified.why },
-        'yt-dlp failed',
+        {
+          canonicalUrl,
+          exitCode: result.exitCode,
+          code: classified.code,
+          why: classified.why,
+          timedOut: result.timedOut,
+          stderr: truncate(result.stderr, 1_000),
+        },
+        `yt-dlp failed: ${reason || `exited ${result.exitCode} with no output`}`,
       );
       throw new AppError(classified.code, truncate(result.stderr) || `yt-dlp exited ${result.exitCode}`);
     }
@@ -246,6 +266,24 @@ function toEpochMs(payload: YtDlpPayload): number | null {
 
 function extractIdFromUrl(url: string): string {
   return /\/(\d{15,21})/.exec(url)?.[1] ?? '';
+}
+
+/**
+ * The line of yt-dlp's stderr that says something.
+ *
+ * yt-dlp prefixes its real message with "ERROR: " and often pads it with
+ * update notices and warnings. The first line carrying the actual complaint is
+ * what belongs in a one-line log entry.
+ */
+function firstMeaningfulLine(stderr: string): string {
+  const lines = stderr
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+
+  const error = lines.find((line) => /^ERROR[:\s]/i.test(line));
+  const chosen = error ?? lines.find((line) => !/^WARNING[:\s]/i.test(line)) ?? lines[0] ?? '';
+  return truncate(chosen.replace(/^ERROR:\s*/i, ''), 300);
 }
 
 function truncate(value: string, max = 800): string {

@@ -87,8 +87,14 @@ function Row({
             {item.awemeId ? `@${item.canonicalUrl?.match(/@([\w.-]*)\//)?.[1] || '…'}` : 'Resolving…'}
             <span className="ml-2 font-mono text-xs text-ink-500">{item.awemeId ?? item.rawUrl}</span>
           </p>
-          <p className="truncate text-xs text-ink-500">
-            {descriptor ? descriptor.title : activityLabel(item, live)}
+          {/* When something failed, the specific reason beats the taxonomy
+              heading: "Unable to extract webpage video data" tells the user
+              what to do, "Extractor out of date" only asserts a guess. */}
+          <p
+            className={`truncate text-xs ${descriptor ? 'text-danger-400/80' : 'text-ink-500'}`}
+            title={item.errorDetail ?? undefined}
+          >
+            {descriptor ? (item.errorDetail ?? descriptor.title) : activityLabel(item, live)}
           </p>
         </button>
 

@@ -24,6 +24,26 @@ const LEVEL_STYLE: Record<string, string> = {
 
 const PROBLEM_LEVELS = new Set(['warn', 'error', 'fatal']);
 
+/**
+ * The one field from a log entry's structured data worth showing inline.
+ *
+ * Preferred in order of how much it explains the entry. `stderr` first because
+ * when a sidecar fails, its own words are the answer and everything else is
+ * our paraphrase of them.
+ */
+function detailOf(entry: LogEntry): string {
+  const data = entry.data;
+  if (!data) return '';
+  for (const key of ['stderr', 'detail', 'err', 'errorDetail', 'reason', 'path']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.trim() !== '') {
+      const line = value.split('\n')[0]?.trim() ?? '';
+      return line.length > 160 ? `${line.slice(0, 160)}…` : line;
+    }
+  }
+  return '';
+}
+
 function timeOf(entry: LogEntry): string {
   const date = new Date(entry.time);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(
@@ -106,6 +126,9 @@ export function LiveLog(): React.JSX.Element {
               <span className="shrink-0 text-ink-500">{timeOf(entry)}</span>
               <span className={`min-w-0 flex-1 break-words ${LEVEL_STYLE[entry.level] ?? 'text-ink-300'}`}>
                 {entry.msg}
+                {/* Structured fields carry the detail that makes a warning
+                    actionable; showing only the message hides the reason. */}
+                {detailOf(entry) && <span className="ml-2 text-ink-500">{detailOf(entry)}</span>}
               </span>
             </p>
           ))

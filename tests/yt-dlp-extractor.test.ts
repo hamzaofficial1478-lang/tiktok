@@ -224,3 +224,64 @@ describe('YtDlpExtractor — invocation', () => {
     await expect(extractor.resolve(CANONICAL)).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
   });
 });
+
+describe('failure diagnostics', () => {
+  it('puts yt-dlp\'s own words in the log message, not just our guess at a code', async () => {
+    const entries: { msg: string; data: Record<string, unknown> }[] = [];
+    const log = {
+      warn: (data: Record<string, unknown>, msg: string) => entries.push({ msg, data }),
+      info: () => {},
+      error: () => {},
+      debug: () => {},
+    };
+
+    const extractor = new YtDlpExtractor({
+      binaryPath: '/fake/yt-dlp',
+      runner: {
+        run: async () => ({
+          stdout: '',
+          stderr:
+            'WARNING: [tiktok] Falling back to feed API\n' +
+            'ERROR: [TikTok] 7123456789012345678: Unable to extract webpage video data\n',
+          exitCode: 1,
+          timedOut: false,
+        }),
+      },
+      log: log as never,
+    });
+
+    await expect(
+      extractor.resolve('https://www.tiktok.com/@a/video/7123456789012345678'),
+    ).rejects.toMatchObject({ code: 'EXTRACTOR_FAILED' });
+
+    const entry = entries[0];
+    // The ERROR line wins over the WARNING noise above it.
+    expect(entry?.msg).toContain('Unable to extract webpage video data');
+    expect(entry?.msg).not.toContain('Falling back to feed API');
+    // And the full text is retained for anyone reading the structured log.
+    expect(String(entry?.data.stderr)).toContain('Unable to extract');
+  });
+
+  it('says so plainly when the process produced nothing at all', async () => {
+    const entries: string[] = [];
+    const extractor = new YtDlpExtractor({
+      binaryPath: '/fake/yt-dlp',
+      runner: {
+        run: async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false }),
+      },
+      log: {
+        warn: (_data: unknown, msg: string) => entries.push(msg),
+        info: () => {},
+        error: () => {},
+        debug: () => {},
+      } as never,
+    });
+
+    await expect(
+      extractor.resolve('https://www.tiktok.com/@a/video/7123456789012345678'),
+    ).rejects.toMatchObject({ code: 'EXTRACTOR_FAILED' });
+
+    // An empty stderr must not produce a log line that says nothing.
+    expect(entries[0]).toContain('no output');
+  });
+});
