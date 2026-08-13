@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ExtractorUpdater, extractorAgeDays } from '@main/media/extractor-updater';
+import { ExtractorUpdater, extractorAgeDays, shouldCheckExtractor } from '@main/media/extractor-updater';
 import type { ProcessRunner, ProcessResult } from '@main/resolve/process-runner';
 
 /**
@@ -150,5 +150,58 @@ describe('deciding when to check', () => {
 
   it('tolerates the build suffix upstream sometimes appends', () => {
     expect(extractorAgeDays('2026.08.06.123456', now)).toBe(7);
+  });
+});
+
+describe('deciding whether to check at all', () => {
+  const now = Date.UTC(2026, 7, 13, 12, 0, 0);
+  const hours = (n: number): number => n * 3_600_000;
+
+  it('does not re-download every launch when upstream has stopped releasing', () => {
+    // The exact bug this replaced. yt-dlp's newest release was 2026.07.04 and
+    // the installed build was already that, so an age-only rule called it
+    // stale forever and fetched ~30 MB on every single start.
+    const stale = { autoUpdate: true, version: '2026.07.04', now };
+
+    const first = shouldCheckExtractor({ ...stale, lastCheckedAt: 0 });
+    expect(first).toEqual({ check: true, reason: 'stale' });
+
+    // Having just checked, the next launch must leave it alone even though the
+    // installed build is no newer than it was.
+    const second = shouldCheckExtractor({ ...stale, lastCheckedAt: now - hours(1) });
+    expect(second).toEqual({ check: false, reason: 'checked-recently' });
+  });
+
+  it('checks again once the interval has elapsed', () => {
+    expect(
+      shouldCheckExtractor({ autoUpdate: true, version: '2026.07.04', lastCheckedAt: now - hours(13), now }),
+    ).toEqual({ check: true, reason: 'stale' });
+  });
+
+  it('leaves a recent build alone', () => {
+    expect(
+      shouldCheckExtractor({ autoUpdate: true, version: '2026.08.11', lastCheckedAt: 0, now }),
+    ).toEqual({ check: false, reason: 'recent-build' });
+  });
+
+  it('treats an unknown version as the strongest reason to check', () => {
+    // Usually means nothing is installed, which is the case where checking
+    // matters most — never a reason to skip.
+    expect(shouldCheckExtractor({ autoUpdate: true, version: null, lastCheckedAt: 0, now })).toEqual({
+      check: true,
+      reason: 'unknown-version',
+    });
+  });
+
+  it('respects the setting above everything else', () => {
+    expect(
+      shouldCheckExtractor({ autoUpdate: false, version: null, lastCheckedAt: 0, now }),
+    ).toEqual({ check: false, reason: 'disabled' });
+  });
+
+  it('checks on a first run, when nothing has ever been recorded', () => {
+    expect(shouldCheckExtractor({ autoUpdate: true, version: '2026.01.01', lastCheckedAt: 0, now }).check).toBe(
+      true,
+    );
   });
 });

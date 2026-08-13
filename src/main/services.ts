@@ -7,9 +7,9 @@ import { openDatabase, type DatabaseHandle } from './db/database';
 import { VideosRepository } from './db/repositories/videos';
 import { DownloadsRepository } from './db/repositories/downloads';
 import { QueueItemsRepository } from './db/repositories/queue-items';
-import { AppMetaRepository, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
+import { AppMetaRepository, EXTRACTOR_CHECKED_AT_KEY, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
 import { SidecarResolver } from './media/sidecars';
-import { ExtractorUpdater, extractorAgeDays } from './media/extractor-updater';
+import { ExtractorUpdater, shouldCheckExtractor } from './media/extractor-updater';
 import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
 import { UrlNormalizer } from './resolve/url-normalizer';
 import { HttpRedirectResolver } from './resolve/redirect-resolver';
@@ -80,15 +80,6 @@ export interface CreateServicesOptions {
    */
   allowBackgroundUpdates?: boolean;
 }
-
-/**
- * How old a yt-dlp build may be before start-up checks for a newer one.
- *
- * Short, because the cost of being wrong is asymmetric: an unnecessary check is
- * one HTTP request in the background, while a stale extractor is every download
- * failing with a message that reads like the app is broken.
- */
-const EXTRACTOR_STALE_DAYS = 7;
 
 export async function createServices(options: CreateServicesOptions): Promise<AppServices> {
   const { paths, isDev, onSidecarsChanged } = options;
@@ -170,16 +161,28 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     if (!config.get().autoUpdateExtractor) return;
 
     const current = snapshot.sidecars.find((s) => s.name === 'yt-dlp')?.version ?? null;
-    const age = extractorAgeDays(current);
-    if (age !== null && age < EXTRACTOR_STALE_DAYS) {
-      log.info({ version: current, ageDays: age }, 'extractor is recent; skipping the update check');
+    const decision = shouldCheckExtractor({
+      autoUpdate: true,
+      version: current,
+      lastCheckedAt: appMeta.getNumber(EXTRACTOR_CHECKED_AT_KEY, 0),
+      now: Date.now(),
+    });
+
+    if (!decision.check) {
+      // Record the decision for a build that is simply recent, so a fresh
+      // install does not re-evaluate this on every launch either.
+      if (decision.reason === 'recent-build') appMeta.setNumber(EXTRACTOR_CHECKED_AT_KEY, Date.now());
+      log.info({ version: current, reason: decision.reason }, 'skipping the extractor check');
       return;
     }
 
-    log.info({ version: current, ageDays: age }, 'extractor looks stale; updating in the background');
+    log.info({ version: current, reason: decision.reason }, 'checking for a newer extractor in the background');
     void extractorUpdater
       .update(current)
       .then(async (result) => {
+        // Written on success only: a failed check must be retried next launch,
+        // not suppressed for a day.
+        appMeta.setNumber(EXTRACTOR_CHECKED_AT_KEY, Date.now());
         if (result.updated) {
           await refreshSidecars();
           onSidecarsChanged?.(snapshot);

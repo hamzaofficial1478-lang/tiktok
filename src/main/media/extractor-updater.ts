@@ -204,6 +204,49 @@ export class ExtractorUpdater {
  * of weeks is a likely cause of "Unexpected response from webpage request",
  * because that is how quickly TikTok's changes outrun a pinned build.
  */
+/** How old an installed build may be before a check is worth making. */
+export const EXTRACTOR_STALE_DAYS = 7;
+
+/**
+ * Minimum gap between checks, whatever the installed version says.
+ */
+export const EXTRACTOR_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1_000;
+
+export type CheckDecision =
+  | { readonly check: true; readonly reason: 'stale' | 'unknown-version' }
+  | { readonly check: false; readonly reason: 'disabled' | 'checked-recently' | 'recent-build' };
+
+/**
+ * Whether to ask the release server for a newer extractor.
+ *
+ * Pure, and separate from the wiring, because the interesting part is a
+ * decision with two independent gates and this is where the mistake was: an
+ * earlier version judged staleness from the installed version alone, so once
+ * upstream stopped publishing the build was permanently "stale" and every
+ * launch re-downloaded ~30 MB to be told it already had the latest.
+ */
+export function shouldCheckExtractor(input: {
+  readonly autoUpdate: boolean;
+  readonly version: string | null;
+  readonly lastCheckedAt: number;
+  readonly now: number;
+}): CheckDecision {
+  if (!input.autoUpdate) return { check: false, reason: 'disabled' };
+
+  if (input.now - input.lastCheckedAt < EXTRACTOR_CHECK_INTERVAL_MS) {
+    return { check: false, reason: 'checked-recently' };
+  }
+
+  const age = extractorAgeDays(input.version, input.now);
+  // An unreadable or absent version is the strongest reason to check, not a
+  // reason to skip: it usually means no extractor is installed at all.
+  if (age === null) return { check: true, reason: 'unknown-version' };
+
+  return age >= EXTRACTOR_STALE_DAYS
+    ? { check: true, reason: 'stale' }
+    : { check: false, reason: 'recent-build' };
+}
+
 export function extractorAgeDays(version: string | null, now: number = Date.now()): number | null {
   if (!version) return null;
   const match = /^(\d{4})\.(\d{2})\.(\d{2})/.exec(version.trim());
