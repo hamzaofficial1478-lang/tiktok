@@ -246,7 +246,13 @@ export class YtDlpExtractor implements Extractor {
       throw new AppError('EXTRACTOR_FAILED', `yt-dlp returned no downloadable formats for ${canonicalUrl}`);
     }
 
-    return { streams, metadata, extractor: this.name };
+    return {
+      streams,
+      metadata,
+      extractor: this.name,
+      // The download must reach the same endpoint this metadata came from.
+      extractorArgs: this.options.strategy?.args ?? [],
+    };
   }
 }
 

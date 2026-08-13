@@ -12,6 +12,11 @@ export interface RunOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly maxBufferBytes?: number;
+  /**
+   * Called with each chunk of stdout as it arrives, for processes that report
+   * progress while they run. Output is still buffered and returned as usual.
+   */
+  readonly onStdout?: (chunk: string) => void;
 }
 
 /**
@@ -83,6 +88,7 @@ export class ChildProcessRunner implements ProcessRunner {
           return;
         }
         stdout += chunk;
+        options.onStdout?.(chunk);
       });
 
       child.stderr.setEncoding('utf8');

@@ -78,6 +78,14 @@ export interface VideoMetadata {
 
 /** Exactly the shape section 2 specifies: `resolve(canonicalUrl) -> { streams[], metadata }`. */
 export interface ResolvedVideo {
+  /**
+   * Extra arguments that made this resolution succeed.
+   *
+   * The download has to reach the same endpoint the metadata came from: a
+   * stream URL obtained through the mobile API is not served to a request that
+   * re-resolves through the failing web route.
+   */
+  readonly extractorArgs?: readonly string[];
   readonly streams: readonly StreamCandidate[];
   readonly metadata: VideoMetadata;
   /** Which extractor produced this, for the row detail and the Logs screen. */

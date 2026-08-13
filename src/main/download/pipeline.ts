@@ -7,6 +7,7 @@ import type { Ffprobe } from '../media/ffprobe';
 import type { MediaPipeline, PipelineInput, PipelineResult } from '../queue/types';
 import { selectStream } from './stream-selector';
 import { commitPart, discardPart, downloadToPart, partPathFor } from './downloader';
+import { downloadWithYtDlp } from './yt-dlp-downloader';
 import { verifyDownload } from './verify';
 import { renderTemplate, resolveOutputPath } from './filename';
 import { computePerceptualHash, sha256File } from './hashing';
@@ -34,6 +35,9 @@ export interface DownloadPipelineOptions {
   readonly ffmpegPath: () => string | null;
   readonly log: Logger;
   readonly fetchImpl?: typeof fetch;
+  /** yt-dlp path; when present it performs the transfer (see step 4). */
+  readonly ytDlpPath?: () => string | null;
+  readonly proxyUrl?: () => string | undefined;
   /** Overridable so tests can point at a temp directory. */
   readonly outputDir?: () => string;
   /** Phase 5. Absent means downloads are saved exactly as fetched. */
@@ -89,31 +93,57 @@ export class DownloadPipeline implements MediaPipeline {
     });
 
     // 4. Download to `.part`.
-    const outcome = await downloadToPart({
-      url: selection.stream.url,
-      targetPath,
-      signal: input.signal,
-      expectedBytes: selection.stream.filesize,
-      skipSpaceCheck: true,
-      /**
-       * The headers the extractor said this URL needs.
-       *
-       * TikTok's CDN checks Referer, User-Agent and the session cookie issued
-       * during extraction before it serves a stream. Fetching the URL without
-       * them returns 403 even though the URL is valid, the video is public and
-       * extraction just succeeded — which is what made a resolved item fail one
-       * second later, reported as REGION_BLOCKED.
-       */
-      headers: selection.stream.headers,
-      ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
-      onProgress: (progress) =>
-        input.onProgress({
-          bytesDone: progress.bytesDone,
-          bytesTotal: progress.bytesTotal,
-          speed: progress.speed,
-          etaMs: progress.etaMs,
-        }),
-    });
+    /**
+     * yt-dlp performs the transfer, not our own HTTP client.
+     *
+     * TikTok's CDN authenticates against the cookiejar yt-dlp builds while
+     * solving the challenge during extraction — `_set_cookie(hostname,
+     * 'sid_tt', …)` in its TikTok extractor — and that session is never
+     * serialised into the JSON we parse. Fetching the stream URL ourselves,
+     * even replaying every header the payload reports, is refused with 403.
+     * Handing the transfer to the process that holds the session is the only
+     * way short of reimplementing TikTok's challenge flow.
+     *
+     * The direct downloader remains for any extractor that hands back a URL
+     * needing no session, and is exercised by its own tests.
+     */
+    const progressSink = (progress: {
+      bytesDone: number;
+      bytesTotal: number | null;
+      speed: number | null;
+      etaMs: number | null;
+    }): void =>
+      input.onProgress({
+        bytesDone: progress.bytesDone,
+        bytesTotal: progress.bytesTotal,
+        speed: progress.speed,
+        etaMs: progress.etaMs,
+      });
+
+    const ytDlpPath = this.options.ytDlpPath?.() ?? null;
+    const outcome = ytDlpPath
+      ? await downloadWithYtDlp({
+          binaryPath: ytDlpPath,
+          runner: this.options.runner,
+          url: input.normalized.canonicalUrl,
+          formatId: selection.stream.id,
+          ...(input.resolved.extractorArgs ? { extractorArgs: input.resolved.extractorArgs } : {}),
+          targetPath,
+          signal: input.signal,
+          onProgress: progressSink,
+          proxyUrl: this.options.proxyUrl?.(),
+          log,
+        })
+      : await downloadToPart({
+          url: selection.stream.url,
+          targetPath,
+          signal: input.signal,
+          expectedBytes: selection.stream.filesize,
+          skipSpaceCheck: true,
+          headers: selection.stream.headers,
+          ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
+          onProgress: progressSink,
+        });
     if (outcome.resumedFrom > 0) log.info({ resumedFrom: outcome.resumedFrom }, 'resumed an interrupted download');
 
     // 5. Verify while it is still a `.part` (section 9 step 7).

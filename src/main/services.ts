@@ -285,6 +285,9 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       ffprobe,
       // Read fresh each time so an extractor/ffmpeg update mid-session applies.
       ffmpegPath: () => sidecars.resolve('ffmpeg').path,
+      // yt-dlp holds the TikTok session, so it performs the transfer.
+      ytDlpPath: () => sidecars.resolve('yt-dlp').path,
+      proxyUrl: () => config.get().proxyUrl || undefined,
       log: logging.log.child({ scope: 'download' }),
       postProcessor,
       capabilities: () => snapshot.capabilities,
