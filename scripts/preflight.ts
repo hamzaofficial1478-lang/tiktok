@@ -22,6 +22,8 @@ const yellow = (s: string): string => `\x1b[33m${s}\x1b[0m`;
 const dim = (s: string): string => `\x1b[2m${s}\x1b[0m`;
 
 const root = process.cwd();
+/** `--personal`: an installer for your own machines, not for distribution. */
+const personalBuild = process.argv.includes('--personal');
 let failures = 0;
 let warnings = 0;
 
@@ -98,10 +100,26 @@ async function main(): Promise<void> {
     if (buildconf === '') {
       warn('could not read the ffmpeg build configuration', 'licence unverified');
     } else if (/--enable-gpl\b/.test(buildconf)) {
-      fail(
-        'ffmpeg is a GPL build',
-        'shipping it would extend GPL obligations to this product. See docs/SIDECARS.md.',
-      );
+      /**
+       * A GPL ffmpeg blocks *distribution*, not use.
+       *
+       * Building an installer to run on your own machines is not shipping, and
+       * refusing to produce one leaves someone unable to test their own program
+       * over an obligation that has not been triggered. `--personal` therefore
+       * downgrades this to a warning while keeping the default strict, so the
+       * check still stops a build that is about to be handed to someone else.
+       */
+      if (personalBuild) {
+        warn(
+          'ffmpeg is a GPL build',
+          'allowed for a personal build; this installer must not be distributed',
+        );
+      } else {
+        fail(
+          'ffmpeg is a GPL build',
+          'shipping it would extend GPL obligations to this product. Use --personal to build for your own use. See docs/SIDECARS.md.',
+        );
+      }
     } else {
       pass('ffmpeg is an LGPL build');
     }
@@ -123,10 +141,31 @@ async function main(): Promise<void> {
     else warn(`${platform} icon missing (${file})`, 'electron-builder will substitute its default');
   }
 
-  /* --- Native module built for Electron, not Node ----------------------- */
-  const binding = join(root, 'node_modules/better-sqlite3/build/Release/better_sqlite3.node');
-  if (existsSync(binding)) pass('better-sqlite3 has a compiled binding');
-  else warn('better-sqlite3 has no compiled binding', 'run npm run rebuild before packaging');
+  /* --- The one native module that runs inside Electron ------------------ */
+  /**
+   * better-sqlite3 v13 is Node-API, so the packaged app uses the prebuilt
+   * binary shipped in the npm tarball and nothing is compiled at install time.
+   * This used to look for `build/Release/*.node` — a path only a from-source
+   * build produces — and tell everyone to run `npm run rebuild`, which is the
+   * same wrong advice that made `npm install` fail on machines without a C++
+   * toolchain. What matters for packaging is that a binary for *this* platform
+   * exists to be copied.
+   */
+  const prebuild = join(
+    root,
+    'node_modules/better-sqlite3/prebuilds',
+    `${process.platform}-${process.arch}.node`,
+  );
+  const compiled = join(root, 'node_modules/better-sqlite3/build/Release/better_sqlite3.node');
+
+  if (existsSync(prebuild)) pass('better-sqlite3 has a prebuilt binary', `${process.platform}-${process.arch}`);
+  else if (existsSync(compiled)) pass('better-sqlite3 has a locally compiled binding');
+  else {
+    fail(
+      'better-sqlite3 has no binary for this platform',
+      'reinstall dependencies; the packaged app cannot open its library without it',
+    );
+  }
 
   console.log(
     `\n${failures === 0 ? green('ready to package') : red(`${failures} blocking issue(s)`)}` +

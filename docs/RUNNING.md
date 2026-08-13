@@ -213,6 +213,51 @@ testing any recent build will do. `docs/SIDECARS.md` covers what to ship.
 
 ---
 
+## Putting it on another PC
+
+Two ways, depending on whether that machine is for developing or just using.
+
+### The quick way: repeat the steps above
+
+Node.js, `git clone`, `npm install`, `npm run fetch:sidecars`, `npm run dev`.
+Works on any machine, needs Node installed, and leaves you in developer mode
+with a terminal window open alongside the app.
+
+### The real way: build an installer
+
+On a Windows machine with the project set up:
+
+```powershell
+npm run dist:win:personal
+```
+
+That produces `release\TikTok Downloader-0.1.0-setup.exe`. Copy that one file
+to any Windows PC, run it, and the app installs like any other program — Start
+menu entry, desktop shortcut, no terminal, no Node.js required on that machine.
+yt-dlp is bundled inside, so it works immediately.
+
+It installs per-user rather than system-wide, which means it needs no
+administrator rights and lands in a folder the app can update itself in.
+
+`dist:win:personal` is for installers you run yourself. Plain `npm run dist:win`
+adds a licence gate that refuses to build with a GPL ffmpeg, which is the right
+check before handing a build to anyone else — see docs/SIDECARS.md. Everything
+else the two run is identical.
+
+### Does the username on that PC matter?
+
+No. There was one bug where a Windows username containing a space broke the
+"Update extractor" button, and it is fixed — that code no longer builds paths
+by hand at all. Nothing else in the app is sensitive to what the user is
+called: every path is assembled with `path.join`, and every external program is
+launched with an argument array rather than a command string, both of which
+handle spaces correctly by construction.
+
+The app also never writes into its own install directory. Settings, the
+library database, logs and extractor updates all live under the current user's
+app-data folder, so two people using the same PC get their own of each without
+interfering.
+
 ## Things worth trying while you have it open
 
 - **Paste 50 links at once.** They download in exactly the order you pasted

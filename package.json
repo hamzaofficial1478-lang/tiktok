@@ -28,7 +28,9 @@
     "verify": "npm run typecheck && npm run test",
     "harness:queue": "node scripts/run-harness.mjs scripts/queue-harness.ts",
     "probe:ffmpeg": "node scripts/run-harness.mjs scripts/probe-ffmpeg.ts",
-    "preflight": "npm run build && node scripts/run-harness.mjs scripts/preflight.ts"
+    "preflight": "npm run build && node scripts/run-harness.mjs scripts/preflight.ts",
+    "preflight:personal": "npm run build && node scripts/run-harness.mjs scripts/preflight.ts --personal",
+    "dist:win:personal": "npm run preflight:personal && electron-builder --win --publish never"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
