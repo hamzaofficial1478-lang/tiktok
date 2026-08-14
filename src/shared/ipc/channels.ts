@@ -43,6 +43,7 @@ export const INVOKE_CHANNELS = [
   'library:deleteRecord',
   'library:deleteFile',
 
+  'system:getResources',
   'system:chooseFolder',
   'system:showInFolder',
   'system:openPath',

@@ -251,6 +251,25 @@ export const invokeContract = {
     response: Ok,
   },
 
+  /**
+   * What the app is costing the machine, polled by the status bar.
+   *
+   * GPU is a name and an on/off, never a percentage: Electron exposes no GPU
+   * utilisation measurement, and a number invented from the GPU process's CPU
+   * time would look authoritative and mean nothing.
+   */
+  'system:getResources': {
+    request: z.void(),
+    response: z.object({
+      cpuPercent: z.number(),
+      memoryBytes: z.number(),
+      systemMemoryBytes: z.number().nullable(),
+      processCount: z.number(),
+      gpu: z
+        .object({ name: z.string(), accelerated: z.boolean(), memoryBytes: z.number() })
+        .nullable(),
+    }),
+  },
   'system:chooseFolder': {
     request: z.void(),
     response: z.object({ path: z.string().nullable() }),

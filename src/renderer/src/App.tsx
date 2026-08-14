@@ -4,6 +4,7 @@ import { useAppStore } from './store/app-store';
 import { invoke } from './lib/ipc';
 import { AddLinks } from './screens/AddLinks';
 import { Queue } from './screens/Queue';
+import { ResourceBar } from './components/ResourceBar';
 import { Library } from './screens/Library';
 import { History } from './screens/History';
 import { Settings } from './screens/Settings';
@@ -203,6 +204,8 @@ export default function App(): React.JSX.Element {
           {screen === 'logs' && <Logs />}
         </ErrorBoundary>
       </main>
+
+      <ResourceBar />
 
       <DuplicateModal />
       <Toasts />

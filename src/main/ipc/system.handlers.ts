@@ -1,5 +1,7 @@
+import { cpus } from 'node:os';
 import { resolve, sep } from 'node:path';
-import { dialog, session, shell, type BrowserWindow } from 'electron';
+import { app, dialog, session, shell, type BrowserWindow } from 'electron';
+import { gpuNameFrom, summarise } from '../system/resource-monitor';
 import { AppError } from '@shared/errors';
 import type { AppServices } from '../services';
 import type { IpcRegistry } from './registry';
@@ -17,6 +19,39 @@ export function registerSystemHandlers(
   services: AppServices,
   getWindow: () => BrowserWindow | null,
 ): void {
+  /**
+   * The status bar's figures.
+   *
+   * `percentCPUUsage` is measured since the previous call, so this being polled
+   * on a fixed interval is what makes it a live reading rather than an average
+   * over the whole session. The GPU report is cached: it describes hardware,
+   * which does not change while the app is running, and asking for it is an
+   * async round trip to the GPU process that has no business happening twice a
+   * second.
+   */
+  let gpuName: string | null = null;
+  let gpuAsked = false;
+
+  registry.handle('system:getResources', async () => {
+    if (!gpuAsked) {
+      gpuAsked = true;
+      gpuName = await app
+        .getGPUInfo('basic')
+        .then((info) => gpuNameFrom(info))
+        .catch(() => null);
+    }
+
+    return summarise({
+      metrics: app.getAppMetrics(),
+      cpuCount: cpus().length,
+      systemMemory: process.getSystemMemoryInfo(),
+      gpuName,
+      // What the app is actually rendering through, not what the machine has:
+      // a GPU present but blocklisted means these frames came from the CPU.
+      accelerated: app.getGPUFeatureStatus().gpu_compositing?.startsWith('enabled') ?? false,
+    });
+  });
+
   registry.handle('system:chooseFolder', async () => {
     const window = getWindow();
     const result = await (window
