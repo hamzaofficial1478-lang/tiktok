@@ -104,6 +104,16 @@ export class HttpRedirectResolver implements RedirectResolver {
             // These are the headers a browser navigation carries.
             accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'accept-language': 'en-US,en;q=0.9',
+            /**
+             * Only the redirect chain is wanted, never the page.
+             *
+             * A redirect carries no body, but the last hop is a 200, and GET
+             * on a server that writes its response in one go transfers the
+             * whole document — hundreds of kilobytes of TikTok HTML per short
+             * link, for a header we already have. Asking for a single byte
+             * costs nothing and leaves redirects entirely unaffected.
+             */
+            range: 'bytes=0-0',
           },
         });
       } finally {

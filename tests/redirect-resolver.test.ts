@@ -14,12 +14,12 @@ import { HttpRedirectResolver } from '@main/resolve/redirect-resolver';
 let server: Server;
 let base: string;
 /** Records method + path for every request the resolver actually made. */
-let requests: { method: string; url: string }[] = [];
+let requests: { method: string; url: string; headers: Record<string, unknown> }[] = [];
 let bodyBytesSent = 0;
 
 beforeAll(async () => {
   server = createServer((req, res) => {
-    requests.push({ method: req.method ?? '?', url: req.url ?? '' });
+    requests.push({ method: req.method ?? '?', url: req.url ?? '', headers: { ...req.headers } });
     const path = req.url ?? '/';
 
     const redirect = (to: string, status = 302): void => {
@@ -35,11 +35,30 @@ beforeAll(async () => {
 
     if (path === '/final') {
       const body = 'x'.repeat(4_096);
-      res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(body.length) });
       // HEAD must not transfer this; the counter proves it.
-      if (req.method === 'HEAD') return res.end();
+      if (req.method === 'HEAD') {
+        res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(body.length) });
+        return res.end();
+      }
+      // Honour Range, as any real server does: the resolver asks for one byte
+      // so that a GET never pulls a whole page it does not want.
+      if (req.headers.range) {
+        const slice = body.slice(0, 1);
+        res.writeHead(206, { 'content-range': `bytes 0-0/${body.length}`, 'content-length': '1' });
+        bodyBytesSent += slice.length;
+        return res.end(slice);
+      }
+      res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(body.length) });
       bodyBytesSent += body.length;
       return res.end(body);
+    }
+
+    if (path === '/get-not-allowed') {
+      if (req.method === 'GET') {
+        res.writeHead(405);
+        return res.end();
+      }
+      return redirect('/final');
     }
 
     if (path === '/head-not-allowed') {
@@ -97,19 +116,41 @@ describe('HttpRedirectResolver', () => {
     expect(final).toBe(`${base}/final`);
   });
 
-  it('uses HEAD and never downloads a body', async () => {
+  it('asks with GET, the way a browser navigation does', async () => {
     const r = resolver();
     await r.resolve(`${base}/hop/1`);
-    expect(requests.every((req) => req.method === 'HEAD')).toBe(true);
-    expect(bodyBytesSent).toBe(0);
+
+    // HEAD is what TikTok's short-link host answers wrongly: asked that way it
+    // redirects to its own homepage instead of the video.
+    expect(requests.every((req) => req.method === 'GET')).toBe(true);
   });
 
-  it('falls back to GET when the server rejects HEAD, still without reading the body', async () => {
+  it('still never transfers a body, despite using GET', async () => {
     const r = resolver();
-    const final = await r.resolve(`${base}/head-not-allowed`);
+    await r.resolve(`${base}/hop/1`);
+
+    // Redirects carry no body at all; the final 200 is held to a single byte
+    // by the Range header, rather than a whole TikTok page per short link.
+    expect(bodyBytesSent).toBeLessThanOrEqual(1);
+  });
+
+  it('carries the headers a browser navigation carries', async () => {
+    const r = resolver();
+    await r.resolve(`${base}/hop/1`);
+
+    const headers = requests[0]?.headers ?? {};
+    expect(String(headers['accept'])).toContain('text/html');
+    expect(headers['accept-language']).toBeDefined();
+    expect(String(headers['user-agent'])).toContain('Mozilla/5.0');
+  });
+
+  it('falls back to HEAD when a server rejects GET', async () => {
+    const r = resolver();
+    const final = await r.resolve(`${base}/get-not-allowed`);
+
     expect(final).toBe(`${base}/final`);
-    expect(requests.map((req) => req.method)).toContain('GET');
-    expect(bodyBytesSent).toBe(0);
+    expect(requests.map((req) => req.method)).toContain('HEAD');
+    expect(bodyBytesSent).toBeLessThanOrEqual(1);
   });
 
   it('handles every redirect status TikTok might use', async () => {
