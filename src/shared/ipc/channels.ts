@@ -24,6 +24,7 @@ export const INVOKE_CHANNELS = [
 
   'queue:getSnapshot',
   'queue:addLinks',
+  'queue:expandProfile',
   'queue:start',
   'queue:pause',
   'queue:resume',

@@ -40,6 +40,17 @@
   --color-warn-400: #fbbf24;
   --color-danger-400: #fb7185;
 
+  /*
+   * A whole account, rather than one video.
+   *
+   * Its own hue on purpose: a profile line in the paste preview is not a
+   * warning and not a video, and reusing the accent would make "short link"
+   * and "whole account" — two lines with very different consequences — look
+   * alike. Holds >= 4.5:1 on base-900 like every other pairing here.
+   */
+  --color-sky-300: #7dd3fc;
+  --color-sky-400: #38bdf8;
+
   /* Text — all pairings below hold >= 4.5:1 on base-900 (section 10) */
   --color-ink-100: #f4f3fb;
   --color-ink-300: #c9c7de;

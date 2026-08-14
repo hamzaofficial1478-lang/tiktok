@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type ChangeEvent, type DragEvent } from 'react';
-import { parse } from '@shared/url-parse';
+import { parse, parseProfile } from '@shared/url-parse';
 import { scanText, suspiciousCount, type ScanReport } from '@shared/link-safety';
 import { describeError } from '@shared/errors';
 import { useAppStore } from '../store/app-store';
@@ -19,7 +19,10 @@ import { ScanReportPanel } from '../components/ScanReportPanel';
  * duplicate count that turns out to be wrong.
  */
 
-type LineStatus = 'valid' | 'short-link' | 'duplicate' | 'invalid';
+type LineStatus = 'valid' | 'short-link' | 'duplicate' | 'profile' | 'invalid';
+
+/** Which of the two things the user is pasting. */
+type Mode = 'links' | 'profile';
 
 interface Line {
   readonly raw: string;
@@ -39,6 +42,17 @@ function analyse(value: string): Line[] {
   const seen = new Set<string>();
 
   return splitInput(value).map((raw) => {
+    /**
+     * A profile link pasted into the links box is not a mistake, it is the
+     * other feature — so it is labelled as itself rather than rejected as an
+     * invalid video link, and the Fetch button turns it into the videos it
+     * stands for.
+     */
+    const profile = parseProfile(raw);
+    if (profile) {
+      return { raw, status: 'profile' as const, note: `Whole account — press Fetch videos` };
+    }
+
     const parsed = parse(raw);
 
     if (parsed.status === 'invalid') {
@@ -64,11 +78,18 @@ const DOT: Record<LineStatus, string> = {
   valid: 'bg-mint-400',
   'short-link': 'bg-accent-400',
   duplicate: 'bg-warn-400',
+  profile: 'bg-sky-400',
   invalid: 'bg-danger-400',
 };
 
+/** Enough for any real account, and a bound on one paste turning into a batch. */
+const PROFILE_LIMIT = 500;
+
 export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Element {
   const [value, setValue] = useState('');
+  const [mode, setMode] = useState<Mode>('links');
+  const [profileInput, setProfileInput] = useState('');
+  const [fetching, setFetching] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [scan, setScan] = useState<{ report: ScanReport; fileNames: string[] } | null>(null);
@@ -79,6 +100,45 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
   const addable = lines.filter((l) => l.status === 'valid' || l.status === 'short-link').length;
   const duplicates = lines.filter((l) => l.status === 'duplicate').length;
   const invalid = lines.filter((l) => l.status === 'invalid').length;
+  const profiles = lines.filter((l) => l.status === 'profile');
+  const profileTarget = parseProfile(profileInput);
+
+  /**
+   * Lists an account and drops its videos into the same box.
+   *
+   * Deliberately two steps rather than one. Listing can come back with two
+   * hundred videos, and queueing them the instant a profile link is pasted
+   * would turn one keystroke into an hour of downloads nobody agreed to. The
+   * links land in the preview, where the count and every line is visible, and
+   * the existing Add button does what it always did.
+   */
+  async function fetchProfile(input: string): Promise<void> {
+    setFetching(true);
+    try {
+      const result = await invoke('queue:expandProfile', { input, limit: PROFILE_LIMIT });
+      const fetched = result.urls.join('\n');
+
+      setValue((current) => {
+        // The profile line itself is replaced by what it stands for, so the
+        // preview does not keep offering to fetch an account already fetched.
+        const kept = splitInput(current).filter((line) => parseProfile(line)?.handle !== result.handle);
+        return [...kept, fetched].filter((part) => part !== '').join('\n');
+      });
+      setProfileInput('');
+      setMode('links');
+
+      pushToast({
+        kind: 'success',
+        message:
+          `@${result.handle} · ${result.urls.length} video${result.urls.length === 1 ? '' : 's'} found` +
+          (result.truncated ? ` · newest ${PROFILE_LIMIT} shown` : ''),
+      });
+    } catch (err) {
+      pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setFetching(false);
+    }
+  }
 
   async function add(): Promise<void> {
     setBusy(true);
@@ -152,6 +212,63 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
 
   return (
     <div className="mx-auto grid max-w-5xl gap-5">
+      {/* Two ways in, stated as a choice rather than left to be discovered:
+          a list of videos, or one account's whole output. */}
+      <div className="flex gap-1 rounded-xl border border-white/8 bg-base-900/40 p-1" role="tablist">
+        {(
+          [
+            ['links', 'Video links', 'Paste or import individual TikTok links'],
+            ['profile', 'Creator profile', "Fetch every video from one account"],
+          ] as const
+        ).map(([id, label, hint]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={mode === id}
+            onClick={() => setMode(id)}
+            className={`flex-1 rounded-lg px-4 py-2.5 text-left transition ${
+              mode === id ? 'bg-accent-500/15 text-ink-100 ring-1 ring-accent-500/40' : 'text-ink-400 hover:bg-white/4'
+            }`}
+          >
+            <span className="block text-sm font-medium">{label}</span>
+            <span className="block text-xs text-ink-500">{hint}</span>
+          </button>
+        ))}
+      </div>
+
+      {mode === 'profile' && (
+        <Panel title="Fetch a creator's videos">
+          <div className="flex flex-wrap items-start gap-3">
+            <input
+              value={profileInput}
+              onChange={(event: ChangeEvent<HTMLInputElement>) => setProfileInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && profileTarget && !fetching) void fetchProfile(profileInput);
+              }}
+              spellCheck={false}
+              placeholder="https://www.tiktok.com/@creator   or   @creator"
+              aria-label="TikTok profile link or handle"
+              className="min-w-64 flex-1 rounded-xl border border-white/8 bg-base-900/60 px-4 py-3 font-mono text-sm
+                text-ink-100 placeholder:text-ink-500/60 focus:border-accent-500/50 focus:outline-none"
+            />
+            <Button
+              variant="primary"
+              onClick={() => void fetchProfile(profileInput)}
+              disabled={!profileTarget || fetching}
+            >
+              {fetching ? 'Fetching…' : 'Fetch videos'}
+            </Button>
+          </div>
+          <p className="mt-3 text-xs text-ink-500">
+            {profileInput === ''
+              ? `The account's newest ${PROFILE_LIMIT} videos are listed for you to review before anything downloads.`
+              : profileTarget
+                ? `Ready to list @${profileTarget.handle}. Nothing downloads until you press Add.`
+                : 'That is not a profile link. A single video link goes in the Video links tab.'}
+          </p>
+        </Panel>
+      )}
+
       <Panel title="Paste links">
         <textarea
           value={value}
@@ -179,12 +296,22 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
               <>
                 <strong className="text-ink-100">{lines.length}</strong> links found
                 {duplicates > 0 && <> · {duplicates} duplicates removed</>}
+                {profiles.length > 0 && <> · {profiles.length} account{profiles.length === 1 ? '' : 's'}</>}
                 {invalid > 0 && <> · {invalid} invalid</>}
               </>
             )}
           </span>
 
           <div className="ml-auto flex gap-2">
+            {profiles.length > 0 && profiles[0] && (
+              <Button
+                variant="secondary"
+                onClick={() => void fetchProfile(profiles[0]!.raw)}
+                disabled={fetching}
+              >
+                {fetching ? 'Fetching…' : `Fetch videos from ${profiles.length > 1 ? 'first account' : 'account'}`}
+              </Button>
+            )}
             {/* A real file picker, not just the drop target: dropping a file is
                 undiscoverable unless you already know it works. */}
             <input
@@ -227,7 +354,9 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
                       ? 'text-danger-400'
                       : line.status === 'duplicate'
                         ? 'text-warn-400'
-                        : 'text-ink-500'
+                        : line.status === 'profile'
+                          ? 'text-sky-300'
+                          : 'text-ink-500'
                   }`}
                 >
                   {line.note}
@@ -241,7 +370,7 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
       {lines.length === 0 && (
         <EmptyState
           title="Nothing pasted yet"
-          hint="Paste TikTok links one per line, or drop a .txt or .csv file into the box above. Each line is checked as you type."
+          hint="Paste TikTok links one per line, drop a .txt or .csv file into the box above, or switch to Creator profile to pull a whole account. Each line is checked as you type."
         />
       )}
     </div>

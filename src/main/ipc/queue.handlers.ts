@@ -30,6 +30,24 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
     return { ...result, invalid: result.invalid.map((entry) => ({ ...entry })) };
   });
 
+  /**
+   * Lists an account and hands the links back — it queues nothing.
+   *
+   * The user sees what the account contains and decides; a paste that silently
+   * became two hundred downloads would be a worse product than one that asks.
+   */
+  registry.handle('queue:expandProfile', async ({ input, limit }) => {
+    const expansion = await services.resolution.profiles.expand(input, {
+      ...(limit === undefined ? {} : { limit }),
+    });
+    return {
+      handle: expansion.handle,
+      profileUrl: expansion.profileUrl,
+      urls: [...expansion.urls],
+      truncated: expansion.truncated,
+    };
+  });
+
   registry.handle('queue:start', () => {
     queue.start();
     return { ok: true as const };

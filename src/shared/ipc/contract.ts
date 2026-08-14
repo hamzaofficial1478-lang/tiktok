@@ -187,6 +187,27 @@ export const invokeContract = {
     request: z.object({ urls: z.array(z.string()).max(5000) }),
     response: AddLinksResultSchema,
   },
+  /**
+   * Lists an account's videos so a whole profile can be queued from one paste.
+   *
+   * Deliberately separate from `queue:addLinks` and deliberately not additive:
+   * it returns the links and queues nothing. Listing an account is a network
+   * call that can take a minute and can come back with two hundred videos, and
+   * turning a single paste into two hundred downloads without showing the user
+   * the list first is not a shortcut, it is a surprise.
+   */
+  'queue:expandProfile': {
+    request: z.object({
+      input: z.string().min(1).max(300),
+      limit: z.number().int().min(1).max(2000).optional(),
+    }),
+    response: z.object({
+      handle: z.string(),
+      profileUrl: z.string(),
+      urls: z.array(z.string()),
+      truncated: z.boolean(),
+    }),
+  },
   'queue:start': { request: z.void(), response: Ok },
   'queue:pause': { request: z.void(), response: Ok },
   'queue:resume': { request: z.void(), response: Ok },

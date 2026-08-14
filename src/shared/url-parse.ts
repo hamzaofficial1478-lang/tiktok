@@ -39,6 +39,17 @@ const ID_PATTERNS: readonly { readonly pattern: RegExp; readonly kind: MediaKind
 
 const HANDLE_PATTERN = /\/@([\w.-]+)/;
 
+/**
+ * yt-dlp's stand-in for an unknown handle — `f'https://tiktok.com/@_/video/{id}'`
+ * in its TikTok extractor, and `@{user_id or "_"}` in `_create_url`.
+ *
+ * It arrives on links that come back from a profile listing, and taking it at
+ * face value would put an underscore where the creator's name belongs in every
+ * filename. TikTok handles are at least two characters, so nothing real is lost
+ * by reading it as the absence it stands for.
+ */
+const PLACEHOLDER_HANDLE = '_';
+
 /** Hosts whose links must be followed before an ID can be extracted. */
 const SHORT_LINK_HOSTS = new Set(['vm.tiktok.com', 'vt.tiktok.com']);
 
@@ -190,7 +201,8 @@ export function parse(input: string): ParseResult {
     const awemeId = match?.[1];
     if (!awemeId) continue;
 
-    const authorHandle = HANDLE_PATTERN.exec(url.pathname)?.[1] ?? null;
+    const rawHandle = HANDLE_PATTERN.exec(url.pathname)?.[1] ?? null;
+    const authorHandle = rawHandle === PLACEHOLDER_HANDLE ? null : rawHandle;
     return {
       status: 'resolved',
       awemeId,
@@ -202,4 +214,72 @@ export function parse(input: string): ParseResult {
 
   // A TikTok host with no extractable video ID: a profile, a tag, a music page.
   return { status: 'invalid', code: 'NOT_A_TIKTOK_URL' };
+}
+
+/** An account whose posts can be listed, rather than a single video. */
+export interface ProfileRef {
+  /** Without the `@`, lowercased — the same normalising rule canonical URLs use. */
+  readonly handle: string;
+  readonly profileUrl: string;
+}
+
+/**
+ * Recognises a profile link, so a whole account can be queued from one paste.
+ *
+ * Pure and in shared/ for the same reason `parse` is: the paste box labels each
+ * line as it is typed, and a profile has to be told apart from a video before
+ * anything is sent to the main process.
+ *
+ * Deliberately strict about what counts. `@handle` on its own is accepted
+ * because that is how people write a TikTok account, but a bare word is not —
+ * a mistyped video link would otherwise silently become "download this entire
+ * account". Anything with a path segment after the handle is a video, a
+ * playlist or a tab, and is left to `parse`.
+ */
+const PROFILE_HANDLE = /^[\w.-]{1,24}$/;
+
+export function parseProfile(input: string): ProfileRef | null {
+  if (typeof input !== 'string') return null;
+  const unwrapped = stripWrappers(input);
+  if (unwrapped === '') return null;
+
+  // `@handle`, typed as a person would write it.
+  if (unwrapped.startsWith('@')) {
+    const handle = unwrapped.slice(1);
+    return isRealHandle(handle) ? toProfile(handle) : null;
+  }
+
+  const found = TIKTOK_URL_IN_TEXT.exec(unwrapped);
+  if (!found) return null;
+
+  const candidate = stripTrailingPunctuation(found[0]);
+  const withScheme = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
+
+  let url: URL;
+  try {
+    url = new URL(withScheme);
+  } catch {
+    return null;
+  }
+  if (!isTikTokHost(url.hostname)) return null;
+
+  // Exactly one path segment, and it is an @handle. `/@a/video/1` has two, so
+  // a video link can never be mistaken for a request to queue the account.
+  const segments = url.pathname.split('/').filter((segment) => segment !== '');
+  if (segments.length !== 1) return null;
+
+  const first = segments[0] as string;
+  if (!first.startsWith('@')) return null;
+
+  const handle = first.slice(1);
+  return isRealHandle(handle) ? toProfile(handle) : null;
+}
+
+function isRealHandle(handle: string): boolean {
+  return handle !== PLACEHOLDER_HANDLE && PROFILE_HANDLE.test(handle);
+}
+
+function toProfile(handle: string): ProfileRef {
+  const normalised = handle.toLowerCase();
+  return { handle: normalised, profileUrl: `https://www.tiktok.com/@${normalised}` };
 }

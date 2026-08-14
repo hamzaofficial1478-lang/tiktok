@@ -13,6 +13,7 @@ import { ExtractorUpdater, shouldCheckExtractor } from './media/extractor-update
 import { FfmpegInstaller, type InstallProgress } from './media/ffmpeg-installer';
 import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
 import { UrlNormalizer } from './resolve/url-normalizer';
+import { ProfileExpander } from './resolve/profile-expander';
 import { HttpRedirectResolver } from './resolve/redirect-resolver';
 import { QueueEngine } from './queue/queue-engine';
 import { RateLimiter } from './queue/rate-limiter';
@@ -52,6 +53,8 @@ export interface AppServices {
   readonly resolution: {
     readonly normalizer: UrlNormalizer;
     readonly extractor: Extractor;
+    /** Turns a profile link into that account's video links. */
+    readonly profiles: ProfileExpander;
   };
   readonly queue: QueueEngine;
   /** Latest sidecar snapshot; refreshed on demand and after an extractor update. */
@@ -281,6 +284,22 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     redirectResolver: new HttpRedirectResolver(),
   });
 
+  const profiles = new ProfileExpander({
+    get binaryPath(): string | null {
+      return sidecars.resolve('yt-dlp').path;
+    },
+    runner: processRunner,
+    session: () => ({
+      browserCookies: config.get().browserCookies,
+      forceIpv4: config.get().forceIpv4,
+    }),
+    proxyUrl: () => config.get().proxyUrl || undefined,
+    // The listing runs on yt-dlp's own rotating device identity first; the
+    // pinned routes are only a fallback. See profile-expander.ts.
+    fallbackArgs: () => strategies.filter((s) => s.args.length > 0).map((s) => s.args),
+    log: logging.log.child({ scope: 'profile' }),
+  });
+
   const appMeta = new AppMetaRepository(database.db);
 
   const ffprobe = new Ffprobe({
@@ -389,7 +408,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     sidecars,
     extractorUpdater,
     ffmpegInstaller,
-    resolution: { normalizer, extractor },
+    resolution: { normalizer, extractor, profiles },
     queue,
     getSidecarStatus: () => snapshot,
     refreshSidecars,
