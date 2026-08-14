@@ -118,6 +118,16 @@ export interface YtDlpDownloadOptions {
   readonly signal: AbortSignal;
   readonly onProgress: (progress: DownloadProgress) => void;
   readonly proxyUrl?: string | undefined;
+  /**
+   * Languages to fetch caption tracks for, in yt-dlp's `--sub-langs` syntax.
+   *
+   * Absent means no captions were asked for, and no subtitle flags are sent at
+   * all. Present, it rides along with the transfer: TikTok's caption URLs need
+   * the same session the video does, so fetching them separately would mean a
+   * second extraction and a second challenge solve for a video already in
+   * flight.
+   */
+  readonly subtitleLangs?: string | undefined;
   readonly timeoutMs?: number;
   readonly log?: Logger;
 }
@@ -275,6 +285,23 @@ async function attemptDownload(
     '-o',
     toOutputTemplate(paths.workPath),
   ];
+
+  if (options.subtitleLangs) {
+    args.push(
+      '--write-subs',
+      // TikTok's own transcription lives under automatic captions for most
+      // videos; asking only for uploaded ones would find almost nothing.
+      '--write-auto-subs',
+      '--sub-langs',
+      options.subtitleLangs,
+      // One format downstream instead of two. yt-dlp converts whatever TikTok
+      // served, so the parser never has to guess.
+      '--convert-subs',
+      'srt',
+      // A video with no captions at all is the common case and not an error.
+      '--no-abort-on-error',
+    );
+  }
 
   args.push(...route);
   if (options.proxyUrl) args.push('--proxy', options.proxyUrl);

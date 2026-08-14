@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { BROWSER_COOKIE_SOURCES, OUTRO_MODES, WATERMARK_MODES, LOG_LEVELS } from './types';
+import { CaptionSettingsSchema, DEFAULT_CAPTION_SETTINGS } from './caption-schema';
 
 /**
  * AppConfig — spec section 13: "keep a single AppConfig module rather than
@@ -73,6 +74,16 @@ export const AppConfigSchema = z.object({
    */
   forceIpv4: z.boolean(),
 
+  captions: CaptionSettingsSchema,
+  /**
+   * Write a title and description beside each download.
+   *
+   * Both are extracted from what the video actually says — see metadata/seo.ts.
+   * Off by default: it writes a second file into the output folder, and a
+   * folder that gains files nobody asked for is a folder people stop trusting.
+   */
+  seoMetadata: z.boolean(),
+
   hardwareAcceleration: z.boolean(),
   /** Empty string means no proxy. Validated as a URL only when non-empty. */
   proxyUrl: z
@@ -123,6 +134,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   autoUpdateExtractor: true,
   browserCookies: 'none',
   forceIpv4: true,
+
+  captions: DEFAULT_CAPTION_SETTINGS,
+  seoMetadata: false,
 
   hardwareAcceleration: true,
   proxyUrl: '',

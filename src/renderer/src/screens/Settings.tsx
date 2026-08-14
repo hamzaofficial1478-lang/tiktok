@@ -7,6 +7,7 @@ import { invoke } from '../lib/ipc';
 import { Button, PageHeader, Panel, formatBytes } from '../components/primitives';
 import { Field, NumberInput, Select, TextInput, Toggle } from '../components/form';
 import { Icon } from '../components/icons';
+import { CaptionSettings } from '../components/CaptionSettings';
 
 /**
  * Settings — section 10. Every control writes through the single AppConfig.
@@ -334,6 +335,27 @@ export function Settings(): React.JSX.Element {
             />
           ))}
         </div>
+      </Panel>
+
+      <CaptionSettings value={config.captions} onChange={(next) => void set('captions', next)} />
+
+      <Panel
+        title="Title and description"
+        description="A ready-to-post title and description saved beside each video."
+      >
+        <Toggle
+          checked={config.seoMetadata}
+          onChange={(checked) => void set('seoMetadata', checked)}
+          label="Write a title and description for each download"
+          hint={
+            <>
+              Saved as a .txt beside the video. Both are taken from what the video actually says — the spoken hook
+              becomes the title — never from a template, and never invented. Each one comes with the SEO checks it
+              passed and failed, so a weak title is a five-second edit rather than a guess. Needs captions on, or at
+              least a TikTok caption track, to have a transcript to work from.
+            </>
+          }
+        />
       </Panel>
 
       <Panel title="Engine" description="The tools doing the work, and their versions.">

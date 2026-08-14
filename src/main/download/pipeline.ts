@@ -16,6 +16,10 @@ import { assertEnoughSpace } from './disk-space';
 import type { PostProcessor } from '../postprocess/processor';
 import type { MediaCapabilities } from '@shared/ipc/contract';
 import { EMPTY_CAPABILITIES } from '../media/capabilities';
+import { applyCaptions, type Transcriber } from '../captions/caption-step';
+import { subtitleLanguages } from '../captions/tiktok-tracks';
+import { workPathFor } from './yt-dlp-downloader';
+import { writeSeoSidecar } from '../metadata/sidecar';
 
 /**
  * The download pipeline — spec section 9 steps 4-11.
@@ -50,6 +54,8 @@ export interface DownloadPipelineOptions {
   readonly postProcessor?: PostProcessor;
   /** Probed ffmpeg capabilities, for encoder and filter availability. */
   readonly capabilities?: () => MediaCapabilities;
+  /** Speech-to-text for videos TikTok published no caption track for. */
+  readonly transcriber?: Transcriber;
   /** Section 9's "Ask on first detection" prompt; resolved by the UI. */
   readonly confirmOutro?: (proposal: {
     cutAtMs: number;
@@ -186,6 +192,11 @@ export class DownloadPipeline implements MediaPipeline {
           signal: input.signal,
           onProgress: progressSink,
           proxyUrl: this.options.proxyUrl?.(),
+          // Caption tracks ride along with the transfer rather than costing a
+          // second extraction; see captions/tiktok-tracks.ts.
+          ...(config.captions.mode === 'off'
+            ? {}
+            : { subtitleLangs: subtitleLanguages(config.captions.targetLanguage) }),
           log,
         })
       : await downloadToPart({
@@ -282,6 +293,64 @@ export class DownloadPipeline implements MediaPipeline {
       }
     }
 
+
+    /**
+     * 8. Captions, and the title and description written from them.
+     *
+     * After post-processing, because burning captions onto a frame that is
+     * about to be re-encoded for watermark removal would put them through a
+     * second generation of compression for nothing.
+     *
+     * Like post-processing, a failure here does not fail the item: the video is
+     * downloaded and watchable, and losing it because a filter chain misbehaved
+     * would be the worse outcome by far.
+     */
+    let captionNote: string | null = null;
+    let transcriptCues: readonly { startMs: number; endMs: number; lines: readonly string[] }[] = [];
+
+    if (config.captions.mode !== 'off' || config.seoMetadata) {
+      try {
+        const captions = await applyCaptions({
+          filePath: targetPath,
+          // The tracks yt-dlp wrote share the stem of the file it wrote to.
+          mediaStemPath: workPathFor(targetPath),
+          settings: config.captions,
+          frameWidth: selection.stream.width,
+          frameHeight: selection.stream.height,
+          durationMs: input.resolved.metadata.durationMs,
+          ffmpegPath: this.options.ffmpegPath(),
+          runner: this.options.runner,
+          ...(this.options.transcriber ? { transcriber: this.options.transcriber } : {}),
+          ...(input.signal ? { signal: input.signal } : {}),
+          log,
+        });
+
+        transcriptCues = captions.cues;
+        captionNote = captions.skipped;
+        if (captions.applied) {
+          log.info({ source: captions.source, cues: captions.cueCount }, 'captions added');
+        } else if (captions.skipped && config.captions.mode !== 'off') {
+          log.info({ reason: captions.skipped }, 'no captions were added');
+        }
+      } catch (err) {
+        captionNote = err instanceof Error ? err.message : String(err);
+        log.warn({ err: captionNote }, 'captioning failed; the video was kept without captions');
+      }
+
+      if (config.seoMetadata) {
+        try {
+          const written = writeSeoSidecar({
+            videoPath: targetPath,
+            cues: transcriptCues,
+            metadata: input.resolved.metadata,
+          });
+          log.info({ sidecar: written.path, score: written.seo.score.total }, 'wrote a title and description');
+        } catch (err) {
+          log.warn({ err: err instanceof Error ? err.message : String(err) }, 'could not write the title sidecar');
+        }
+      }
+    }
+    void captionNote;
 
     /**
      * Nothing else touches the file.
