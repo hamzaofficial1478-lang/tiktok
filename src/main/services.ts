@@ -250,6 +250,12 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
           },
           runner: processRunner,
           strategy,
+          // Read fresh so a Settings change applies to the next item, not the
+          // next restart.
+          session: () => ({
+            browserCookies: config.get().browserCookies,
+            forceIpv4: config.get().forceIpv4,
+          }),
           proxyUrl: () => config.get().proxyUrl || undefined,
           log: logging.log.child({ scope: `yt-dlp/${strategy.label}` }),
         }),

@@ -60,3 +60,24 @@ export type OutroMode = (typeof OUTRO_MODES)[number];
 
 export const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
+
+/**
+ * Browsers yt-dlp can lift cookies from.
+ *
+ * TikTok increasingly serves a normal page to a logged-in browser and refuses
+ * the same request from a bare client. Borrowing the user's own session is the
+ * one fix that addresses that directly, and it needs no proxy and no account
+ * credentials from them.
+ */
+export const BROWSER_COOKIE_SOURCES = [
+  'none',
+  'chrome',
+  'edge',
+  'firefox',
+  'brave',
+  'chromium',
+  'opera',
+  'vivaldi',
+  'safari',
+] as const;
+export type BrowserCookieSource = (typeof BROWSER_COOKIE_SOURCES)[number];

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { isTerminalForChain } from '@main/resolve/yt-dlp-errors';
-import { YtDlpExtractor, YT_DLP_STRATEGIES } from '@main/resolve/yt-dlp-extractor';
+import { YtDlpExtractor, YT_DLP_STRATEGIES, sessionArgs } from '@main/resolve/yt-dlp-extractor';
 import type { ProcessResult, ProcessRunner } from '@main/resolve/process-runner';
 import {
   AWEME_ID,
@@ -422,5 +422,68 @@ describe('CDN headers', () => {
   it('yields an empty set rather than undefined when a format reports none', async () => {
     const resolved = await extractorFor(CLEAN_AND_WATERMARKED).resolve(CANONICAL);
     expect(resolved.streams[0]?.headers).toEqual({});
+  });
+});
+
+describe('session arguments', () => {
+  it('borrows browser cookies only when a browser is chosen', () => {
+    expect(sessionArgs({ browserCookies: 'chrome' })).toEqual(['--cookies-from-browser', 'chrome']);
+    // 'none' is the config's way of saying "do not touch a browser profile",
+    // and must not become a literal browser name on the command line.
+    expect(sessionArgs({ browserCookies: 'none' })).toEqual([]);
+    expect(sessionArgs({})).toEqual([]);
+  });
+
+  it('forces IPv4 when asked', () => {
+    expect(sessionArgs({ forceIpv4: true })).toEqual(['--force-ipv4']);
+    expect(sessionArgs({ forceIpv4: false })).toEqual([]);
+  });
+
+  it('combines every session flag in a stable order', () => {
+    expect(sessionArgs({ browserCookies: 'edge', forceIpv4: true, proxyUrl: 'socks5://127.0.0.1:9050' })).toEqual([
+      '--cookies-from-browser',
+      'edge',
+      '--force-ipv4',
+      '--proxy',
+      'socks5://127.0.0.1:9050',
+    ]);
+  });
+
+  it('passes the session to yt-dlp on the extraction call', async () => {
+    const calls: string[][] = [];
+    const extractor = new YtDlpExtractor({
+      binaryPath: '/fake/yt-dlp',
+      runner: {
+        run: async (_cmd, args) => {
+          calls.push([...args]);
+          return { stdout: JSON.stringify(CLEAN_AND_WATERMARKED), stderr: '', exitCode: 0, timedOut: false };
+        },
+      },
+      session: () => ({ browserCookies: 'chrome', forceIpv4: true }),
+    });
+
+    await extractor.resolve(CANONICAL);
+
+    expect(calls[0]).toContain('--cookies-from-browser');
+    expect(calls[0]).toContain('--force-ipv4');
+  });
+
+  it('carries the session into the download, not just the extraction', async () => {
+    // Extracting with a browser session and downloading without it reproduces
+    // the exact failure this was added to fix: a clean resolve, then a 403.
+    const extractor = new YtDlpExtractor({
+      binaryPath: '/fake/yt-dlp',
+      runner: runner({ stdout: JSON.stringify(CLEAN_AND_WATERMARKED) }),
+      strategy: YT_DLP_STRATEGIES[1] as (typeof YT_DLP_STRATEGIES)[number],
+      session: () => ({ browserCookies: 'firefox', forceIpv4: true }),
+    });
+
+    const resolved = await extractor.resolve(CANONICAL);
+
+    expect(resolved.extractorArgs).toContain('--cookies-from-browser');
+    expect(resolved.extractorArgs).toContain('firefox');
+    expect(resolved.extractorArgs).toContain('--force-ipv4');
+    // The winning route is still carried alongside the session.
+    expect(resolved.extractorArgs).toContain('--extractor-args');
   });
 });

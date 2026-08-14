@@ -159,6 +159,31 @@ export function Settings(): React.JSX.Element {
           </Field>
 
           <Field
+            label="Use cookies from"
+            hint="If a video plays in your browser but the app is refused, that difference is the session — not your connection."
+          >
+            <select
+              value={config.browserCookies}
+              onChange={(event) => void set('browserCookies', event.target.value as typeof config.browserCookies)}
+              className={inputClass}
+            >
+              <option value="none">No browser (default)</option>
+              <option value="chrome">Chrome</option>
+              <option value="edge">Edge</option>
+              <option value="firefox">Firefox</option>
+              <option value="brave">Brave</option>
+              <option value="chromium">Chromium</option>
+              <option value="opera">Opera</option>
+              <option value="vivaldi">Vivaldi</option>
+              <option value="safari">Safari</option>
+            </select>
+            <p className="mt-2 text-xs text-ink-500">
+              Reads that browser&rsquo;s TikTok cookies so requests carry your own session. Close the browser first —
+              Chrome and Edge lock their cookie database while running.
+            </p>
+          </Field>
+
+          <Field
             label="Proxy"
             hint="http(s):// or socks5://. Leave empty for none. Used for resolving links and downloading."
           >
@@ -266,6 +291,7 @@ export function Settings(): React.JSX.Element {
           {(
             [
               ['autoUpdateExtractor', 'Keep the extractor up to date automatically'],
+              ['forceIpv4', 'Force IPv4 (TikTok refuses some IPv6 connections)'],
               ['audioOnly', 'Extract audio only (MP3/M4A)'],
               ['detectReposts', 'Detect reposts (slower: decodes each video again)'],
               ['hardwareAcceleration', 'Use hardware encoding when available'],

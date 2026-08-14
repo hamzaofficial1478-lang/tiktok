@@ -286,7 +286,7 @@ function statusToError(status: number, url: string): AppError {
      * asserting the one the taxonomy code is named after.
      */
     return new AppError(
-      'REGION_BLOCKED',
+      'CDN_FORBIDDEN',
       `the CDN refused the download with 403. The link may have expired, or TikTok may not serve it from this ` +
         `location. URL: ${url.slice(0, 120)}`,
     );

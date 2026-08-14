@@ -71,6 +71,16 @@ const RULES: readonly Rule[] = [
     why: 'extractor could not parse TikTok',
   },
 
+  /**
+   * A 403 on the media request, not the page.
+   *
+   * Deliberately separate from REGION_BLOCKED: the taxonomy code named after a
+   * region made every one of these terminal, so a refusal that a fresh link
+   * would have fixed was never retried once. TikTok signs these URLs and checks
+   * a session, and both go stale.
+   */
+  { pattern: /HTTP Error 403\b|403: Forbidden|Forbidden/i, code: 'CDN_FORBIDDEN', why: 'CDN refused the media request' },
+
   // --- Transport ---------------------------------------------------------
   { pattern: /HTTP Error 5\d\d\b/i, code: 'NETWORK_ERROR', why: 'server error' },
   {

@@ -89,6 +89,31 @@ interface YtDlpPayload {
 const BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
+/**
+ * Network and session arguments that must be identical on both the extraction
+ * call and the download call.
+ *
+ * Drift here is silent and expensive: extracting with a browser session and
+ * then downloading without it produces exactly the failure this was added to
+ * fix, and the log would show a successful resolve followed by a 403.
+ */
+export interface YtDlpSessionOptions {
+  readonly browserCookies?: string | undefined;
+  readonly forceIpv4?: boolean | undefined;
+  readonly proxyUrl?: string | undefined;
+}
+
+export function sessionArgs(options: YtDlpSessionOptions): string[] {
+  const args: string[] = [];
+  // 'none' is the config's way of saying "do not touch a browser profile".
+  if (options.browserCookies && options.browserCookies !== 'none') {
+    args.push('--cookies-from-browser', options.browserCookies);
+  }
+  if (options.forceIpv4) args.push('--force-ipv4');
+  if (options.proxyUrl) args.push('--proxy', options.proxyUrl);
+  return args;
+}
+
 export interface YtDlpStrategy {
   /** Appears in the log and in the extractor's name. */
   readonly label: string;
@@ -128,6 +153,8 @@ export interface YtDlpExtractorOptions {
   readonly log?: Logger;
   /** Which route this instance uses. Defaults to the plain web one. */
   readonly strategy?: YtDlpStrategy;
+  /** Read fresh per call so a Settings change applies mid-batch. */
+  readonly session?: () => YtDlpSessionOptions;
 }
 
 export class YtDlpExtractor implements Extractor {
@@ -165,7 +192,7 @@ export class YtDlpExtractor implements Extractor {
     if (this.options.strategy) args.push(...this.options.strategy.args);
 
     const proxy = typeof this.options.proxyUrl === 'function' ? this.options.proxyUrl() : this.options.proxyUrl;
-    if (proxy) args.push('--proxy', proxy);
+    args.push(...sessionArgs({ ...this.options.session?.(), proxyUrl: proxy }));
     args.push(canonicalUrl);
 
     const result = await this.options.runner.run(binary, args, {
@@ -251,7 +278,10 @@ export class YtDlpExtractor implements Extractor {
       metadata,
       extractor: this.name,
       // The download must reach the same endpoint this metadata came from.
-      extractorArgs: this.options.strategy?.args ?? [],
+      extractorArgs: [
+        ...(this.options.strategy?.args ?? []),
+        ...sessionArgs({ ...this.options.session?.(), proxyUrl: undefined }),
+      ],
     };
   }
 }

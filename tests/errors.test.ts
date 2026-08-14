@@ -25,9 +25,9 @@ describe('error taxonomy (section 11)', () => {
     expect(Object.keys(ERROR_REGISTRY).sort()).toEqual([...ERROR_CODES].sort());
   });
 
-  it('covers all 17 codes the brief enumerates, plus INTERNAL_ERROR for protocol faults', () => {
+  it('covers all 17 codes the brief enumerates, plus the two this app added', () => {
     expect(SPEC_ERROR_CODES).toHaveLength(17);
-    expect(ERROR_CODES).toEqual([...SPEC_ERROR_CODES, 'INTERNAL_ERROR']);
+    expect(ERROR_CODES).toEqual([...SPEC_ERROR_CODES, 'INTERNAL_ERROR', 'CDN_FORBIDDEN']);
     // An internal fault must not masquerade as a user-facing download failure.
     expect(describeError('INTERNAL_ERROR').message).not.toMatch(/link|url|video|download/i);
     expect(describeError('INTERNAL_ERROR').action).toBe('open-logs');
@@ -43,7 +43,10 @@ describe('error taxonomy (section 11)', () => {
   it('auto-retries exactly the transient failures section 8 lists', () => {
     const autoRetryable = ERROR_CODES.filter(isAutoRetryable).sort();
     expect(autoRetryable).toEqual(
-      ['DOWNLOAD_INCOMPLETE', 'NETWORK_ERROR', 'RATE_LIMITED', 'RESOLVE_FAILED', 'VERIFY_FAILED'].sort(),
+      // CDN_FORBIDDEN retries on purpose: TikTok signs its media URLs and
+      // checks a session, and both go stale, so a refusal a fresh link would
+      // have fixed used to be terminal and never retried once.
+      ['CDN_FORBIDDEN', 'DOWNLOAD_INCOMPLETE', 'NETWORK_ERROR', 'RATE_LIMITED', 'RESOLVE_FAILED', 'VERIFY_FAILED'].sort(),
     );
   });
 

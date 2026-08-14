@@ -53,7 +53,7 @@ export const SPEC_ERROR_CODES = [
  * precisely the misleading message section 11 exists to prevent. It never
  * appears on a queue row; it only ever surfaces at the IPC boundary.
  */
-export const ERROR_CODES = [...SPEC_ERROR_CODES, 'INTERNAL_ERROR'] as const;
+export const ERROR_CODES = [...SPEC_ERROR_CODES, 'INTERNAL_ERROR', 'CDN_FORBIDDEN'] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
 export type SpecErrorCode = (typeof SPEC_ERROR_CODES)[number];
@@ -123,6 +123,16 @@ export const ERROR_REGISTRY: Readonly<Record<ErrorCode, ErrorDescriptor>> = {
     autoRetry: false,
     userRetryable: false,
     action: 'none',
+  },
+  CDN_FORBIDDEN: {
+    code: 'CDN_FORBIDDEN',
+    title: 'TikTok refused the file',
+    message:
+      'TikTok served the video details but refused the file itself. This usually clears on a retry with a fresh ' +
+      'link. If it persists, try Settings \u2192 Use cookies from, and pick the browser you watch TikTok in.',
+    action: 'retry',
+    autoRetry: true,
+    userRetryable: true,
   },
   REGION_BLOCKED: {
     code: 'REGION_BLOCKED',

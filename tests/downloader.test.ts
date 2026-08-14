@@ -261,7 +261,7 @@ describe('downloading to .part', () => {
   it('maps HTTP statuses to the taxonomy', async () => {
     const cases = [
       ['404', 'VIDEO_DELETED'],
-      ['403', 'REGION_BLOCKED'],
+      ['403', 'CDN_FORBIDDEN'],
       ['429', 'RATE_LIMITED'],
       ['503', 'NETWORK_ERROR'],
     ] as const;

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { OUTRO_MODES, WATERMARK_MODES, LOG_LEVELS } from './types';
+import { BROWSER_COOKIE_SOURCES, OUTRO_MODES, WATERMARK_MODES, LOG_LEVELS } from './types';
 
 /**
  * AppConfig — spec section 13: "keep a single AppConfig module rather than
@@ -56,6 +56,22 @@ export const AppConfigSchema = z.object({
   detectReposts: z.boolean(),
   /** Check for a newer yt-dlp at start-up. On by default: a stale extractor is the most common cause of every download failing. */
   autoUpdateExtractor: z.boolean(),
+  /**
+   * Borrow TikTok cookies from an installed browser.
+   *
+   * The decisive case: the video plays fine in the browser and the app is
+   * refused. That difference is the session, not the network, and this is the
+   * only setting that closes it without a proxy.
+   */
+  browserCookies: z.enum(BROWSER_COOKIE_SOURCES),
+  /**
+   * Force IPv4 for every outbound request.
+   *
+   * TikTok's CDN answers some IPv6 clients with 403 while serving the same
+   * request over IPv4. On by default because the cost of being wrong is one
+   * address family, and the cost of the alternative is every download failing.
+   */
+  forceIpv4: z.boolean(),
 
   hardwareAcceleration: z.boolean(),
   /** Empty string means no proxy. Validated as a URL only when non-empty. */
@@ -72,7 +88,7 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
-export const CONFIG_SCHEMA_VERSION = 3;
+export const CONFIG_SCHEMA_VERSION = 4;
 
 export const DEFAULT_CONFIG: AppConfig = {
   outputDir: '',
@@ -94,6 +110,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   audioOnly: false,
   detectReposts: false,
   autoUpdateExtractor: true,
+  browserCookies: 'none',
+  forceIpv4: true,
 
   hardwareAcceleration: true,
   proxyUrl: '',
