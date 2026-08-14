@@ -79,6 +79,17 @@ export const AppConfigSchema = z.object({
     .string()
     .refine((v) => v === '' || /^(https?|socks5h?):\/\/\S+$/i.test(v), 'Proxy must be an http(s):// or socks5:// URL'),
 
+  /**
+   * The device identity the mobile-app route presents to TikTok.
+   *
+   * Not a setting — there is no Settings control for it and no reason for
+   * anyone to type one. It lives here because it has to survive restarts:
+   * yt-dlp's app-API path is only taken when a device ID is supplied, and one
+   * that changes on every launch is the signature of a bot rather than a
+   * phone. Empty means "not generated yet"; start-up fills it in.
+   */
+  deviceId: z.string().regex(/^\d*$/, 'Device ID must be numeric'),
+
   reduceEffects: z.boolean(),
   logLevel: z.enum(LOG_LEVELS),
 
@@ -115,6 +126,8 @@ export const DEFAULT_CONFIG: AppConfig = {
 
   hardwareAcceleration: true,
   proxyUrl: '',
+
+  deviceId: '',
 
   reduceEffects: false,
   logLevel: 'info',

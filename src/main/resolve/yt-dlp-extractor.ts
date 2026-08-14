@@ -122,23 +122,56 @@ export interface YtDlpStrategy {
 }
 
 /**
- * Ordered cheapest-and-most-likely first.
+ * The routes, ordered cheapest-and-most-likely first.
  *
- * The API hostnames are TikTok's own regional endpoints. They are worth trying
- * in sequence because availability differs by region — the exact situation
- * where a user is told to go and find a proxy today.
+ * ## What was wrong with the previous list
+ *
+ * It had three entries and one route. The two "mobile api" entries set
+ * `api_hostname` and nothing else, and `api_hostname` on its own does not
+ * select the mobile API — it renames an endpoint that is never contacted.
+ * yt-dlp gates its app path on having a device identity:
+ *
+ *     @functools.cached_property
+ *     def _KNOWN_APP_INFO(self):
+ *         default = [''] if self._KNOWN_DEVICE_ID else []
+ *         return self._configuration_arg('app_info', default, ie_key=TikTokIE)
+ *
+ *     def _real_extract(self, url):
+ *         if self._KNOWN_APP_INFO:                     # empty without device_id
+ *             try:
+ *                 return self._extract_aweme_app(video_id)
+ *             ...
+ *         video_data, status = self._extract_web_data_and_status(url, video_id)
+ *
+ * — yt_dlp/extractor/tiktok.py. With neither `device_id` nor `app_info` given,
+ * `_KNOWN_APP_INFO` is empty, the app branch is skipped, and all three routes
+ * scraped the same web page. So a link that failed with "Unable to extract
+ * universal data for rehydration" — the web page not carrying the JSON blob —
+ * failed identically on every route and every retry, which is exactly what four
+ * attempts of the same error in the queue looked like.
+ *
+ * Passing `device_id` switches the branch on. `_build_api_query` sends it as
+ * the device and drops the absent install ID (`filter_dict` strips None), so no
+ * fabricated install ID is needed. The app route also falls back to the web
+ * page internally if it fails, so these routes are strictly additive.
+ *
+ * Web stays first because it is the fast path and it works for most links; the
+ * app routes are what the ones it cannot serve now fall through to.
  */
-export const YT_DLP_STRATEGIES: readonly YtDlpStrategy[] = [
-  { label: 'web', args: [] },
-  {
-    label: 'mobile api',
-    args: ['--extractor-args', 'tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com'],
-  },
-  {
-    label: 'mobile api (alt region)',
-    args: ['--extractor-args', 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com'],
-  },
-];
+export function ytDlpStrategies(deviceId: string): readonly YtDlpStrategy[] {
+  const app = (hostname: string): readonly string[] => [
+    '--extractor-args',
+    `tiktok:device_id=${deviceId};api_hostname=${hostname}`,
+  ];
+
+  return [
+    { label: 'web', args: [] },
+    // TikTok's own regional endpoints; availability differs by region, which is
+    // the situation a user would otherwise be told to solve with a proxy.
+    { label: 'mobile app api', args: app('api16-normal-c-useast1a.tiktokv.com') },
+    { label: 'mobile app api (alt region)', args: app('api22-normal-c-useast2a.tiktokv.com') },
+  ];
+}
 
 export interface YtDlpExtractorOptions {
   /** Absolute path to the sidecar, or null when it is not installed. */

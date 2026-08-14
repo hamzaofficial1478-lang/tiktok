@@ -22,7 +22,8 @@ import { ChildProcessRunner } from './resolve/process-runner';
 import { Ffprobe } from './media/ffprobe';
 import { DownloadPipeline } from './download/pipeline';
 import { PostProcessor } from './postprocess/processor';
-import { YtDlpExtractor, YT_DLP_STRATEGIES } from './resolve/yt-dlp-extractor';
+import { YtDlpExtractor, ytDlpStrategies } from './resolve/yt-dlp-extractor';
+import { generateDeviceId, isValidDeviceId } from './resolve/device-id';
 import { ExtractorChain } from './resolve/extractor-chain';
 import type { Extractor } from './resolve/types';
 import type { MediaCapabilities, SidecarStatus } from '@shared/ipc/contract';
@@ -119,6 +120,19 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       log.warn({ err: String(err) }, 'could not create the default output folder; the user must choose one');
     }
   }
+
+  /**
+   * The device identity the mobile-app route needs, minted once and then kept.
+   *
+   * Without it yt-dlp never takes its app-API path, and the alternative routes
+   * collapse back onto the same web scrape as the default one — which is how
+   * three routes and four attempts produced one error four times.
+   */
+  if (!isValidDeviceId(config.get().deviceId)) {
+    config.update({ deviceId: generateDeviceId() });
+    log.info('minted a device identity for the mobile app route');
+  }
+  const strategies = ytDlpStrategies(config.get().deviceId);
 
   const database = openDatabase({ file: paths.database, log: logging.log.child({ scope: 'db' }) });
 
@@ -242,7 +256,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
    * go and find a proxy.
    */
   const extractor = new ExtractorChain(
-    YT_DLP_STRATEGIES.map(
+    strategies.map(
       (strategy) =>
         new YtDlpExtractor({
           get binaryPath(): string | null {
@@ -293,6 +307,8 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       ffmpegPath: () => sidecars.resolve('ffmpeg').path,
       // yt-dlp holds the TikTok session, so it performs the transfer.
       ytDlpPath: () => sidecars.resolve('yt-dlp').path,
+      // The download re-extracts, so it needs the same routes resolution has.
+      downloadStrategies: () => strategies,
       proxyUrl: () => config.get().proxyUrl || undefined,
       log: logging.log.child({ scope: 'download' }),
       postProcessor,

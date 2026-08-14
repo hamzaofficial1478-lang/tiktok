@@ -8,7 +8,7 @@ import type { MediaPipeline, PipelineInput, PipelineResult } from '../queue/type
 import { selectStream } from './stream-selector';
 import { commitPart, discardPart, downloadToPart, partPathFor } from './downloader';
 import { downloadWithYtDlp } from './yt-dlp-downloader';
-import { YT_DLP_STRATEGIES } from '../resolve/yt-dlp-extractor';
+import type { YtDlpStrategy } from '../resolve/yt-dlp-extractor';
 import { verifyDownload } from './verify';
 import { renderTemplate, resolveOutputPath } from './filename';
 import { computePerceptualHash, sha256File } from './hashing';
@@ -38,6 +38,11 @@ export interface DownloadPipelineOptions {
   readonly fetchImpl?: typeof fetch;
   /** yt-dlp path; when present it performs the transfer (see step 4). */
   readonly ytDlpPath?: () => string | null;
+  /**
+   * The routes the download may fall back to, read fresh so it uses the same
+   * list resolution does. Empty means "only the route that resolved it".
+   */
+  readonly downloadStrategies?: () => readonly YtDlpStrategy[];
   readonly proxyUrl?: () => string | undefined;
   /** Overridable so tests can point at a temp directory. */
   readonly outputDir?: () => string;
@@ -65,7 +70,10 @@ export interface DownloadPipelineOptions {
  * Session arguments already sit inside the resolved route, so they are carried
  * onto the alternatives rather than being dropped when one is tried.
  */
-export function downloadRoutes(resolvedArgs: readonly string[] | undefined): readonly (readonly string[])[] {
+export function downloadRoutes(
+  resolvedArgs: readonly string[] | undefined,
+  strategies: readonly YtDlpStrategy[] = [],
+): readonly (readonly string[])[] {
   const primary = resolvedArgs ?? [];
   // Whatever is not an --extractor-args pair is session state: cookies, IPv4.
   const session: string[] = [];
@@ -80,7 +88,7 @@ export function downloadRoutes(resolvedArgs: readonly string[] | undefined): rea
   const seen = new Set<string>([primary.join(' ')]);
   const routes: (readonly string[])[] = [primary];
 
-  for (const strategy of YT_DLP_STRATEGIES) {
+  for (const strategy of strategies) {
     const candidate = [...strategy.args, ...session];
     const key = candidate.join(' ');
     if (seen.has(key)) continue;
@@ -173,7 +181,7 @@ export class DownloadPipeline implements MediaPipeline {
           runner: this.options.runner,
           url: input.normalized.canonicalUrl,
           formatId: selection.stream.id,
-          routes: downloadRoutes(input.resolved.extractorArgs),
+          routes: downloadRoutes(input.resolved.extractorArgs, this.options.downloadStrategies?.() ?? []),
           targetPath,
           signal: input.signal,
           onProgress: progressSink,

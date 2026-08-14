@@ -289,6 +289,39 @@ describe('verification (section 9 step 7)', () => {
     ).resolves.toBeDefined();
   });
 
+  /**
+   * A real file that this check rejected.
+   *
+   * TikTok reported 6s, the container probed at 7s, and 10% of six seconds is
+   * six tenths — so a perfectly watchable video was reported to the user as
+   * corrupt. The percentage is smaller than the error in the number it is
+   * compared against: TikTok rounds many durations to whole seconds, and the
+   * container counts the last frame's display time.
+   */
+  it('accepts a whole second of rounding on a short video', async () => {
+    const rounded = { ...validProbe, format: { ...validProbe.format, duration: '7.0' } };
+    await expect(
+      verifyDownload({ filePath, expectedDurationMs: 6_000, audioOnly: false, ffprobe: ffprobeReturning(rounded) }),
+    ).resolves.toBeDefined();
+  });
+
+  it('does not fail a file for being longer than expected', async () => {
+    // Truncation makes a file shorter. A long one is a container quirk, and
+    // refusing it throws away a video that plays correctly.
+    const longer = { ...validProbe, format: { ...validProbe.format, duration: '20.0' } };
+    await expect(
+      verifyDownload({ filePath, expectedDurationMs: 12_000, audioOnly: false, ffprobe: ffprobeReturning(longer) }),
+    ).resolves.toBeDefined();
+  });
+
+  it('still catches the truncation the check exists for', async () => {
+    // Half the video missing is not rounding.
+    const truncated = { ...validProbe, format: { ...validProbe.format, duration: '3.0' } };
+    await expect(
+      verifyDownload({ filePath, expectedDurationMs: 12_000, audioOnly: false, ffprobe: ffprobeReturning(truncated) }),
+    ).rejects.toMatchObject({ code: 'VERIFY_FAILED' });
+  });
+
   it('reports a corrupt file that ffprobe cannot read', async () => {
     await expect(
       verifyDownload({ filePath, expectedDurationMs: null, audioOnly: false, ffprobe: ffprobeReturning({}, 1) }),

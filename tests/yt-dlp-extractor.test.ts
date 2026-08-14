@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { isTerminalForChain } from '@main/resolve/yt-dlp-errors';
-import { YtDlpExtractor, YT_DLP_STRATEGIES, sessionArgs } from '@main/resolve/yt-dlp-extractor';
+import {
+  YtDlpExtractor,
+  ytDlpStrategies,
+  sessionArgs,
+  type YtDlpStrategy,
+} from '@main/resolve/yt-dlp-extractor';
 import type { ProcessResult, ProcessRunner } from '@main/resolve/process-runner';
 import {
   AWEME_ID,
@@ -305,19 +310,32 @@ describe('multiple routes to TikTok', () => {
     };
   }
 
+  const DEVICE_ID = '7300000000000000000';
+
   it('names each route so the log says which one was used', () => {
-    const names = YT_DLP_STRATEGIES.map(
+    const names = ytDlpStrategies(DEVICE_ID).map(
       (strategy) => new YtDlpExtractor({ binaryPath: '/fake', runner: capturing([]).runner, strategy }).name,
     );
 
-    expect(names).toEqual(['yt-dlp (web)', 'yt-dlp (mobile api)', 'yt-dlp (mobile api (alt region))']);
+    expect(names).toEqual([
+      'yt-dlp (web)',
+      'yt-dlp (mobile app api)',
+      'yt-dlp (mobile app api (alt region))',
+    ]);
     // Distinct names matter: the chain logs which extractor failed, and three
     // identically named ones would make that log useless.
     expect(new Set(names).size).toBe(names.length);
   });
 
-  it('sends the API hostname only for the routes that use one', async () => {
-    for (const strategy of YT_DLP_STRATEGIES) {
+  /**
+   * The bug this pins: `api_hostname` alone does not select the mobile API.
+   * yt-dlp only takes its app path when it has a device identity
+   * (`_KNOWN_APP_INFO` is empty without `device_id` or `app_info`), so a route
+   * carrying only a hostname renames an endpoint that is never contacted — and
+   * all three routes scraped the same web page as each other.
+   */
+  it('gives the app routes a device identity, not just a hostname', async () => {
+    for (const strategy of ytDlpStrategies(DEVICE_ID)) {
       const { runner, calls } = capturing([{ exitCode: 1, stderr: 'ERROR: nope' }]);
       const extractor = new YtDlpExtractor({ binaryPath: '/fake', runner, strategy });
 
@@ -328,7 +346,11 @@ describe('multiple routes to TikTok', () => {
         expect(args).not.toContain('--extractor-args');
       } else {
         expect(args).toContain('--extractor-args');
-        expect(args.some((a) => a.startsWith('tiktok:api_hostname='))).toBe(true);
+        const value = args[args.indexOf('--extractor-args') + 1] ?? '';
+        expect(value).toContain(`device_id=${DEVICE_ID}`);
+        expect(value).toContain('api_hostname=');
+        // One `tiktok:` group, keys separated by `;` — the syntax yt-dlp parses.
+        expect(value).toMatch(/^tiktok:[^:]+$/);
       }
       // Every route presents as a browser; a default agent is among the first
       // things a site filters on.
@@ -350,7 +372,7 @@ describe('multiple routes to TikTok', () => {
     const extractor = new YtDlpExtractor({
       binaryPath: '/fake',
       runner,
-      strategy: YT_DLP_STRATEGIES[0] as (typeof YT_DLP_STRATEGIES)[number],
+      strategy: ytDlpStrategies('7300000000000000000')[0] as YtDlpStrategy,
     });
 
     // EXTRACTOR_FAILED is deliberately not terminal for the chain, so the
@@ -474,7 +496,7 @@ describe('session arguments', () => {
     const extractor = new YtDlpExtractor({
       binaryPath: '/fake/yt-dlp',
       runner: runner({ stdout: JSON.stringify(CLEAN_AND_WATERMARKED) }),
-      strategy: YT_DLP_STRATEGIES[1] as (typeof YT_DLP_STRATEGIES)[number],
+      strategy: ytDlpStrategies('7300000000000000000')[1] as YtDlpStrategy,
       session: () => ({ browserCookies: 'firefox', forceIpv4: true }),
     });
 
