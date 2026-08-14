@@ -10,6 +10,7 @@ import {
   ErrorNote,
   Panel,
   ProgressRing,
+  Stat,
   StatusChip,
   WatermarkBadge,
   formatBytes,
@@ -102,20 +103,36 @@ function Row({
 
         <StatusChip status={item.status} />
 
-        <div className="flex shrink-0 gap-1">
+        {/* Drawn icons rather than ✕ ↻ 🗑. Those are text: they render in
+            whichever font the system substitutes, at whatever weight it
+            chooses, and the emoji bin arrives in full colour next to a
+            monochrome interface. */}
+        <div className="flex shrink-0 items-center gap-0.5">
           {isActive && (
-            <Button variant="ghost" onClick={() => void invoke('queue:cancelItem', { itemId: item.id })} title="Cancel">
-              ✕
-            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="pause"
+              title="Cancel"
+              onClick={() => void invoke('queue:cancelItem', { itemId: item.id })}
+            />
           )}
           {descriptor?.userRetryable && (
-            <Button variant="ghost" onClick={() => void invoke('queue:retryItem', { itemId: item.id })} title="Retry">
-              ↻
-            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="retry"
+              title="Retry"
+              onClick={() => void invoke('queue:retryItem', { itemId: item.id })}
+            />
           )}
-          <Button variant="ghost" onClick={() => void invoke('queue:removeItem', { itemId: item.id })} title="Remove">
-            🗑
-          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="trash"
+            title="Remove"
+            onClick={() => void invoke('queue:removeItem', { itemId: item.id })}
+          />
         </div>
       </div>
 
@@ -166,7 +183,7 @@ function Row({
   );
 }
 
-export function Queue(): React.JSX.Element {
+export function Queue({ onAddLinks }: { onAddLinks?: () => void }): React.JSX.Element {
   // Subscribe to the Map, sort in a memo. Sorting inside the selector would
   // hand zustand a new array every render — see orderedItems' note.
   const queueItems = useAppStore((s) => s.queueItems);
@@ -222,61 +239,80 @@ export function Queue(): React.JSX.Element {
   if (items.length === 0) {
     return (
       <EmptyState
+        icon="queue"
         title="The queue is empty"
         hint="Add some TikTok links and they will download here, in the exact order you pasted them."
+        // An empty screen with nothing to press is a dead end.
+        action={
+          onAddLinks && (
+            <Button variant="primary" icon="add" onClick={onAddLinks}>
+              Add links
+            </Button>
+          )
+        }
       />
     );
   }
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <Panel className="shrink-0">
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl font-semibold text-ink-100">{totals.done}</span>
-            <span className="text-sm text-ink-500">of {items.length} done</span>
-          </div>
-          {/* The headline number for this app: how many actually came out clean. */}
+      <Panel className="shrink-0" bodyClassName="px-5 py-4">
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
+          {/* Fixed shape per figure, so the eye finds "failed" in the same
+              place every time instead of re-reading a row of sentences. */}
+          <Stat label="Done" value={`${totals.done}/${items.length}`} />
           {totals.watermarkRemoved > 0 && (
-            <span className="text-sm text-mint-300" title="Watermark removed, or never present in the source">
-              {totals.watermarkRemoved} watermark-free
-            </span>
+            <Stat
+              label="Watermark-free"
+              value={totals.watermarkRemoved}
+              tone="good"
+              title="Watermark removed, or never present in the source"
+            />
           )}
           {totals.stillWatermarked > 0 && (
-            <span className="text-sm text-warn-400" title="No clean stream was offered and removal was not attempted">
-              {totals.stillWatermarked} still watermarked
-            </span>
+            <Stat
+              label="Watermarked"
+              value={totals.stillWatermarked}
+              tone="warn"
+              title="No clean stream was offered and removal was not attempted"
+            />
           )}
+          {totals.failed > 0 && <Stat label="Failed" value={totals.failed} tone="bad" />}
           {combined.speed !== null && (
-            <span className="text-sm text-ink-300">
-              {formatSpeed(combined.speed)}
-              {combined.etaMs !== null && <span className="text-ink-500"> · {formatEta(combined.etaMs)}</span>}
-            </span>
+            <Stat
+              label={combined.etaMs === null ? 'Speed' : formatEta(combined.etaMs)}
+              value={formatSpeed(combined.speed)}
+            />
           )}
-          {totals.failed > 0 && <span className="text-sm text-danger-400">{totals.failed} failed</span>}
           {pending.length > 0 && (
-            <span className="rounded-md bg-warn-400/20 px-2 py-0.5 text-xs font-medium text-warn-400">
-              {pending.length} question{pending.length === 1 ? '' : 's'} waiting
-            </span>
+            <Stat label="Questions" value={pending.length} tone="warn" title="Downloads on hold until answered" />
           )}
 
           <div className="ml-auto flex gap-2">
             {queueState.paused || !queueState.running ? (
               <Button
                 variant="primary"
+                icon="play"
                 onClick={() => void invoke(queueState.running ? 'queue:resume' : 'queue:start')}
               >
                 {queueState.running ? 'Resume' : 'Start'}
               </Button>
             ) : (
-              <Button onClick={() => void invoke('queue:pause')}>Pause</Button>
+              <Button icon="pause" onClick={() => void invoke('queue:pause')}>
+                Pause
+              </Button>
             )}
             {totals.failed > 0 && (
-              <Button onClick={() => void invoke('queue:retryAllFailed')}>Retry failed</Button>
+              <Button icon="retry" onClick={() => void invoke('queue:retryAllFailed')}>
+                Retry failed
+              </Button>
             )}
-            <Button variant="ghost" onClick={() => void invoke('queue:removeCompleted')}>
-              Clear completed
-            </Button>
+            <Button
+              variant="ghost"
+              icon="trash"
+              title="Clear completed"
+              onClick={() => void invoke('queue:removeCompleted')}
+            />
           </div>
         </div>
       </Panel>

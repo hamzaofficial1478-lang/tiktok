@@ -12,6 +12,8 @@ import { Logs } from './screens/Logs';
 import { DuplicateModal } from './components/DuplicateModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Button } from './components/primitives';
+import { Sidebar, type NavItem } from './components/Sidebar';
+import { Icon } from './components/icons';
 import { transition, usePrefersReducedMotion } from './lib/motion-prefs';
 
 /**
@@ -25,13 +27,13 @@ const BackgroundScene = lazy(() =>
 
 type Screen = 'add' | 'queue' | 'library' | 'history' | 'settings' | 'logs';
 
-const NAV: readonly { id: Screen; label: string }[] = [
-  { id: 'add', label: 'Add links' },
-  { id: 'queue', label: 'Queue' },
-  { id: 'library', label: 'Library' },
-  { id: 'history', label: 'History' },
-  { id: 'settings', label: 'Settings' },
-  { id: 'logs', label: 'Logs' },
+const NAV: readonly { id: Screen; label: string; icon: NavItem<Screen>['icon'] }[] = [
+  { id: 'add', label: 'Add links', icon: 'add' },
+  { id: 'queue', label: 'Queue', icon: 'queue' },
+  { id: 'library', label: 'Library', icon: 'library' },
+  { id: 'history', label: 'History', icon: 'history' },
+  { id: 'settings', label: 'Settings', icon: 'settings' },
+  { id: 'logs', label: 'Logs', icon: 'logs' },
 ];
 
 function Toasts(): React.JSX.Element {
@@ -133,79 +135,79 @@ export default function App(): React.JSX.Element {
     );
   }
 
+  const navItems: NavItem<Screen>[] = NAV.map((item) => ({
+    ...item,
+    ...(item.id === 'queue' && queueCount > 0 ? { count: queueCount } : {}),
+    ...(item.id === 'queue' && pendingDuplicates.length > 0 ? { alert: true } : {}),
+  }));
+
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full">
       {!reducedMotion && (
         <Suspense fallback={null}>
           <BackgroundScene />
         </Suspense>
       )}
-      <header className="flex shrink-0 items-center gap-1 border-b border-white/5 px-4 py-2">
-        <span className="mr-4 text-sm font-semibold tracking-tight text-ink-100">TikTok Downloader</span>
 
-        <nav className="flex gap-1" aria-label="Screens">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setScreen(item.id)}
-              aria-current={screen === item.id ? 'page' : undefined}
-              className={`relative rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                screen === item.id ? 'bg-white/8 text-ink-100' : 'text-ink-500 hover:bg-white/4 hover:text-ink-300'
-              }`}
-            >
-              {item.label}
-              {item.id === 'queue' && queueCount > 0 && (
-                <span className="ml-2 rounded bg-base-700 px-1.5 py-0.5 text-[10px] text-ink-300">{queueCount}</span>
-              )}
-            </button>
-          ))}
-        </nav>
+      <Sidebar
+        items={navItems}
+        current={screen}
+        onSelect={setScreen}
+        footer={
+          /* The two states that change what the app does are stated where the
+             navigation is, not buried in a header the eye has stopped reading. */
+          <div className="grid gap-2">
+            {queueState.running && (
+              <span className="flex items-center gap-2 text-xs text-ink-500">
+                <span
+                  className={`size-2 rounded-full ${queueState.paused ? 'bg-warn-400' : 'bg-mint-400 animate-pulse'}`}
+                  aria-hidden="true"
+                />
+                {queueState.paused ? 'Paused' : `${queueState.active} downloading`}
+              </span>
+            )}
+            {proxyUrl.trim() !== '' && (
+              <button
+                onClick={() => setScreen('settings')}
+                title={`All requests go through ${proxyUrl}`}
+                className="flex items-center gap-2 rounded-md px-1 py-0.5 text-xs font-medium text-accent-300 hover:bg-white/5"
+              >
+                <span className="size-2 rounded-full bg-accent-400" aria-hidden="true" />
+                Proxy on
+              </button>
+            )}
+          </div>
+        }
+      />
 
-        <div className="ml-auto flex items-center gap-3">
-          {/* Routing through a proxy changes what TikTok serves and how fast,
-              so it is never left invisible. */}
-          {proxyUrl.trim() !== '' && (
-            <button
-              onClick={() => setScreen('settings')}
-              title={`All requests go through ${proxyUrl}`}
-              className="rounded-md bg-accent-500/15 px-2 py-1 text-xs font-medium text-accent-300 hover:bg-accent-500/25"
-            >
-              proxy on
-            </button>
-          )}
-          {pendingDuplicates.length > 0 && (
-            // The way back to a question dismissed with "Later".
-            <button
-              onClick={() => setDuplicatePromptDismissed(false)}
-              className="rounded-md bg-warn-400/20 px-2 py-1 text-xs font-medium text-warn-400 hover:bg-warn-400/30"
-            >
-              {pendingDuplicates.length} question{pendingDuplicates.length === 1 ? '' : 's'}
-            </button>
-          )}
-          {queueState.running && (
-            <span className="flex items-center gap-2 text-xs text-ink-500">
-              <span
-                className={`size-2 rounded-full ${queueState.paused ? 'bg-warn-400' : 'bg-mint-400'}`}
-                aria-hidden="true"
-              />
-              {queueState.paused ? 'Paused' : `${queueState.active} active`}
-            </span>
-          )}
-        </div>
-      </header>
+      <div className="flex min-w-0 flex-1 flex-col">
+        {pendingDuplicates.length > 0 && (
+          /* A question that was put off is a stopped queue item, so the way
+             back to it is a banner rather than a chip in the corner. */
+          <button
+            onClick={() => setDuplicatePromptDismissed(false)}
+            className="flex shrink-0 items-center gap-2 border-b border-warn-400/20 bg-warn-400/10 px-6 py-2
+              text-left text-xs font-medium text-warn-400 hover:bg-warn-400/15"
+          >
+            <Icon name="alert" size={14} />
+            {pendingDuplicates.length} question{pendingDuplicates.length === 1 ? '' : 's'} waiting — these downloads
+            are on hold until you answer
+          </button>
+        )}
 
-      <main className="min-h-0 flex-1 overflow-y-auto p-6">
-        <ErrorBoundary screenKey={screen}>
-          {screen === 'add' && <AddLinks onQueued={() => setScreen('queue')} />}
-          {screen === 'queue' && <Queue />}
-          {screen === 'library' && <Library />}
-          {screen === 'history' && <History />}
-          {screen === 'settings' && <Settings />}
-          {screen === 'logs' && <Logs />}
-        </ErrorBoundary>
-      </main>
+        <main className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+          <ErrorBoundary screenKey={screen}>
+            {screen === 'add' && <AddLinks onQueued={() => setScreen('queue')} />}
+            {screen === 'queue' && <Queue onAddLinks={() => setScreen('add')} />}
+            {screen === 'library' && <Library />}
+            {screen === 'history' && <History />}
+            {screen === 'settings' && <Settings />}
+            {screen === 'logs' && <Logs />}
+          </ErrorBoundary>
+        </main>
 
-      <ResourceBar />
+        <ResourceBar />
+      </div>
 
       <DuplicateModal />
       <Toasts />

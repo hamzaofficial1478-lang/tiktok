@@ -4,7 +4,8 @@ import { scanText, suspiciousCount, type ScanReport } from '@shared/link-safety'
 import { describeError } from '@shared/errors';
 import { useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
-import { Button, EmptyState, Panel } from '../components/primitives';
+import { Button, EmptyState, PageHeader, Panel } from '../components/primitives';
+import { SegmentedControl, TextInput } from '../components/form';
 import { ScanReportPanel } from '../components/ScanReportPanel';
 
 /**
@@ -212,45 +213,36 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
 
   return (
     <div className="mx-auto grid max-w-5xl gap-5">
-      {/* Two ways in, stated as a choice rather than left to be discovered:
-          a list of videos, or one account's whole output. */}
-      <div className="flex gap-1 rounded-xl border border-white/8 bg-base-900/40 p-1" role="tablist">
-        {(
-          [
-            ['links', 'Video links', 'Paste or import individual TikTok links'],
-            ['profile', 'Creator profile', "Fetch every video from one account"],
-          ] as const
-        ).map(([id, label, hint]) => (
-          <button
-            key={id}
-            role="tab"
-            aria-selected={mode === id}
-            onClick={() => setMode(id)}
-            className={`flex-1 rounded-lg px-4 py-2.5 text-left transition ${
-              mode === id ? 'bg-accent-500/15 text-ink-100 ring-1 ring-accent-500/40' : 'text-ink-400 hover:bg-white/4'
-            }`}
-          >
-            <span className="block text-sm font-medium">{label}</span>
-            <span className="block text-xs text-ink-500">{hint}</span>
-          </button>
-        ))}
-      </div>
+      <PageHeader
+        title="Add links"
+        description="Paste TikTok links, import a .txt or .csv, or pull every video from one account. Nothing downloads until you add it to the queue."
+      />
+
+      {/* Two ways in, stated as a choice rather than left to be discovered. */}
+      <SegmentedControl
+        ariaLabel="What you are adding"
+        value={mode}
+        onChange={setMode}
+        options={[
+          { value: 'links', label: 'Video links', hint: 'Paste or import individual TikTok links' },
+          { value: 'profile', label: 'Creator profile', hint: 'Fetch every video from one account' },
+        ]}
+      />
 
       {mode === 'profile' && (
         <Panel title="Fetch a creator's videos">
           <div className="flex flex-wrap items-start gap-3">
-            <input
-              value={profileInput}
-              onChange={(event: ChangeEvent<HTMLInputElement>) => setProfileInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && profileTarget && !fetching) void fetchProfile(profileInput);
-              }}
-              spellCheck={false}
-              placeholder="https://www.tiktok.com/@creator   or   @creator"
-              aria-label="TikTok profile link or handle"
-              className="min-w-64 flex-1 rounded-xl border border-white/8 bg-base-900/60 px-4 py-3 font-mono text-sm
-                text-ink-100 placeholder:text-ink-500/60 focus:border-accent-500/50 focus:outline-none"
-            />
+            <div className="min-w-64 flex-1" onKeyDown={(event) => {
+              if (event.key === 'Enter' && profileTarget && !fetching) void fetchProfile(profileInput);
+            }}>
+              <TextInput
+                value={profileInput}
+                onChange={setProfileInput}
+                mono
+                placeholder="https://www.tiktok.com/@creator   or   @creator"
+                ariaLabel="TikTok profile link or handle"
+              />
+            </div>
             <Button
               variant="primary"
               onClick={() => void fetchProfile(profileInput)}
@@ -306,6 +298,7 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
             {profiles.length > 0 && profiles[0] && (
               <Button
                 variant="secondary"
+                icon="user"
                 onClick={() => void fetchProfile(profiles[0]!.raw)}
                 disabled={fetching}
               >
@@ -322,7 +315,7 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
               onChange={onFileInput}
               className="hidden"
             />
-            <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
+            <Button variant="secondary" icon="file" onClick={() => fileInputRef.current?.click()}>
               Import file…
             </Button>
             {value !== '' && (
@@ -367,12 +360,6 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
         </Panel>
       )}
 
-      {lines.length === 0 && (
-        <EmptyState
-          title="Nothing pasted yet"
-          hint="Paste TikTok links one per line, drop a .txt or .csv file into the box above, or switch to Creator profile to pull a whole account. Each line is checked as you type."
-        />
-      )}
     </div>
   );
 }

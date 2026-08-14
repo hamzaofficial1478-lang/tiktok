@@ -75,6 +75,39 @@
     height: 100%;
   }
 
+  /*
+   * The scrollbar.
+   *
+   * Chromium's default is a light-grey bar on Windows, which on a near-black
+   * surface is the brightest thing on screen — the eye lands on the scrollbar
+   * before the content. Toned to the elevation scale so it reads as part of
+   * the panel it belongs to.
+   */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-base-600) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-base-600);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-base-700);
+  }
+
   body {
     background-color: var(--color-base-900);
     color: var(--color-ink-100);

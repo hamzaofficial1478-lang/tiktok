@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { describeError, type ErrorCode } from '@shared/errors';
+import { Icon, type IconName } from './icons';
 
 /**
  * Shared UI primitives.
@@ -12,25 +13,97 @@ import { describeError, type ErrorCode } from '@shared/errors';
 
 export function Panel({
   title,
+  description,
   actions,
   children,
   className = '',
+  bodyClassName = 'p-5',
 }: {
   title?: string;
+  /**
+   * One line under the title, for a panel whose purpose is not obvious from
+   * two words. Optional on purpose: a description on every panel is noise, and
+   * noise is what stops people reading the ones that matter.
+   */
+  description?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  bodyClassName?: string;
 }): React.JSX.Element {
   return (
     <section className={`elevation-card ${className}`}>
       {(title || actions) && (
-        <header className="flex items-center justify-between border-b border-white/5 px-5 py-3">
-          {title && <h2 className="text-xs font-semibold uppercase tracking-widest text-ink-500">{title}</h2>}
-          {actions}
+        <header className="flex items-start justify-between gap-4 border-b border-white/5 px-5 py-3.5">
+          <div className="min-w-0">
+            {title && <h2 className="text-sm font-semibold tracking-tight text-ink-100">{title}</h2>}
+            {description && <p className="mt-0.5 text-xs leading-relaxed text-ink-500">{description}</p>}
+          </div>
+          {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </header>
       )}
-      <div className="p-5">{children}</div>
+      <div className={bodyClassName}>{children}</div>
     </section>
+  );
+}
+
+/**
+ * The heading a screen opens with.
+ *
+ * Screens used to begin at their first panel, which left the window with no
+ * statement of where you were — fine when the navigation is a row of tabs three
+ * millimetres above, much less fine once it moved to a rail at the side.
+ */
+export function PageHeader({
+  title,
+  description,
+  actions,
+}: {
+  title: string;
+  description?: string;
+  actions?: ReactNode;
+}): React.JSX.Element {
+  return (
+    <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight text-ink-100">{title}</h1>
+        {description && <p className="mt-1 max-w-xl text-sm leading-relaxed text-ink-500">{description}</p>}
+      </div>
+      {actions && <div className="flex items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
+/**
+ * One number and what it counts.
+ *
+ * The queue's summary was a wrapped row of differently-sized sentences, which
+ * is readable only by reading all of it. A fixed shape per figure means the
+ * eye can find "failed" in the same place every time.
+ */
+export function Stat({
+  label,
+  value,
+  tone = 'neutral',
+  title,
+}: {
+  label: string;
+  value: ReactNode;
+  tone?: 'neutral' | 'good' | 'warn' | 'bad';
+  title?: string;
+}): React.JSX.Element {
+  const tones = {
+    neutral: 'text-ink-100',
+    good: 'text-mint-300',
+    warn: 'text-warn-400',
+    bad: 'text-danger-400',
+  } as const;
+
+  return (
+    <div title={title} className="min-w-16">
+      <div className={`text-lg font-semibold leading-tight tabular-nums ${tones[tone]}`}>{value}</div>
+      <div className="mt-0.5 text-[11px] uppercase tracking-wide text-ink-500">{label}</div>
+    </div>
   );
 }
 
@@ -38,16 +111,23 @@ export function Button({
   children,
   onClick,
   variant = 'secondary',
+  size = 'md',
+  icon,
   disabled,
   title,
   type = 'button',
+  ariaLabel,
 }: {
-  children: ReactNode;
+  children?: ReactNode;
   onClick?: () => void;
   variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
+  size?: 'sm' | 'md';
+  /** Drawn before the label, or alone for an icon-only button. */
+  icon?: IconName;
   disabled?: boolean;
   title?: string;
   type?: 'button' | 'submit';
+  ariaLabel?: string;
 }): React.JSX.Element {
   const styles: Record<string, string> = {
     primary: 'bg-accent-500 text-white hover:bg-accent-400 shadow-[0_4px_16px_-4px_rgba(139,92,246,0.6)]',
@@ -56,15 +136,24 @@ export function Button({
     danger: 'bg-danger-400/15 text-danger-400 hover:bg-danger-400/25 border border-danger-400/30',
   };
 
+  const iconOnly = icon !== undefined && children === undefined;
+  const sizes = {
+    sm: iconOnly ? 'p-1.5' : 'px-2.5 py-1 text-xs gap-1.5',
+    md: iconOnly ? 'p-2' : 'px-3 py-1.5 text-sm gap-2',
+  } as const;
+
   return (
     <button
       type={type}
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors
-        disabled:cursor-not-allowed disabled:opacity-40 ${styles[variant]}`}
+      // An icon-only button has no text to announce, so it carries its own name.
+      aria-label={ariaLabel ?? (iconOnly ? title : undefined)}
+      className={`inline-flex items-center justify-center rounded-lg font-medium transition-colors
+        disabled:cursor-not-allowed disabled:opacity-40 ${sizes[size]} ${styles[variant]}`}
     >
+      {icon && <Icon name={icon} size={size === 'sm' ? 13 : 15} />}
       {children}
     </button>
   );
@@ -215,17 +304,24 @@ export function ErrorNote({
 export function EmptyState({
   title,
   hint,
+  icon,
   action,
 }: {
   title: string;
   hint: string;
+  icon?: IconName;
   action?: ReactNode;
 }): React.JSX.Element {
   return (
-    <div className="grid place-items-center px-6 py-20 text-center">
+    <div className="grid min-h-full place-items-center px-6 py-16 text-center">
       <div className="max-w-sm">
+        {icon && (
+          <div className="mx-auto mb-4 grid size-12 place-items-center rounded-2xl bg-white/5 text-ink-500">
+            <Icon name={icon} size={22} />
+          </div>
+        )}
         <p className="text-base font-medium text-ink-100">{title}</p>
-        <p className="mt-2 text-sm text-ink-500">{hint}</p>
+        <p className="mt-2 text-sm leading-relaxed text-ink-500">{hint}</p>
         {action && <div className="mt-5 flex justify-center">{action}</div>}
       </div>
     </div>

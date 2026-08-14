@@ -96,15 +96,28 @@ export function LiveLog(): React.JSX.Element {
           </span>
         )}
 
-        <label className="ml-auto flex items-center gap-1.5 text-xs text-ink-500">
-          <input
-            type="checkbox"
-            checked={showAll}
-            onChange={(event) => setShowAll(event.target.checked)}
-            className="size-3.5 accent-accent-500"
-          />
+        {/* A switch like every other on/off in the app: a native checkbox here
+            was the last control still drawn by the operating system. */}
+        <button
+          type="button"
+          role="switch"
+          aria-checked={showAll}
+          onClick={() => setShowAll(!showAll)}
+          className="ml-auto flex items-center gap-2 text-xs text-ink-500 transition-colors hover:text-ink-300"
+        >
+          <span
+            className={`flex h-4 w-7 items-center rounded-full p-0.5 transition-colors ${
+              showAll ? 'bg-accent-500' : 'bg-base-600'
+            }`}
+          >
+            <span
+              className={`size-3 rounded-full bg-white transition-transform ${
+                showAll ? 'translate-x-3' : 'translate-x-0'
+              }`}
+            />
+          </span>
           Show everything
-        </label>
+        </button>
       </header>
 
       <div
