@@ -7,6 +7,7 @@ import { invoke } from '../lib/ipc';
 import { Button, EmptyState, PageHeader, Panel } from '../components/primitives';
 import { SegmentedControl, TextInput } from '../components/form';
 import { ScanReportPanel } from '../components/ScanReportPanel';
+import { CaptionSettings } from '../components/CaptionSettings';
 
 /**
  * Add Links — spec section 10.
@@ -104,6 +105,8 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
   const [scan, setScan] = useState<{ report: ScanReport; fileNames: string[] } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pushToast = useAppStore((s) => s.pushToast);
+  const captions = useAppStore((s) => s.config?.captions ?? null);
+  const updateConfig = useAppStore((s) => s.updateConfig);
 
   const lines = useMemo(() => analyse(value), [value]);
   const addable = lines.filter((l) => l.status === 'valid' || l.status === 'short-link').length;
@@ -274,6 +277,12 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
                 : 'That is not a profile link. A single video link goes in the Video links tab.'}
           </p>
         </Panel>
+      )}
+
+      {/* Here rather than in Settings: this is a decision about the batch being
+          queued, and nobody opens Settings on their way to pasting links. */}
+      {captions && (
+        <CaptionSettings value={captions} onChange={(next) => void updateConfig({ captions: next })} />
       )}
 
       <Panel

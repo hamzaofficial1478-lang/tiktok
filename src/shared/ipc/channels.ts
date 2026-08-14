@@ -41,6 +41,7 @@ export const INVOKE_CHANNELS = [
   'library:list',
   'library:dailyStats',
   'library:deleteRecord',
+  'library:clearRecords',
   'library:deleteFile',
 
   'system:getResources',

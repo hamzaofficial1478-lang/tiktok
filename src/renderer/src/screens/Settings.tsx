@@ -7,7 +7,6 @@ import { invoke } from '../lib/ipc';
 import { Button, PageHeader, Panel, formatBytes } from '../components/primitives';
 import { Field, NumberInput, Select, TextInput, Toggle } from '../components/form';
 import { Icon } from '../components/icons';
-import { CaptionSettings } from '../components/CaptionSettings';
 
 /**
  * Settings — section 10. Every control writes through the single AppConfig.
@@ -336,8 +335,6 @@ export function Settings(): React.JSX.Element {
           ))}
         </div>
       </Panel>
-
-      <CaptionSettings value={config.captions} onChange={(next) => void set('captions', next)} />
 
       <Panel
         title="Title and description"

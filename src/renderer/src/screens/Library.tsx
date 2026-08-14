@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import type { LibraryEntryDto } from '@shared/ipc/contract';
 import { invoke } from '../lib/ipc';
 import { useAppStore } from '../store/app-store';
-import { Button, EmptyState, Panel, WatermarkBadge, formatBytes, formatDuration } from '../components/primitives';
+import { Button, EmptyState, PageHeader, Panel, WatermarkBadge, formatBytes, formatDuration } from '../components/primitives';
+import { TextInput } from '../components/form';
 
 /** Library — completed downloads, searchable, with the section 7 repost badge. */
 export function Library(): React.JSX.Element {
@@ -10,7 +11,28 @@ export function Library(): React.JSX.Element {
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
+  const [clearing, setClearing] = useState(false);
+  /** Two presses, because there is no undo and no confirmation dialog here. */
+  const [confirmClear, setConfirmClear] = useState(false);
   const pushToast = useAppStore((s) => s.pushToast);
+
+  async function clearAll(): Promise<void> {
+    setClearing(true);
+    try {
+      const { removed } = await invoke('library:clearRecords');
+      setEntries([]);
+      setTotal(0);
+      setConfirmClear(false);
+      pushToast({
+        kind: 'success',
+        message: `${removed} record${removed === 1 ? '' : 's'} cleared · your video files were not touched`,
+      });
+    } catch (err) {
+      pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setClearing(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -48,28 +70,75 @@ export function Library(): React.JSX.Element {
   }
 
   if (!loading && entries.length === 0 && search === '') {
-    return <EmptyState title="Nothing downloaded yet" hint="Finished downloads appear here with their metadata." />;
+    return (
+      <EmptyState
+        icon="library"
+        title="Nothing downloaded yet"
+        hint="Finished downloads appear here, with what happened to the watermark on each one."
+      />
+    );
   }
 
   return (
     <div className="flex h-full flex-col gap-4">
-      <Panel className="shrink-0">
-        <div className="flex items-center gap-3">
-          <input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search captions and authors…"
-            aria-label="Search the library"
-            className="flex-1 rounded-lg border border-white/8 bg-base-900/60 px-3 py-2 text-sm text-ink-100
-              placeholder:text-ink-500/60 focus:border-accent-500/50 focus:outline-none"
-          />
-          <span className="text-sm text-ink-500">{total} item{total === 1 ? '' : 's'}</span>
+      <PageHeader
+        title="Library"
+        description="Every download this app has recorded. Clearing the list forgets the records; it never deletes a video."
+      />
+
+      <Panel className="shrink-0" bodyClassName="px-5 py-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="min-w-56 flex-1">
+            <TextInput
+              value={search}
+              onChange={setSearch}
+              placeholder="Search captions and authors…"
+              ariaLabel="Search the library"
+            />
+          </div>
+          <span className="text-sm text-ink-500">
+            {total} item{total === 1 ? '' : 's'}
+          </span>
+
+          {/**
+           * Two presses rather than a dialog. Clearing cannot be undone and it
+           * takes duplicate detection's memory with it — a video downloaded
+           * before this will not be recognised as one afterwards — so the
+           * second press names the consequence instead of asking "are you
+           * sure?", which nobody reads.
+           */}
+          {total > 0 &&
+            (confirmClear ? (
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-warn-400">
+                  Forget all {total} records? Your video files stay where they are.
+                </span>
+                <Button variant="danger" size="sm" disabled={clearing} onClick={() => void clearAll()}>
+                  {clearing ? 'Clearing…' : 'Yes, clear the list'}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setConfirmClear(false)}>
+                  Keep
+                </Button>
+              </div>
+            ) : (
+              <Button variant="ghost" icon="trash" onClick={() => setConfirmClear(true)}>
+                Clear all
+              </Button>
+            ))}
         </div>
       </Panel>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {entries.length === 0 ? (
-          <EmptyState title="No matches" hint="Nothing in the library matches that search." />
+          <EmptyState
+            icon="library"
+            title={search === '' ? 'Nothing here yet' : 'No matches'}
+            hint={
+              search === ''
+                ? 'Downloads appear here once they finish, with what happened to the watermark on each one.'
+                : 'Nothing in the library matches that search.'
+            }
+          />
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {entries.map((entry) => (

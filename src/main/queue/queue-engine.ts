@@ -777,8 +777,21 @@ export class QueueEngine {
     this.emit({ type: 'item-removed', itemId });
   }
 
+  /**
+   * Removes every finished item.
+   *
+   * The ids are collected before the delete and announced one by one
+   * afterwards, and that is the whole fix for a real bug: this used to delete
+   * the rows and return a count, emitting nothing. The renderer learns about
+   * removals from `item-removed` events, so the rows stayed on screen until the
+   * next restart — the button looked broken because, from where the user was
+   * standing, it was.
+   */
   removeCompleted(): number {
-    return this.options.queueItems.removeByStatus(['completed']);
+    const ids = this.options.queueItems.idsByStatus(['completed']);
+    const removed = this.options.queueItems.removeByStatus(['completed']);
+    for (const itemId of ids) this.emit({ type: 'item-removed', itemId });
+    return removed;
   }
 
   clearQueue(): number {
@@ -787,7 +800,12 @@ export class QueueEngine {
     this.retryTimers.clear();
     this.pendingDuplicates.clear();
     this.batchChoices.clear();
-    return this.options.queueItems.removeAll();
+
+    // Same reason as removeCompleted: a silent delete leaves a full screen.
+    const ids = this.options.queueItems.allIds();
+    const removed = this.options.queueItems.removeAll();
+    for (const itemId of ids) this.emit({ type: 'item-removed', itemId });
+    return removed;
   }
 
   /**

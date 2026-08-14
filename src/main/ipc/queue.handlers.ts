@@ -115,6 +115,10 @@ export function registerLibraryHandlers(registry: IpcRegistry, services: AppServ
     return { ok: true as const };
   });
 
+  registry.handle('library:clearRecords', () => ({
+    removed: services.repos.downloads.deleteAllRecords(),
+  }));
+
   registry.handle('library:deleteFile', ({ downloadId }) => {
     const row = services.repos.downloads.findById(downloadId);
     if (!row) throw new AppError('INTERNAL_ERROR', `download ${downloadId} does not exist`);

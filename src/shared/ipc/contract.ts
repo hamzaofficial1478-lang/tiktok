@@ -261,6 +261,14 @@ export const invokeContract = {
     request: z.object({ downloadId: z.number().int().positive() }),
     response: Ok,
   },
+  /**
+   * Clears the library's record of every download; deletes no files.
+   *
+   * Wiping the record also wipes what duplicate detection compares against, so
+   * a video downloaded before this will not be recognised as a duplicate
+   * afterwards. That is a consequence worth stating rather than discovering.
+   */
+  'library:clearRecords': { request: z.void(), response: z.object({ removed: z.number() }) },
   'library:deleteFile': {
     request: z.object({ downloadId: z.number().int().positive() }),
     response: Ok,

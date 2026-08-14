@@ -284,6 +284,25 @@ export class QueueItemsRepository {
       .all(...statuses);
   }
 
+  /**
+   * The ids a bulk removal is about to delete.
+   *
+   * Needed because the renderer learns about removals one id at a time: a
+   * delete that reports only "12 rows gone" leaves the UI showing all twelve.
+   */
+  idsByStatus(statuses: readonly QueueStatus[]): number[] {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => '?').join(',');
+    return this.db
+      .prepare<QueueStatus[], { id: number }>(`SELECT id FROM queue_items WHERE status IN (${placeholders})`)
+      .all(...[...statuses])
+      .map((row) => row.id);
+  }
+
+  allIds(): number[] {
+    return this.db.prepare<[], { id: number }>('SELECT id FROM queue_items').all().map((row) => row.id);
+  }
+
   removeByStatus(statuses: readonly QueueStatus[]): number {
     if (statuses.length === 0) return 0;
     const placeholders = statuses.map(() => '?').join(',');

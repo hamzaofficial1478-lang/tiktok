@@ -216,6 +216,19 @@ export class DownloadsRepository {
     this.db.prepare('DELETE FROM downloads WHERE id = ?').run(downloadId);
   }
 
+  /**
+   * Forgets every download, and touches no file on disk.
+   *
+   * The distinction is the whole point and is stated in the UI too: this clears
+   * the app's record of what was downloaded, which is what feeds duplicate
+   * detection and the history. The videos stay exactly where they are. A button
+   * that deleted a folder of finished work because someone wanted a tidy list
+   * would be unforgivable, so it does not.
+   */
+  deleteAllRecords(): number {
+    return this.db.prepare('DELETE FROM downloads').run().changes;
+  }
+
   findById(id: number): DownloadRow | undefined {
     return this.db.prepare<[number], DownloadRow>('SELECT * FROM downloads WHERE id = ?').get(id);
   }

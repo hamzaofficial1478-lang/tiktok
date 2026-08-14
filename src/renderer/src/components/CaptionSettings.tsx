@@ -1,6 +1,8 @@
 import type { CaptionSettings as CaptionSettingsValue } from '@shared/caption-schema';
 import { CAPTION_ANIMATIONS, CAPTION_POSITIONS, translationIsSupported } from '@shared/caption-schema';
+import { useState } from 'react';
 import { Panel } from './primitives';
+import { Icon } from './icons';
 import { ColourInput, Field, SegmentedControl, Select, Slider, Toggle } from './form';
 
 /**
@@ -10,7 +12,14 @@ import { ColourInput, Field, SegmentedControl, Select, Slider, Toggle } from './
  * whether captions happen at all, where the words come from, and what they look
  * like. The style controls are hidden entirely when captions are off — a panel
  * of colour pickers for a feature that is not running is noise the eye has to
- * step over on every visit to this screen.
+ * step over every time.
+ *
+ * It lives on the Add Links screen rather than in Settings, and that was a
+ * correction. Captions are a decision about the batch being queued, not a
+ * preference set once and forgotten: nobody opens Settings on their way to
+ * pasting links, so a caption control in Settings is a caption control nobody
+ * uses. The mode is on screen where the links go in, and the two dozen styling
+ * controls stay folded away until someone wants them.
  */
 
 const LANGUAGES: readonly { value: string; label: string }[] = [
@@ -33,12 +42,16 @@ export function CaptionSettings({
   ): void => onChange({ ...value, style: { ...value.style, [key]: next } });
 
   const on = value.mode !== 'off';
+  const [styleOpen, setStyleOpen] = useState(false);
 
   return (
-    <Panel title="Captions" description="Subtitles on the downloaded video, from TikTok's own track or transcribed.">
+    <Panel
+      title="Captions"
+      description="Subtitles on the videos you are about to download, from TikTok's own track or transcribed."
+    >
       <div className="grid gap-5">
         <Field
-          label="Captions"
+          label="Mode"
           hint={
             value.mode === 'burn'
               ? 'Painted into the picture: survives any re-upload, cannot be switched off, and re-encodes the video.'
@@ -93,7 +106,25 @@ export function CaptionSettings({
               </Field>
             </div>
 
-            <div className="grid gap-4 border-t border-white/5 pt-5 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setStyleOpen(!styleOpen)}
+              aria-expanded={styleOpen}
+              className="flex items-center gap-2 border-t border-white/5 pt-4 text-left text-sm font-medium
+                text-ink-300 transition-colors hover:text-ink-100"
+            >
+              <span
+                className={`transition-transform ${styleOpen ? 'rotate-90' : ''}`}
+                aria-hidden="true"
+              >
+                <Icon name="play" size={11} />
+              </span>
+              {styleOpen ? 'Hide styling' : 'Styling — colour, size, position, animation'}
+            </button>
+
+            {styleOpen && (
+              <>
+                <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Text colour">
                 <ColourInput value={value.style.textColour} onChange={(colour) => setStyle('textColour', colour)} />
               </Field>
@@ -200,22 +231,24 @@ export function CaptionSettings({
               </Field>
             </div>
 
-            <div className="grid gap-4 border-t border-white/5 pt-5">
-              <Toggle
-                checked={value.style.bold}
-                onChange={(bold) => setStyle('bold', bold)}
-                label="Bold"
-                hint="Bold text holds up over moving footage; regular weight disappears into it."
-              />
-              <Toggle
-                checked={value.style.uppercase}
-                onChange={(upper) => setStyle('uppercase', upper)}
-                label="Uppercase"
-                hint="Louder, and harder to read in long lines."
-              />
-            </div>
+                <div className="grid gap-4 border-t border-white/5 pt-5">
+                  <Toggle
+                    checked={value.style.bold}
+                    onChange={(bold) => setStyle('bold', bold)}
+                    label="Bold"
+                    hint="Bold text holds up over moving footage; regular weight disappears into it."
+                  />
+                  <Toggle
+                    checked={value.style.uppercase}
+                    onChange={(upper) => setStyle('uppercase', upper)}
+                    label="Uppercase"
+                    hint="Louder, and harder to read in long lines."
+                  />
+                </div>
 
-            <CaptionPreview value={value} />
+                <CaptionPreview value={value} />
+              </>
+            )}
           </>
         )}
       </div>

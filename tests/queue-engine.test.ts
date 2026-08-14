@@ -575,3 +575,42 @@ describe('the route that worked is the route that downloads', () => {
     expect(harness.extractor.resolvedIds).toEqual([awemeIdFor(8)]);
   });
 });
+
+describe('bulk removal tells the screen about it', () => {
+  /**
+   * The bug this pins, reported as "the bin button does not work".
+   *
+   * It worked perfectly on the database: the rows were deleted and a count was
+   * returned. It emitted nothing, and the renderer learns about removals from
+   * `item-removed` events — so every row stayed on screen until the next
+   * restart. From where the user was standing the button was broken, and from
+   * where the tests were standing everything passed.
+   */
+  it('emits a removal for every completed item it deletes', async () => {
+    harness = createHarness();
+    harness.engine.addLinks([makeUrl(1), makeUrl(2), makeUrl(3)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    const before = harness.events.length;
+    const removed = harness.engine.removeCompleted();
+
+    expect(removed).toBeGreaterThan(0);
+    const announced = harness.events.slice(before).filter((e) => e.type === 'item-removed');
+    expect(announced).toHaveLength(removed);
+    // Nothing left behind for the screen to keep showing.
+    expect(harness.engine.getSnapshot().filter((i) => i.status === 'completed')).toHaveLength(0);
+  });
+
+  it('emits a removal for every item when the whole queue is cleared', async () => {
+    harness = createHarness();
+    harness.engine.addLinks([makeUrl(4), makeUrl(5)]);
+
+    const before = harness.events.length;
+    const removed = harness.engine.clearQueue();
+
+    expect(removed).toBe(2);
+    expect(harness.events.slice(before).filter((e) => e.type === 'item-removed')).toHaveLength(2);
+    expect(harness.engine.getSnapshot()).toHaveLength(0);
+  });
+});
