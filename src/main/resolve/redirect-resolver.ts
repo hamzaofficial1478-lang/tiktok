@@ -1,4 +1,5 @@
 import { AppError } from '@shared/errors';
+import { parse } from '@shared/url-parse';
 
 /**
  * Follows a TikTok short link to its destination — section 6 step 4: HEAD
@@ -51,6 +52,22 @@ export class HttpRedirectResolver implements RedirectResolver {
       const location = response.headers.get('location');
 
       if (!isRedirect(response.status) || !location) {
+        /**
+         * The destination's status says nothing about where the short link
+         * points — and we are already standing on the answer.
+         *
+         * In the field the chain landed on
+         * `.../@reeutu685_879/video/7669926572794711314?_r=1&_t=…`, which
+         * returned 500, and the whole item failed. That URL was exactly what
+         * was being looked for: TikTok's own page was having a bad moment, and
+         * the resolver threw away a correct result over it.
+         *
+         * So once at least one redirect has been followed and the current URL
+         * carries a video id, that is the destination regardless of status.
+         */
+        if (response.status >= 400 && hop > 0 && parse(current).status === 'resolved') {
+          return current;
+        }
         if (response.status >= 400) throw statusToError(response.status, current);
         // Not a redirect and not an error: this is the destination.
         return current;

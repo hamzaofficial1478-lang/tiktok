@@ -540,3 +540,38 @@ describe('a short link that redirects to the TikTok homepage', () => {
     expect(harness.engine.getSnapshot()[0]?.status).toBe('failed');
   });
 });
+
+describe('the route that worked is the route that downloads', () => {
+  it('does not resolve a second time and lose the winning strategy', async () => {
+    const id = awemeIdFor(7);
+    harness = createHarness({
+      redirectFails: new AppError('NETWORK_ERROR', 'short link returned 500'),
+      extractorResolvesShortLinks: { 'https://vt.tiktok.com/ZSVe93SSr/': id },
+    });
+
+    harness.engine.addLinks(['https://vt.tiktok.com/ZSVe93SSr/']);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('completed');
+    /**
+     * One resolution, not two.
+     *
+     * The fallback resolves the video in full to learn its id; resolving again
+     * afterwards discarded which route had succeeded. In the field the fallback
+     * recovered on the mobile API, the second call succeeded on the plain web
+     * route, and the download inherited the web route's arguments and failed
+     * re-extracting through the path already ruled out.
+     */
+    expect(harness.extractor.resolvedIds).toEqual([id]);
+  });
+
+  it('still resolves once for a full URL that needs no redirect', async () => {
+    harness = createHarness();
+    harness.engine.addLinks([makeUrl(8)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    expect(harness.extractor.resolvedIds).toEqual([awemeIdFor(8)]);
+  });
+});

@@ -8,7 +8,7 @@ import type { QueueItemRow, QueueItemsRepository } from '../db/repositories/queu
 import type { VideosRepository } from '../db/repositories/videos';
 import type { DownloadsRepository } from '../db/repositories/downloads';
 import type { UrlNormalizer } from '../resolve/url-normalizer';
-import type { Extractor, NormalizedUrl } from '../resolve/types';
+import type { Extractor, NormalizedUrl, ResolvedVideo } from '../resolve/types';
 import { buildCanonicalUrl } from '@shared/url-parse';
 import type { Clock } from '../clock';
 import { RateLimiter } from './rate-limiter';
@@ -354,7 +354,7 @@ export class QueueEngine {
 
   private async processItem(row: QueueItemRow, signal: AbortSignal): Promise<void> {
     this.log.debug({ itemId: row.id }, 'resolving the link');
-    const normalized = await this.normalize(row, signal);
+    const { normalized, resolved: alreadyResolved } = await this.normalize(row, signal);
     this.log.info({ itemId: row.id, awemeId: normalized.awemeId, viaShortLink: normalized.viaShortLink }, 'link resolved');
 
     // A carousel is knowable from the URL alone, so it fails without ever
@@ -396,9 +396,12 @@ export class QueueEngine {
       return;
     }
 
-    await this.options.rateLimiter.acquire(signal);
-    throwIfAborted(signal);
-    const resolved = await this.options.extractor.resolve(normalized.canonicalUrl, { signal });
+    let resolved = alreadyResolved;
+    if (!resolved) {
+      await this.options.rateLimiter.acquire(signal);
+      throwIfAborted(signal);
+      resolved = await this.options.extractor.resolve(normalized.canonicalUrl, { signal });
+    }
 
     this.update(row.id, { status: 'downloading', progress: 0 });
     this.emitItem(this.options.queueItems.findById(row.id));
@@ -417,20 +420,33 @@ export class QueueEngine {
     this.recordCompletion(row, normalized, resolved, result);
   }
 
-  private async normalize(row: QueueItemRow, signal: AbortSignal): Promise<NormalizedUrl> {
+  /**
+   * Resolution, plus anything the resolver already discovered on the way.
+   *
+   * The short-link fallback resolves the video in full to learn its id. Calling
+   * the extractor again afterwards is not merely wasteful — it discards which
+   * route succeeded. In the field the fallback recovered on the mobile API,
+   * the second call then succeeded on the plain web route, and the download
+   * inherited the web route's (empty) arguments and failed re-extracting
+   * through the very path that had already been ruled out.
+   */
+  private async normalize(
+    row: QueueItemRow,
+    signal: AbortSignal,
+  ): Promise<{ normalized: NormalizedUrl; resolved?: ResolvedVideo }> {
     const parsed = this.options.normalizer.parse(row.raw_url);
 
     // A full URL needs no request, so it pays no rate limit — otherwise a
     // 300-item paste of full URLs would crawl for no reason.
     if (parsed.status !== 'needs-redirect') {
-      return this.options.normalizer.normalize(row.raw_url, { signal });
+      return { normalized: await this.options.normalizer.normalize(row.raw_url, { signal }) };
     }
 
     await this.options.rateLimiter.acquire(signal);
     throwIfAborted(signal);
 
     try {
-      return await this.options.normalizer.normalize(row.raw_url, { signal });
+      return { normalized: await this.options.normalizer.normalize(row.raw_url, { signal }) };
     } catch (err) {
       const appError = toAppError(err, 'RESOLVE_FAILED');
       /**
@@ -474,12 +490,16 @@ export class QueueEngine {
       if (!awemeId) throw err;
 
       return {
-        awemeId,
-        canonicalUrl: buildCanonicalUrl(awemeId, resolved.metadata.authorHandle),
-        authorHandle: resolved.metadata.authorHandle,
-        kind: resolved.metadata.isPhotoPost ? 'photo' : 'video',
-        viaShortLink: true,
-        rawUrl: row.raw_url,
+        normalized: {
+          awemeId,
+          canonicalUrl: buildCanonicalUrl(awemeId, resolved.metadata.authorHandle),
+          authorHandle: resolved.metadata.authorHandle,
+          kind: resolved.metadata.isPhotoPost ? 'photo' : 'video',
+          viaShortLink: true,
+          rawUrl: row.raw_url,
+        },
+        // Carried forward so the winning route reaches the download.
+        resolved,
       };
     }
   }
