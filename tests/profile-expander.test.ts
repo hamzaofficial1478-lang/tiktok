@@ -93,6 +93,30 @@ const listing = JSON.stringify({
 });
 
 describe('listing an account', () => {
+  /**
+   * The cap that was there, at 500, and the reason it is gone: it silently left
+   * an account's older videos behind, and "the newest 500" is not what asking
+   * for a creator's videos means.
+   */
+  it('lists every video by default, with nothing capping it', async () => {
+    const { runner, calls } = runnerReturning([{ stdout: listing }]);
+    const expander = new ProfileExpander({ binaryPath: '/fake/yt-dlp', runner });
+
+    const result = await expander.expand('@creator');
+
+    expect(calls[0]?.join(' ')).not.toContain('--playlist-items');
+    expect(result.truncated).toBe(false);
+  });
+
+  it('honours a limit when one is asked for, without imposing one', async () => {
+    const { runner, calls } = runnerReturning([{ stdout: listing }]);
+    const expander = new ProfileExpander({ binaryPath: '/fake/yt-dlp', runner });
+
+    await expander.expand('@creator', { limit: 10 });
+
+    expect(calls[0]).toContain('--playlist-items');
+  });
+
   it('asks for a flat listing and does not pin a device ID', async () => {
     const { runner, calls } = runnerReturning([{ stdout: listing }]);
     const expander = new ProfileExpander({ binaryPath: '/fake/yt-dlp', runner });

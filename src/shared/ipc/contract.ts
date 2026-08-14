@@ -207,7 +207,14 @@ export const invokeContract = {
   'queue:expandProfile': {
     request: z.object({
       input: z.string().min(1).max(300),
-      limit: z.number().int().min(1).max(2000).optional(),
+      /**
+       * Absent means every video the account has, which is the default and what
+       * the UI sends. A limit is honoured when one is given, but none is
+       * imposed: "the newest 500" is not what asking for a creator's videos
+       * means, and a cap that quietly drops the rest is worse than a listing
+       * that takes longer.
+       */
+      limit: z.number().int().min(1).max(20_000).optional(),
     }),
     response: z.object({
       handle: z.string(),

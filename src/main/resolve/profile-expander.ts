@@ -34,13 +34,24 @@ import { classifyYtDlpFailure } from './yt-dlp-errors';
  * rotating identity and the pinned routes are kept as a fallback.
  */
 
-/** Enough for any real account, and a bound on the JSON we parse. */
-export const DEFAULT_PROFILE_LIMIT = 500;
+/**
+ * No cap by default.
+ *
+ * There used to be one, at 500, and it was the wrong instinct: a bound put
+ * there to keep the JSON small, paid for by silently leaving an account's older
+ * videos behind. "The newest 500" is not what anyone asking for a creator's
+ * videos means, and a limit that quietly drops the rest is worse than a listing
+ * that takes longer.
+ *
+ * A limit can still be passed, and one that is passed is still honoured — it is
+ * simply not imposed.
+ */
+export const DEFAULT_PROFILE_LIMIT: number | null = null;
 
 export interface ProfileExpansion extends ProfileRef {
   /** Canonical video URLs, newest first, deduplicated, in TikTok's own order. */
   readonly urls: readonly string[];
-  /** True when the account has more posts than the limit allowed. */
+  /** True only when a caller asked for a limit and the account exceeded it. */
   readonly truncated: boolean;
 }
 
@@ -74,7 +85,7 @@ export class ProfileExpander {
 
   async expand(
     input: string,
-    options?: { limit?: number; signal?: AbortSignal },
+    options?: { limit?: number | null; signal?: AbortSignal },
   ): Promise<ProfileExpansion> {
     const profile = parseProfile(input);
     if (!profile) throw new AppError('NOT_A_TIKTOK_URL', `${truncate(input)} is not a TikTok profile link`);
@@ -83,7 +94,6 @@ export class ProfileExpander {
     if (!binary) throw new AppError('EXTRACTOR_FAILED', 'yt-dlp is not installed');
 
     const limit = options?.limit ?? DEFAULT_PROFILE_LIMIT;
-    // One past the limit, so "there are more" is observed rather than assumed.
     const routes: readonly (readonly string[])[] = [[], ...(this.options.fallbackArgs?.() ?? [])];
 
     let lastError: unknown;
@@ -107,7 +117,7 @@ export class ProfileExpander {
   private async attempt(
     binary: string,
     profile: ProfileRef,
-    limit: number,
+    limit: number | null,
     route: readonly string[],
     signal: AbortSignal | undefined,
   ): Promise<ProfileExpansion> {
@@ -121,8 +131,9 @@ export class ProfileExpander {
       // 3 gives up on accounts that list perfectly well on a fourth try.
       '--extractor-retries',
       '5',
-      '--playlist-items',
-      `1:${limit + 1}`,
+      // Only when a caller asked for one. Asking for one past it is what makes
+      // "there are more" an observation rather than an assumption.
+      ...(limit === null ? [] : ['--playlist-items', `1:${limit + 1}`]),
       '--socket-timeout',
       '20',
       '--user-agent',
@@ -133,9 +144,14 @@ export class ProfileExpander {
     ];
 
     const result = await this.options.runner.run(binary, args, {
-      // Listing a large account is many sequential page requests, so this is
-      // deliberately far longer than a single video's extraction budget.
-      timeoutMs: this.options.timeoutMs ?? 5 * 60_000,
+      /**
+       * Listing a whole account is many sequential paginated requests, and now
+       * that nothing caps it, an account with thousands of posts is a job
+       * measured in tens of minutes rather than one. The previous five-minute
+       * budget would have turned "fetch everything" into a timeout on exactly
+       * the accounts the change was made for.
+       */
+      timeoutMs: this.options.timeoutMs ?? 45 * 60_000,
       ...(signal ? { signal } : {}),
     });
 
@@ -160,13 +176,13 @@ export class ProfileExpander {
       throw new AppError('EXTRACTOR_FAILED', `no public videos were found on @${profile.handle}`);
     }
 
-    const truncated = urls.length > limit;
+    const truncated = limit !== null && urls.length > limit;
     this.options.log?.info(
       { handle: profile.handle, found: urls.length, truncated },
       'listed a profile',
     );
 
-    return { ...profile, urls: urls.slice(0, limit), truncated };
+    return { ...profile, urls: limit === null ? urls : urls.slice(0, limit), truncated };
   }
 }
 

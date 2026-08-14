@@ -83,8 +83,7 @@ const DOT: Record<LineStatus, string> = {
   invalid: 'bg-danger-400',
 };
 
-/** Enough for any real account, and a bound on one paste turning into a batch. */
-const PROFILE_LIMIT = 500;
+
 
 export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Element {
   const [value, setValue] = useState('');
@@ -125,7 +124,8 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
   async function fetchProfile(input: string): Promise<void> {
     setFetching(true);
     try {
-      const result = await invoke('queue:expandProfile', { input, limit: PROFILE_LIMIT });
+      // No limit: every video the account has posted.
+      const result = await invoke('queue:expandProfile', { input });
       const fetched = result.urls.join('\n');
 
       setValue((current) => {
@@ -142,7 +142,6 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
         kind: 'success',
         message:
           `@${result.handle} · ${result.urls.length} video${result.urls.length === 1 ? '' : 's'} found` +
-          (result.truncated ? ` · newest ${PROFILE_LIMIT} shown` : '') +
           ` · they will be saved in a folder named ${result.handle}`,
       });
     } catch (err) {
@@ -264,14 +263,14 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
               onClick={() => void fetchProfile(profileInput)}
               disabled={!profileTarget || fetching}
             >
-              {fetching ? 'Fetching…' : 'Fetch videos'}
+              {fetching ? 'Fetching all videos…' : 'Fetch all videos'}
             </Button>
           </div>
           <p className="mt-3 text-xs text-ink-500">
             {profileInput === ''
-              ? `The account's newest ${PROFILE_LIMIT} videos are listed for you to review before anything downloads.`
+              ? 'Every video the account has posted is listed for you to review before anything downloads. A large account takes a minute or two to list.'
               : profileTarget
-                ? `Ready to list @${profileTarget.handle}. Nothing downloads until you press Add.`
+                ? `Ready to list every video on @${profileTarget.handle}. Nothing downloads until you press Add.`
                 : 'That is not a profile link. A single video link goes in the Video links tab.'}
           </p>
         </Panel>
