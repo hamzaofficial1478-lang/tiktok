@@ -13,6 +13,19 @@ export interface RunOptions {
   readonly signal?: AbortSignal;
   readonly maxBufferBytes?: number;
   /**
+   * Working directory for the child.
+   *
+   * Added for one specific reason: ffmpeg's `subtitles` filter takes its
+   * filename *inside* a filter graph, where `:` separates options, `,` chains
+   * filters and `\` escapes — so a Windows path like
+   * `C:\Users\ammar laptops\Videos\a.ass` has to be rewritten into something
+   * unrecognisable, and every published recipe for doing so disagrees with the
+   * others. Running ffmpeg from the directory the file is in and passing a bare
+   * ASCII filename sidesteps the entire problem rather than solving it three
+   * quarters of the way.
+   */
+  readonly cwd?: string;
+  /**
    * Called with each chunk of stdout as it arrives, for processes that report
    * progress while they run. Output is still buffered and returned as usual.
    */
@@ -42,7 +55,10 @@ export class ChildProcessRunner implements ProcessRunner {
     const maxBuffer = options.maxBufferBytes ?? 64 * 1024 * 1024;
 
     return new Promise<ProcessResult>((resolve, reject) => {
-      const child = spawn(command, [...args], { windowsHide: true });
+      const child = spawn(command, [...args], {
+        windowsHide: true,
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      });
 
       let stdout = '';
       let stderr = '';

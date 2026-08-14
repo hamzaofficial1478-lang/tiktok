@@ -30,7 +30,8 @@
     "probe:ffmpeg": "node scripts/run-harness.mjs scripts/probe-ffmpeg.ts",
     "preflight": "npm run build && node scripts/run-harness.mjs scripts/preflight.ts",
     "preflight:personal": "npm run build && node scripts/run-harness.mjs scripts/preflight.ts --personal",
-    "dist:win:personal": "npm run preflight:personal && electron-builder --win --publish never"
+    "dist:win:personal": "npm run preflight:personal && electron-builder --win --publish never",
+    "probe:captions": "node scripts/run-harness.mjs scripts/probe-captions.ts"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
