@@ -56,6 +56,22 @@ const RULES: readonly Rule[] = [
   },
   { pattern: /image post|photo mode|slideshow/i, code: 'UNSUPPORTED_MEDIA', why: 'photo carousel' },
 
+  /**
+   * Local failures, which only the download can produce.
+   *
+   * These matter because the classifier's fallback is EXTRACTOR_FAILED, and
+   * the download now treats that as "try another route". Without a rule here a
+   * full disk would be retried through every route in turn, each one filling
+   * the same disk and failing the same way, before reporting a cause that had
+   * nothing to do with TikTok.
+   */
+  { pattern: /no space left|not enough space|disk full|ENOSPC/i, code: 'DISK_FULL', why: 'out of disk space' },
+  {
+    pattern: /permission denied|EACCES|EPERM|read-only file system/i,
+    code: 'PERMISSION_DENIED',
+    why: 'cannot write to the output folder',
+  },
+
   // --- Throttling --------------------------------------------------------
   {
     pattern: /HTTP Error 429\b|too many requests|rate.?limit|slow down/i,

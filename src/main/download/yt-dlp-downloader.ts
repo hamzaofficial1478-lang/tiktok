@@ -4,6 +4,7 @@ import { AppError } from '@shared/errors';
 import type { Logger } from 'pino';
 import type { ProcessRunner } from '../resolve/process-runner';
 import { classifyYtDlpFailure } from '../resolve/yt-dlp-errors';
+import { BROWSER_USER_AGENT } from '../resolve/yt-dlp-extractor';
 import type { DownloadOutcome, DownloadProgress } from './downloader';
 
 /**
@@ -46,8 +47,16 @@ export interface YtDlpDownloadOptions {
   readonly url: string;
   /** yt-dlp format_id chosen by the stream selector. */
   readonly formatId: string;
-  /** The route that resolved this video; the download must use the same one. */
-  readonly extractorArgs?: readonly string[];
+  /**
+   * Routes to try, best first.
+   *
+   * The download re-extracts, so it can fail on a route that resolution
+   * succeeded on moments earlier — TikTok's web path in particular is flaky
+   * between one request and the next. Resolution already survives that by
+   * trying several routes; the download now does the same instead of giving up
+   * on the first refusal.
+   */
+  readonly routes?: readonly (readonly string[])[];
   readonly targetPath: string;
   readonly signal: AbortSignal;
   readonly onProgress: (progress: DownloadProgress) => void;
@@ -105,6 +114,37 @@ export async function downloadWithYtDlp(options: YtDlpDownloadOptions): Promise<
   mkdirSync(dirname(options.targetPath), { recursive: true });
   const resumedFrom = existsSync(partPath) ? statSync(partPath).size : 0;
 
+  const routes = options.routes && options.routes.length > 0 ? options.routes : [[]];
+  let lastError: unknown;
+
+  for (const [index, route] of routes.entries()) {
+    try {
+      return await attemptDownload(options, binary, partPath, resumedFrom, route);
+    } catch (err) {
+      lastError = err;
+      const code = (err as { code?: string }).code;
+      // Only an extraction failure is worth another route. A full disk or a
+      // cancellation would fail identically every time.
+      if (code !== 'EXTRACTOR_FAILED' && code !== 'CDN_FORBIDDEN') throw err;
+      if (index < routes.length - 1) {
+        options.log?.warn(
+          { formatId: options.formatId, code, route: index },
+          'download route failed; trying the next one',
+        );
+      }
+    }
+  }
+
+  throw lastError;
+}
+
+async function attemptDownload(
+  options: YtDlpDownloadOptions,
+  binary: string,
+  partPath: string,
+  resumedFrom: number,
+  route: readonly string[],
+): Promise<DownloadOutcome> {
   const args = [
     '--no-warnings',
     '--no-playlist',
@@ -120,13 +160,24 @@ export async function downloadWithYtDlp(options: YtDlpDownloadOptions): Promise<
     '--newline',
     '--progress-template',
     PROGRESS_TEMPLATE,
+    /**
+     * The same browser identity the extraction used.
+     *
+     * Its absence here was the bug: extraction sent a browser user agent and
+     * the download sent none, so yt-dlp re-extracted as itself, TikTok served
+     * it something else, and the download failed with the web extractor's
+     * "Unexpected response from webpage request" seconds after the very same
+     * route had resolved the video successfully.
+     */
+    '--user-agent',
+    BROWSER_USER_AGENT,
     '-f',
     options.formatId,
     '-o',
     partPath,
   ];
 
-  if (options.extractorArgs) args.push(...options.extractorArgs);
+  args.push(...route);
   if (options.proxyUrl) args.push('--proxy', options.proxyUrl);
   args.push(options.url);
 

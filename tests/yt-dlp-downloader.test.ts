@@ -82,7 +82,7 @@ describe('invoking yt-dlp', () => {
       binaryPath: '/fake/yt-dlp',
       runner,
       targetPath: join(dir, 'v.mp4'),
-      extractorArgs: ['--extractor-args', 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com'],
+      routes: [['--extractor-args', 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com']],
     });
 
     const call = args[0] ?? [];
@@ -192,5 +192,83 @@ describe('failures', () => {
     await expect(
       downloadWithYtDlp({ ...base, binaryPath: null, runner, targetPath: join(dir, 'v.mp4') }),
     ).rejects.toMatchObject({ code: 'EXTRACTOR_FAILED' });
+  });
+});
+
+describe('the download presents the same identity as the extraction', () => {
+  it('sends a browser user agent, as extraction does', async () => {
+    const { runner, args } = runnerThat(() => {
+      writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(2_048));
+    });
+
+    await downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') });
+
+    const call = args[0] ?? [];
+    /**
+     * Its absence was the bug: extraction identified as a browser, the download
+     * identified as yt-dlp, and TikTok answered the second one differently —
+     * a resolve at 20:57:45 followed by a download failure at 20:57:55 on the
+     * very same route.
+     */
+    expect(call).toContain('--user-agent');
+    expect(call[call.indexOf('--user-agent') + 1]).toContain('Mozilla/5.0');
+  });
+});
+
+describe('trying more than one route to download', () => {
+  it('moves to the next route when extraction fails on the first', async () => {
+    let attempt = 0;
+    const seen: string[][] = [];
+    const runner: ProcessRunner = {
+      run: async (_cmd, a) => {
+        seen.push([...a]);
+        attempt++;
+        if (attempt === 1) {
+          return {
+            stdout: '',
+            stderr: 'ERROR: [TikTok] 7123: Unexpected response from webpage request',
+            exitCode: 1,
+            timedOut: false,
+          };
+        }
+        writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(4_096));
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      },
+    };
+
+    const outcome = await downloadWithYtDlp({
+      ...base,
+      binaryPath: '/fake/yt-dlp',
+      runner,
+      targetPath: join(dir, 'v.mp4'),
+      routes: [[], ['--extractor-args', 'tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com']],
+    });
+
+    expect(outcome.bytes).toBe(4_096);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toContain('tiktok:api_hostname=api22-normal-c-useast2a.tiktokv.com');
+  });
+
+  it('does not waste routes on a failure another route cannot fix', async () => {
+    let attempts = 0;
+    const runner: ProcessRunner = {
+      run: async () => {
+        attempts++;
+        return { stdout: '', stderr: 'ERROR: No space left on device', exitCode: 1, timedOut: false };
+      },
+    };
+
+    await expect(
+      downloadWithYtDlp({
+        ...base,
+        binaryPath: '/fake/yt-dlp',
+        runner,
+        targetPath: join(dir, 'v.mp4'),
+        routes: [[], ['--extractor-args', 'x'], ['--extractor-args', 'y']],
+      }),
+    ).rejects.toBeTruthy();
+
+    // A full disk fails identically on every route; retrying is only delay.
+    expect(attempts).toBe(1);
   });
 });

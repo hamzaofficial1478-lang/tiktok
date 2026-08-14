@@ -8,6 +8,7 @@ import type { MediaPipeline, PipelineInput, PipelineResult } from '../queue/type
 import { selectStream } from './stream-selector';
 import { commitPart, discardPart, downloadToPart, partPathFor } from './downloader';
 import { downloadWithYtDlp } from './yt-dlp-downloader';
+import { YT_DLP_STRATEGIES } from '../resolve/yt-dlp-extractor';
 import { verifyDownload } from './verify';
 import { renderTemplate, resolveOutputPath } from './filename';
 import { computePerceptualHash, sha256File } from './hashing';
@@ -50,6 +51,43 @@ export interface DownloadPipelineOptions {
     trimmedMs: number;
     confidence: number;
   }) => Promise<boolean>;
+}
+
+/**
+ * Routes for the download to try, best first.
+ *
+ * The route that resolved the video leads, since it is the one just proven to
+ * work. The rest follow because the download re-extracts, and TikTok's web
+ * path in particular can refuse the next request after answering the last one
+ * — which is exactly how a resolve at 20:57:45 was followed by a download
+ * failure at 20:57:55 on the same route.
+ *
+ * Session arguments already sit inside the resolved route, so they are carried
+ * onto the alternatives rather than being dropped when one is tried.
+ */
+export function downloadRoutes(resolvedArgs: readonly string[] | undefined): readonly (readonly string[])[] {
+  const primary = resolvedArgs ?? [];
+  // Whatever is not an --extractor-args pair is session state: cookies, IPv4.
+  const session: string[] = [];
+  for (let i = 0; i < primary.length; i++) {
+    if (primary[i] === '--extractor-args') {
+      i++;
+      continue;
+    }
+    session.push(primary[i] as string);
+  }
+
+  const seen = new Set<string>([primary.join(' ')]);
+  const routes: (readonly string[])[] = [primary];
+
+  for (const strategy of YT_DLP_STRATEGIES) {
+    const candidate = [...strategy.args, ...session];
+    const key = candidate.join(' ');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    routes.push(candidate);
+  }
+  return routes;
 }
 
 export class DownloadPipeline implements MediaPipeline {
@@ -135,7 +173,7 @@ export class DownloadPipeline implements MediaPipeline {
           runner: this.options.runner,
           url: input.normalized.canonicalUrl,
           formatId: selection.stream.id,
-          ...(input.resolved.extractorArgs ? { extractorArgs: input.resolved.extractorArgs } : {}),
+          routes: downloadRoutes(input.resolved.extractorArgs),
           targetPath,
           signal: input.signal,
           onProgress: progressSink,

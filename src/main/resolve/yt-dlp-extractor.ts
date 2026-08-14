@@ -86,7 +86,7 @@ interface YtDlpPayload {
  * which is how a downloader survives TikTok changing something. Asking every
  * user to find a proxy is not a substitute for having a second route.
  */
-const BROWSER_USER_AGENT =
+export const BROWSER_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 /**
