@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { AppError } from '@shared/errors';
 import type { Logger } from 'pino';
 import type { ProcessRunner } from '../resolve/process-runner';
 import { classifyYtDlpFailure } from '../resolve/yt-dlp-errors';
 import { BROWSER_USER_AGENT } from '../resolve/yt-dlp-extractor';
-import type { DownloadOutcome, DownloadProgress } from './downloader';
+import { partPathFor, type DownloadOutcome, type DownloadProgress } from './downloader';
 
 /**
  * Downloading the video with yt-dlp rather than with our own HTTP client.
@@ -39,6 +39,63 @@ const PROGRESS_PREFIX = 'dlprog:';
 const PROGRESS_TEMPLATE =
   `${PROGRESS_PREFIX}%(progress.downloaded_bytes)s;%(progress.total_bytes)s;` +
   `%(progress.total_bytes_estimate)s;%(progress.speed)s;%(progress.eta)s`;
+
+/** yt-dlp naming the file it actually wrote, rather than us assuming. */
+const OUTPUT_PREFIX = 'dlfile:';
+const OUTPUT_TEMPLATE = `after_move:${OUTPUT_PREFIX}%(filepath)s`;
+
+/**
+ * The suffix yt-dlp writes to while the transfer is in flight.
+ *
+ * It is emphatically **not** `.part`, and that is the whole point. yt-dlp
+ * reserves that suffix for its own temporary files and takes a trailing `.part`
+ * on a path as its own handiwork, undoing it:
+ *
+ *     def temp_name(self, filename):
+ *         if self.params.get('nopart', False) or ...:
+ *             return filename                       # --no-part: no suffix added
+ *         return filename + '.part'
+ *
+ *     def undo_temp_name(self, filename):
+ *         if filename.endswith('.part'):            # unconditional
+ *             return filename[:-len('.part')]
+ *
+ * — yt_dlp/downloader/common.py, with `try_rename(ctx.tmpfilename, ctx.filename)`
+ * in http.py performing the move at the end.
+ *
+ * So `--no-part -o "video.mp4.part"` writes `video.mp4.part` and then renames it
+ * to `video.mp4`: this app's own working file is mistaken for yt-dlp's and gets
+ * promoted to the final name behind our back. That was a real, shipped bug. Its
+ * signature is worth recognising, because it looks nothing like its cause: the
+ * download succeeds, the check for the `.part` finds nothing, the item fails
+ * with "reported success but wrote no file", the queue retries, and each retry
+ * picks a fresh non-colliding name — leaving one video downloaded three times
+ * under three names while the UI reports failure.
+ *
+ * `.download` is left alone (verified against yt-dlp 2026.07.04), so the file
+ * stays ours until we rename it onto the `.part` path the pipeline expects.
+ */
+const WORK_SUFFIX = '.download';
+
+/** Where yt-dlp writes; deterministic, so an interrupted attempt can resume it. */
+export function workPathFor(targetPath: string): string {
+  return `${targetPath}${WORK_SUFFIX}`;
+}
+
+/**
+ * Escapes a path for use as a yt-dlp output template.
+ *
+ * `-o` is a template, not a filename: `%(...)s` sequences in it are substituted.
+ * Filenames come from TikTok captions and from a folder the user chose, neither
+ * of which is under our control, and `%` is legal on every target platform so
+ * nothing upstream strips it. A caption containing `50%(id)s off` would
+ * otherwise be silently rewritten by yt-dlp — landing the file somewhere we are
+ * not looking, breaking the "output N matches link N" guarantee, and failing the
+ * item exactly like the `.part` bug above. `%%` is the documented literal.
+ */
+export function toOutputTemplate(path: string): string {
+  return path.replace(/%/g, '%%');
+}
 
 export interface YtDlpDownloadOptions {
   readonly binaryPath: string | null;
@@ -97,29 +154,56 @@ export function parseProgressLine(line: string): DownloadProgress | null {
   };
 }
 
+/** yt-dlp's `--print` output, naming the file it settled on. */
+export function parseOutputLine(line: string): string | null {
+  const at = line.indexOf(OUTPUT_PREFIX);
+  if (at === -1) return null;
+  const path = line.slice(at + OUTPUT_PREFIX.length).trim();
+  return path === '' || path === 'NA' ? null : path;
+}
+
 /**
- * Runs yt-dlp against the canonical URL and writes straight to the `.part`.
+ * Finds the file yt-dlp actually produced, in descending order of confidence.
  *
- * `--no-part` is deliberate and slightly counter-intuitive: yt-dlp would
- * otherwise append its own `.part` suffix to a path that already ends in one,
- * leaving `video.mp4.part.part` and defeating this app's resume logic, which
- * looks for the first. `--continue` then resumes that same file, so an
- * interrupted transfer still picks up where it stopped.
+ * Assuming the answer is what cost three copies of one video, so this asks
+ * rather than assumes. The work path is where yt-dlp was told to write; the
+ * printed path is where it says it wrote; the final name is the one place a
+ * future yt-dlp could relocate the file to without telling us, and is only
+ * eligible if it appeared during this run — a file that was already there
+ * belongs to someone else and must never be adopted.
+ */
+function locateProduced(candidates: readonly (string | null)[]): string | null {
+  const present = candidates.filter((path): path is string => path !== null && existsSync(path));
+  // A leftover empty file must not shadow the real one, but if empty is all
+  // there is, returning it produces the accurate "wrote an empty file".
+  return present.find((path) => statSync(path).size > 0) ?? present[0] ?? null;
+}
+
+/**
+ * Runs yt-dlp against the canonical URL, then moves the result onto the `.part`.
+ *
+ * `--no-part` stops yt-dlp adding a second suffix of its own, and `--continue`
+ * resumes the work file, so an interrupted transfer picks up where it stopped
+ * rather than starting the video again. The final name is created by
+ * `commitPart` after verification and at no other point.
  */
 export async function downloadWithYtDlp(options: YtDlpDownloadOptions): Promise<DownloadOutcome> {
   const binary = options.binaryPath;
   if (!binary) throw new AppError('EXTRACTOR_FAILED', 'yt-dlp is not installed');
 
-  const partPath = `${options.targetPath}.part`;
+  const partPath = partPathFor(options.targetPath);
+  const workPath = workPathFor(options.targetPath);
   mkdirSync(dirname(options.targetPath), { recursive: true });
-  const resumedFrom = existsSync(partPath) ? statSync(partPath).size : 0;
+  const resumedFrom = existsSync(workPath) ? statSync(workPath).size : 0;
+  // Captured before anything runs: see locateProduced.
+  const targetExisted = existsSync(options.targetPath);
 
   const routes = options.routes && options.routes.length > 0 ? options.routes : [[]];
   let lastError: unknown;
 
   for (const [index, route] of routes.entries()) {
     try {
-      return await attemptDownload(options, binary, partPath, resumedFrom, route);
+      return await attemptDownload(options, binary, { partPath, workPath, targetExisted }, resumedFrom, route);
     } catch (err) {
       lastError = err;
       const code = (err as { code?: string }).code;
@@ -138,10 +222,16 @@ export async function downloadWithYtDlp(options: YtDlpDownloadOptions): Promise<
   throw lastError;
 }
 
+interface Paths {
+  readonly partPath: string;
+  readonly workPath: string;
+  readonly targetExisted: boolean;
+}
+
 async function attemptDownload(
   options: YtDlpDownloadOptions,
   binary: string,
-  partPath: string,
+  paths: Paths,
   resumedFrom: number,
   route: readonly string[],
 ): Promise<DownloadOutcome> {
@@ -151,6 +241,15 @@ async function attemptDownload(
     '--no-part',
     '--continue',
     '--no-mtime',
+    /**
+     * `--print` implies `--quiet`, which silences the progress template and
+     * would leave the UI with a frozen speed and no ETA for the whole transfer.
+     * Asking for both back is the only way to have the file's name reported and
+     * the transfer still visible.
+     */
+    '--no-quiet',
+    '--print',
+    OUTPUT_TEMPLATE,
     '--retries',
     '3',
     '--fragment-retries',
@@ -174,7 +273,7 @@ async function attemptDownload(
     '-f',
     options.formatId,
     '-o',
-    partPath,
+    toOutputTemplate(paths.workPath),
   ];
 
   args.push(...route);
@@ -182,6 +281,7 @@ async function attemptDownload(
   args.push(options.url);
 
   let buffer = '';
+  let printedPath: string | null = null;
   const result = await options.runner.run(binary, args, {
     timeoutMs: options.timeoutMs ?? 20 * 60_000,
     signal: options.signal,
@@ -192,7 +292,11 @@ async function attemptDownload(
       buffer = lines.pop() ?? '';
       for (const line of lines) {
         const progress = parseProgressLine(line);
-        if (progress) options.onProgress(progress);
+        if (progress) {
+          options.onProgress(progress);
+          continue;
+        }
+        printedPath = parseOutputLine(line) ?? printedPath;
       }
     },
   });
@@ -205,7 +309,7 @@ async function attemptDownload(
       { formatId: options.formatId, exitCode: result.exitCode, stderr: result.stderr.slice(0, 800) },
       'yt-dlp download failed',
     );
-    // The `.part` is left in place: a partial from a network drop is a resume
+    // The work file is left in place: a partial from a network drop is a resume
     // point, exactly as with the direct downloader.
     throw new AppError(
       classified.code,
@@ -213,15 +317,37 @@ async function attemptDownload(
     );
   }
 
-  if (!existsSync(partPath)) {
+  const produced = locateProduced([
+    paths.workPath,
+    printedPath,
+    paths.targetExisted ? null : options.targetPath,
+  ]);
+
+  if (!produced) {
     throw new AppError('DOWNLOAD_INCOMPLETE', 'yt-dlp reported success but wrote no file');
   }
 
-  const bytes = statSync(partPath).size;
+  const bytes = statSync(produced).size;
   if (bytes === 0) {
+    // Not a resume point, and leaving it would make the next attempt believe it
+    // had one. Nothing of value is lost by removing zero bytes.
+    rmSync(produced, { force: true });
     throw new AppError('DOWNLOAD_INCOMPLETE', 'yt-dlp wrote an empty file');
   }
 
+  if (produced !== paths.partPath) {
+    /**
+     * Hands the file back to the pipeline's `.part` contract.
+     *
+     * A rename inside one directory, so it is atomic and costs nothing however
+     * large the video. From here the file is indistinguishable from one the
+     * direct downloader produced: verified while still a `.part`, and given its
+     * final name only once it passes.
+     */
+    options.log?.debug({ produced, partPath: paths.partPath }, 'moving the yt-dlp output onto the .part path');
+    renameSync(produced, paths.partPath);
+  }
+
   options.onProgress({ bytesDone: bytes, bytesTotal: bytes, speed: null, etaMs: 0 });
-  return { partPath, bytes, resumedFrom };
+  return { partPath: paths.partPath, bytes, resumedFrom };
 }

@@ -284,6 +284,18 @@ export class DownloadPipeline implements MediaPipeline {
      * already in the library database, so nothing is lost and the common path
      * now finishes the moment the bytes land.
      */
+    /**
+     * Past this point nothing may throw, and the reason is not tidiness.
+     *
+     * The file now exists under its final name. Throwing here fails the item,
+     * the queue retries it, and the retry's `resolveOutputPath` sees the
+     * committed file and picks the next free name — so a failure after the
+     * bytes have landed does not produce an error, it produces a second copy of
+     * the video. That is precisely how one download became three files on disk,
+     * and the naming bug that triggered it is only the cheaper half of the fix:
+     * anything that can fail after `commitPart` has to degrade to a null column
+     * instead. Both hashes are optional metadata; neither is worth a duplicate.
+     */
     // SHA-256 is a streaming read of bytes already on disk, so it is cheap.
     // The perceptual hash is not: it decodes the video again with ffmpeg, so
     // it only runs when repost detection is explicitly turned on.
@@ -296,6 +308,12 @@ export class DownloadPipeline implements MediaPipeline {
           durationMs: input.resolved.metadata.durationMs,
           log,
           signal: input.signal,
+        }).catch((err: unknown) => {
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            'perceptual hashing failed; the file is saved without one',
+          );
+          return null;
         })
       : null;
 

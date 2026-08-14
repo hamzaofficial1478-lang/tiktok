@@ -1,8 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { downloadWithYtDlp, parseProgressLine } from '@main/download/yt-dlp-downloader';
+import { resolveOutputPath } from '@main/download/filename';
+import {
+  downloadWithYtDlp,
+  parseOutputLine,
+  parseProgressLine,
+  toOutputTemplate,
+  workPathFor,
+} from '@main/download/yt-dlp-downloader';
 import type { ProcessResult, ProcessRunner, RunOptions } from '@main/resolve/process-runner';
 
 /**
@@ -11,8 +27,8 @@ import type { ProcessResult, ProcessRunner, RunOptions } from '@main/resolve/pro
  * This exists because TikTok's CDN authenticates against the cookiejar yt-dlp
  * builds during extraction, which never reaches our process. The tests below
  * pin the two things that make the handover correct: the download reaches the
- * same endpoint the metadata came from, and it writes to the `.part` path this
- * app's resume logic expects.
+ * same endpoint the metadata came from, and the file ends up on the `.part`
+ * path this app's resume and commit logic expects.
  */
 
 let dir: string;
@@ -37,12 +53,10 @@ function runnerThat(
   };
 }
 
-const base = {
-  url: 'https://www.tiktok.com/@a/video/7123456789012345678',
-  formatId: 'bytevc1_1080p_1292473-0',
-  signal: new AbortController().signal,
-  onProgress: () => {},
-};
+/** Where the real yt-dlp writes, given the `-o` it was handed. */
+function outputOf(call: readonly string[]): string {
+  return call[call.indexOf('-o') + 1] as string;
+}
 
 describe('parsing progress', () => {
   it('reads the machine-readable template rather than yt-dlp prose', () => {
@@ -71,10 +85,46 @@ describe('parsing progress', () => {
   });
 });
 
+describe('reading back the filename yt-dlp settled on', () => {
+  it('takes the path out of the print line', () => {
+    expect(parseOutputLine('dlfile:/videos/001 - creator.mp4.download')).toBe('/videos/001 - creator.mp4.download');
+  });
+
+  it('treats an unknown path as no answer rather than a file called NA', () => {
+    expect(parseOutputLine('dlfile:NA')).toBeNull();
+    expect(parseOutputLine('dlfile:')).toBeNull();
+    expect(parseOutputLine('[download] 100% of 2.00MiB')).toBeNull();
+  });
+});
+
+describe('escaping the output template', () => {
+  /**
+   * `-o` is a template, not a filename. TikTok captions are full of "50% off",
+   * and a folder the user picked can contain anything; an unescaped `%(id)s`
+   * inside a caption is substituted by yt-dlp, which lands the video somewhere
+   * this app is not looking.
+   */
+  it('escapes a literal percent so it is not read as a field', () => {
+    expect(toOutputTemplate('/out/50%(id)s off.mp4.download')).toBe('/out/50%%(id)s off.mp4.download');
+    expect(toOutputTemplate('/out/100% clean.mp4.download')).toBe('/out/100%% clean.mp4.download');
+  });
+
+  it('leaves an ordinary path exactly as it is', () => {
+    expect(toOutputTemplate('/out/001 - creator - 7123.mp4.download')).toBe('/out/001 - creator - 7123.mp4.download');
+  });
+});
+
+const base = {
+  url: 'https://www.tiktok.com/@a/video/7123456789012345678',
+  formatId: 'bytevc1_1080p_1292473-0',
+  signal: new AbortController().signal,
+  onProgress: () => {},
+};
+
 describe('invoking yt-dlp', () => {
   it('asks for the exact format the selector chose, via the route that resolved it', async () => {
-    const { runner, args } = runnerThat((_a) => {
-      writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(2_048));
+    const { runner, args } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(2_048));
     });
 
     await downloadWithYtDlp({
@@ -94,9 +144,30 @@ describe('invoking yt-dlp', () => {
     expect(call[call.length - 1]).toBe(base.url);
   });
 
-  it('writes to this app\'s .part path, not one of its own', async () => {
-    const { runner, args } = runnerThat(() => {
-      writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(4_096));
+  /**
+   * The regression this file exists to prevent.
+   *
+   * yt-dlp's `undo_temp_name` strips a trailing `.part` unconditionally, so
+   * `--no-part -o "v.mp4.part"` wrote `v.mp4.part` and then renamed it to
+   * `v.mp4` — the final name, created behind the pipeline's back, over bytes
+   * nothing had verified. The check for the `.part` then found nothing, the
+   * item failed as "reported success but wrote no file", and each queue retry
+   * chose a fresh non-colliding name. One video, three files, marked failed.
+   */
+  it('never hands yt-dlp a path ending in .part', async () => {
+    const { runner, args } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(4_096));
+    });
+
+    await downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') });
+
+    expect(outputOf(args[0] ?? [])).not.toMatch(/\.part$/);
+    expect(outputOf(args[0] ?? [])).toBe(workPathFor(join(dir, 'v.mp4')));
+  });
+
+  it('leaves the download on this app\'s .part path, and nowhere else', async () => {
+    const { runner, args } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(4_096));
     });
 
     const outcome = await downloadWithYtDlp({
@@ -107,21 +178,37 @@ describe('invoking yt-dlp', () => {
     });
 
     const call = args[0] ?? [];
-    // Without --no-part yt-dlp appends its own suffix, producing
-    // "v.mp4.part.part" and defeating this app's resume logic.
+    // Without --no-part yt-dlp adds a suffix of its own on top of ours.
     expect(call).toContain('--no-part');
     expect(call).toContain('--continue');
-    expect(call[call.indexOf('-o') + 1]).toBe(join(dir, 'v.mp4.part'));
     expect(outcome.partPath).toBe(join(dir, 'v.mp4.part'));
     expect(outcome.bytes).toBe(4_096);
+    expect(statSync(join(dir, 'v.mp4.part')).size).toBe(4_096);
     // The final name must not exist until the pipeline commits it.
     expect(existsSync(join(dir, 'v.mp4'))).toBe(false);
+    // And the working file is consumed, not left beside the result.
+    expect(existsSync(join(dir, 'v.mp4.download'))).toBe(false);
+  });
+
+  it('asks yt-dlp to name the file it wrote, without silencing progress', async () => {
+    const { runner, args } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(1_024));
+    });
+
+    await downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') });
+
+    const call = args[0] ?? [];
+    expect(call[call.indexOf('--print') + 1]).toBe('after_move:dlfile:%(filepath)s');
+    // --print implies --quiet, which would leave the UI with no speed or ETA
+    // for the entire transfer.
+    expect(call).toContain('--no-quiet');
+    expect(call).toContain('--progress-template');
   });
 
   it('reports what it resumed from', async () => {
-    writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(1_024));
-    const { runner } = runnerThat(() => {
-      writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(8_192));
+    writeFileSync(join(dir, 'v.mp4.download'), Buffer.alloc(1_024));
+    const { runner } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(8_192));
     });
 
     const outcome = await downloadWithYtDlp({
@@ -136,11 +223,11 @@ describe('invoking yt-dlp', () => {
 
   it('streams progress out as it arrives', async () => {
     const seen: number[] = [];
-    const { runner } = runnerThat((_a, options) => {
+    const { runner } = runnerThat((a, options) => {
       // Split mid-line, as a real stdout chunk would be.
       options.onStdout?.('dlprog:100;1000;NA;50;9\ndlprog:500;10');
       options.onStdout?.('00;NA;50;5\n');
-      writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(1_000));
+      writeFileSync(outputOf(a), Buffer.alloc(1_000));
     });
 
     await downloadWithYtDlp({
@@ -157,16 +244,162 @@ describe('invoking yt-dlp', () => {
   });
 });
 
+describe('finding the file when yt-dlp does not use the name it was given', () => {
+  it('follows the path yt-dlp printed', async () => {
+    const elsewhere = join(dir, 'renamed-by-ytdlp.mkv');
+    const { runner } = runnerThat((_a, options) => {
+      writeFileSync(elsewhere, Buffer.alloc(3_000));
+      options.onStdout?.(`dlfile:${elsewhere}\n`);
+    });
+
+    const outcome = await downloadWithYtDlp({
+      ...base,
+      binaryPath: '/fake/yt-dlp',
+      runner,
+      targetPath: join(dir, 'v.mp4'),
+    });
+
+    expect(outcome.partPath).toBe(join(dir, 'v.mp4.part'));
+    expect(outcome.bytes).toBe(3_000);
+    expect(existsSync(elsewhere)).toBe(false);
+  });
+
+  /**
+   * The safety net for the exact failure that shipped: whatever the reason, a
+   * file that appears at the final name during the run is this download's
+   * output, and adopting it beats failing an item whose bytes are on disk —
+   * which is what turns one download into several files.
+   */
+  it('adopts a file that appeared at the final name during the run', async () => {
+    const { runner } = runnerThat(() => {
+      writeFileSync(join(dir, 'v.mp4'), Buffer.alloc(5_000));
+    });
+
+    const outcome = await downloadWithYtDlp({
+      ...base,
+      binaryPath: '/fake/yt-dlp',
+      runner,
+      targetPath: join(dir, 'v.mp4'),
+    });
+
+    expect(outcome.bytes).toBe(5_000);
+    expect(outcome.partPath).toBe(join(dir, 'v.mp4.part'));
+    // Back under a `.part`, so verification still runs before it is committed.
+    expect(existsSync(join(dir, 'v.mp4'))).toBe(false);
+  });
+
+  it('never adopts a file that was already there', async () => {
+    // Someone else's video, under the name this item happens to have resolved
+    // to. Claiming it would report a download that never happened, and the
+    // pipeline would rename a stranger's file into this item's place.
+    writeFileSync(join(dir, 'v.mp4'), 'an older download');
+    const { runner } = runnerThat(() => ({ exitCode: 0 }));
+
+    await expect(
+      downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') }),
+    ).rejects.toMatchObject({ code: 'DOWNLOAD_INCOMPLETE' });
+
+    expect(readFileSync(join(dir, 'v.mp4'), 'utf8')).toBe('an older download');
+  });
+
+  it('prefers the real file over an empty leftover', async () => {
+    const printed = join(dir, 'actual.mp4');
+    const { runner } = runnerThat((a, options) => {
+      writeFileSync(outputOf(a), Buffer.alloc(0));
+      writeFileSync(printed, Buffer.alloc(2_500));
+      options.onStdout?.(`dlfile:${printed}\n`);
+    });
+
+    const outcome = await downloadWithYtDlp({
+      ...base,
+      binaryPath: '/fake/yt-dlp',
+      runner,
+      targetPath: join(dir, 'v.mp4'),
+    });
+
+    expect(outcome.bytes).toBe(2_500);
+  });
+});
+
+describe('the incident: one video, three files', () => {
+  /**
+   * A stand-in for the real yt-dlp, reproducing the two behaviours that
+   * combined to cause it — verified against yt-dlp 2026.07.04 and matching
+   * `temp_name` / `undo_temp_name` / `try_rename` in yt_dlp/downloader/.
+   */
+  function ytDlpLike(): ProcessRunner {
+    return {
+      run: async (_cmd, a) => {
+        const template = a[a.indexOf('-o') + 1] as string;
+        // `-o` is a template, scanned left to right: `%%` is a literal percent,
+        // `%(x)s` a field. The order matters — `%%(id)s` is a percent followed
+        // by plain text, not an escaped percent followed by a field.
+        const written = template.replace(/%%|%\(\w+\)s/g, (match) => (match === '%%' ? '%' : 'FIELD'));
+        writeFileSync(written, Buffer.alloc(6_000));
+        // --no-part means yt-dlp adds no suffix of its own, and then undoes a
+        // trailing `.part` it assumes it must have added itself.
+        const destination = written.endsWith('.part') ? written.slice(0, -'.part'.length) : written;
+        if (destination !== written) renameSync(written, destination);
+        return { stdout: `dlfile:${destination}\n`, stderr: '', exitCode: 0, timedOut: false };
+      },
+    };
+  }
+
+  it('downloads once and leaves one file, across the retries that produced three', async () => {
+    const runner = ytDlpLike();
+    const directory = dir;
+
+    // What the pipeline does per attempt: pick a non-colliding final name,
+    // download to its `.part`. Before the fix, attempt 1 landed the video on
+    // the final name, failed the item, and attempts 2 and 3 each chose a fresh
+    // name and did it again. This pins the outcome rather than one mechanism,
+    // and now holds for two independent reasons: yt-dlp is never handed a name
+    // it would rewrite, and a file that turns up at the final name anyway is
+    // adopted instead of abandoned.
+    const outcomes: string[] = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const targetPath = resolveOutputPath({
+        directory,
+        basename: '001 - creator - 7123456789012345678',
+        extension: '.mp4',
+        onCollision: 'suffix',
+      });
+      outcomes.push(
+        (await downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath })).partPath,
+      );
+    }
+
+    // Every attempt resolved to the same name, because no attempt ever created
+    // the final one — so nothing collided and nothing was suffixed.
+    expect(new Set(outcomes).size).toBe(1);
+    expect(readdirSync(directory).filter((name) => name.includes('7123456789012345678'))).toEqual([
+      '001 - creator - 7123456789012345678.mp4.part',
+    ]);
+  });
+
+  it('survives a caption yt-dlp would otherwise read as a field', async () => {
+    const runner = ytDlpLike();
+    const targetPath = join(dir, '001 - 50%(id)s off.mp4');
+
+    const outcome = await downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath });
+
+    expect(outcome.partPath).toBe(`${targetPath}.part`);
+    expect(existsSync(`${targetPath}.part`)).toBe(true);
+    // Unescaped, the caption would have become "001 - 50FIELD off.mp4".
+    expect(readdirSync(dir).some((name) => name.includes('FIELD'))).toBe(false);
+  });
+});
+
 describe('failures', () => {
-  it('keeps the .part when the transfer fails, so a retry resumes', async () => {
-    writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(2_048));
+  it('keeps the partial when the transfer fails, so a retry resumes', async () => {
+    writeFileSync(join(dir, 'v.mp4.download'), Buffer.alloc(2_048));
     const { runner } = runnerThat(() => ({ exitCode: 1, stderr: 'ERROR: unable to download video data' }));
 
     await expect(
       downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') }),
     ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
 
-    expect(existsSync(join(dir, 'v.mp4.part'))).toBe(true);
+    expect(existsSync(join(dir, 'v.mp4.download'))).toBe(true);
   });
 
   it('does not claim success when yt-dlp exits 0 having written nothing', async () => {
@@ -178,13 +411,17 @@ describe('failures', () => {
   });
 
   it('rejects an empty file rather than committing it', async () => {
-    const { runner } = runnerThat(() => {
-      writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(0));
+    const { runner } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(0));
     });
 
     await expect(
       downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') }),
     ).rejects.toMatchObject({ code: 'DOWNLOAD_INCOMPLETE' });
+
+    // Zero bytes is not a resume point; leaving it would tell the next attempt
+    // it had one.
+    expect(existsSync(join(dir, 'v.mp4.download'))).toBe(false);
   });
 
   it('says so plainly when yt-dlp is not installed', async () => {
@@ -197,8 +434,8 @@ describe('failures', () => {
 
 describe('the download presents the same identity as the extraction', () => {
   it('sends a browser user agent, as extraction does', async () => {
-    const { runner, args } = runnerThat(() => {
-      writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(2_048));
+    const { runner, args } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(2_048));
     });
 
     await downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') });
@@ -231,7 +468,7 @@ describe('trying more than one route to download', () => {
             timedOut: false,
           };
         }
-        writeFileSync(join(dir, 'v.mp4.part'), Buffer.alloc(4_096));
+        writeFileSync(outputOf(a), Buffer.alloc(4_096));
         return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
       },
     };
