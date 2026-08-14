@@ -1,6 +1,7 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { sanitizeBasename } from '@shared/filename-template';
+import { existsSync, mkdirSync } from 'node:fs';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { sanitizeBasename, sanitizeSegment } from '@shared/filename-template';
+import { AppError } from '@shared/errors';
 
 export {
   renderTemplate,
@@ -11,6 +12,41 @@ export {
 export type { TemplateContext } from '@shared/filename-template';
 
 void sanitizeBasename;
+
+/**
+ * The folder an item's video belongs in, created if it does not exist.
+ *
+ * `subdir` is a TikTok handle that arrived over the network, so it is treated
+ * as untrusted: sanitised to one path segment, then checked to actually resolve
+ * inside the output folder. The check is not redundant with the sanitiser —
+ * belt and braces on a value that decides where files are written is the right
+ * ratio, because the failure mode is writing outside the folder the user chose.
+ */
+export function resolveOutputDirectory(root: string, subdir: string | null | undefined): string {
+  if (!subdir) return root;
+
+  /**
+   * Flattened to one segment before anything else looks at it.
+   *
+   * Separators become spaces and runs of dots are dropped, so "../../etc"
+   * arrives as "etc" rather than as a folder literally named ".. .. etc" —
+   * which is what a naive replacement produces, and which is both ugly and
+   * indistinguishable from traversal to the check below.
+   */
+  const flattened = subdir.replace(/[\\/]+/g, ' ').replace(/\.{2,}/g, ' ');
+  const segment = sanitizeBasename(sanitizeSegment(flattened));
+  if (segment === '' || segment === '.' || segment === 'untitled') return root;
+
+  const directory = join(root, segment);
+  const inside = relative(resolve(root), resolve(directory));
+  // The boundary matters: a folder legitimately named "..cool" is not an escape.
+  if (inside === '' || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
+    throw new AppError('PERMISSION_DENIED', `refusing to write outside the output folder: ${subdir}`);
+  }
+
+  mkdirSync(directory, { recursive: true });
+  return directory;
+}
 
 export interface ResolvePathOptions {
   readonly directory: string;

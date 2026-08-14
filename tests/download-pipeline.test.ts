@@ -1,9 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { selectStream } from '@main/download/stream-selector';
-import { previewTemplate, renderTemplate, resolveOutputPath, sanitizeBasename } from '@main/download/filename';
+import {
+  previewTemplate,
+  renderTemplate,
+  resolveOutputDirectory,
+  resolveOutputPath,
+  sanitizeBasename,
+} from '@main/download/filename';
 import { verifyDownload } from '@main/download/verify';
 import { checkSpace, formatBytes } from '@main/download/disk-space';
 import { Ffprobe } from '@main/media/ffprobe';
@@ -379,5 +385,48 @@ describe('CDN headers from the extractor', () => {
 
     expect(candidate.headers.referer).toBe('https://www.tiktok.com/');
     expect(candidate.headers.cookie).toContain('ttwid');
+  });
+});
+
+describe('an account gets its own folder', () => {
+  /**
+   * Queued from a profile link, two hundred videos landing loose in the output
+   * folder alongside everything else is not a result anyone wanted. The folder
+   * they belong in has an obvious name — the account's.
+   */
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'outdir-'));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  it('creates the folder and puts the videos in it', () => {
+    const directory = resolveOutputDirectory(root, 'blackcloudmc');
+    expect(directory).toBe(join(root, 'blackcloudmc'));
+    expect(existsSync(directory)).toBe(true);
+  });
+
+  it('leaves individually pasted links in the output folder itself', () => {
+    // They have no account in common and must not be filed under one.
+    expect(resolveOutputDirectory(root, null)).toBe(root);
+    expect(resolveOutputDirectory(root, '')).toBe(root);
+  });
+
+  /**
+   * The handle arrives from a remote response, so it is a path this app did not
+   * choose. Both guards are here on purpose: the sanitiser flattens it to one
+   * segment, and the result is checked to resolve inside the output folder.
+   */
+  it('cannot be talked into writing outside the output folder', () => {
+    expect(resolveOutputDirectory(root, '../../etc')).toBe(join(root, 'etc'));
+    expect(resolveOutputDirectory(root, '..')).toBe(root);
+    expect(resolveOutputDirectory(root, 'a/../../b')).toBe(join(root, 'a b'));
+    expect(existsSync(join(root, '..', 'etc'))).toBe(false);
+  });
+
+  it('handles a name Windows would refuse', () => {
+    // A reserved device name is not creatable whatever extension it carries.
+    expect(resolveOutputDirectory(root, 'CON')).toBe(join(root, '_CON'));
+    expect(resolveOutputDirectory(root, 'na:me?')).toBe(join(root, 'name'));
   });
 });

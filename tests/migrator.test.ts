@@ -127,6 +127,9 @@ describe('migration runner', () => {
       'source_strategy',
       'watermark_removed',
       'batch_index',
+      // Where a profile-sourced batch is filed; null for individually pasted
+      // links, which have no account in common.
+      'output_subdir',
     ]);
     expect(columns('downloads')).toContain('source_strategy');
     expect(columns('downloads')).toContain('file_exists');

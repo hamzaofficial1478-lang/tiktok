@@ -91,6 +91,15 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
   const [mode, setMode] = useState<Mode>('links');
   const [profileInput, setProfileInput] = useState('');
   const [fetching, setFetching] = useState(false);
+  /**
+   * The account the links in the box came from, if they came from one.
+   *
+   * Held so that Add can file them in a folder of their own. Cleared the moment
+   * the text is edited by hand: once the list is not simply "what @creator
+   * posted" any more, filing it under that name would be a claim about the
+   * files that is no longer true.
+   */
+  const [fetchedFrom, setFetchedFrom] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [scan, setScan] = useState<{ report: ScanReport; fileNames: string[] } | null>(null);
@@ -126,13 +135,15 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
         return [...kept, fetched].filter((part) => part !== '').join('\n');
       });
       setProfileInput('');
+      setFetchedFrom(result.handle);
       setMode('links');
 
       pushToast({
         kind: 'success',
         message:
           `@${result.handle} · ${result.urls.length} video${result.urls.length === 1 ? '' : 's'} found` +
-          (result.truncated ? ` · newest ${PROFILE_LIMIT} shown` : ''),
+          (result.truncated ? ` · newest ${PROFILE_LIMIT} shown` : '') +
+          ` · they will be saved in a folder named ${result.handle}`,
       });
     } catch (err) {
       pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -144,15 +155,20 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
   async function add(): Promise<void> {
     setBusy(true);
     try {
-      const result = await invoke('queue:addLinks', { urls: splitInput(value) });
+      const result = await invoke('queue:addLinks', {
+        urls: splitInput(value),
+        subfolder: fetchedFrom,
+      });
       const parts = [`${result.added} queued`];
       if (result.duplicatesRemoved > 0) parts.push(`${result.duplicatesRemoved} duplicates removed`);
       if (result.alreadyInQueue > 0) parts.push(`${result.alreadyInQueue} already in queue`);
       if (result.invalid.length > 0) parts.push(`${result.invalid.length} invalid`);
 
+      if (fetchedFrom && result.added > 0) parts.push(`saved to a folder named ${fetchedFrom}`);
       pushToast({ kind: result.added > 0 ? 'success' : 'warning', message: parts.join(' · ') });
       if (result.added > 0) {
         setValue('');
+        setFetchedFrom(null);
         onQueued();
       }
     } catch (err) {
@@ -261,10 +277,21 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
         </Panel>
       )}
 
-      <Panel title="Paste links">
+      <Panel
+        title="Paste links"
+        description={
+          fetchedFrom
+            ? `${lines.length} video${lines.length === 1 ? '' : 's'} from @${fetchedFrom} — these will be saved together in a folder named ${fetchedFrom}, numbered in this order.`
+            : undefined
+        }
+      >
         <textarea
           value={value}
-          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setValue(event.target.value)}
+          onChange={(event: ChangeEvent<HTMLTextAreaElement>) => {
+            setValue(event.target.value);
+            // Edited by hand: this is no longer one account's list.
+            setFetchedFrom(null);
+          }}
           onDrop={onDrop}
           onDragOver={(event) => {
             event.preventDefault();
@@ -319,7 +346,13 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
               Import file…
             </Button>
             {value !== '' && (
-              <Button variant="ghost" onClick={() => setValue('')}>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setValue('');
+                  setFetchedFrom(null);
+                }}
+              >
                 Clear
               </Button>
             )}

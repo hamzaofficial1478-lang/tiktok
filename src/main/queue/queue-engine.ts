@@ -126,7 +126,16 @@ export class QueueEngine {
    * Adding links — dedup layer 1, and layer 2 where the ID is known
    * ---------------------------------------------------------------- */
 
-  addLinks(rawUrls: readonly string[], batchId: string = randomUUID()): AddLinksResult {
+  /**
+   * @param outputSubdir Folder under the output directory these belong in.
+   *   Set when a whole account was queued from a profile link, so its videos
+   *   are filed together instead of landing loose among everything else.
+   */
+  addLinks(
+    rawUrls: readonly string[],
+    batchId: string = randomUUID(),
+    outputSubdir: string | null = null,
+  ): AddLinksResult {
     const paste = dedupePaste(rawUrls, (input) => this.options.normalizer.parse(input));
 
     // Layer 2 at add time for links whose ID is knowable without a network
@@ -155,7 +164,7 @@ export class QueueEngine {
     }
 
     const rows = this.options.queueItems.enqueue(
-      toEnqueue.map((item) => ({ ...item, batchId })),
+      toEnqueue.map((item) => ({ ...item, batchId, outputSubdir })),
       this.options.clock.now(),
     );
     if (rows.length > 0) this.knownBatches.add(batchId);

@@ -184,7 +184,15 @@ export const invokeContract = {
     response: z.object({ items: z.array(QueueItemSchema), state: QueueStateSchema }),
   },
   'queue:addLinks': {
-    request: z.object({ urls: z.array(z.string()).max(5000) }),
+    request: z.object({
+      urls: z.array(z.string()).max(5000),
+      /**
+       * Folder under the output directory these belong in — the account's
+       * handle, when a whole profile was queued. Sanitised and confined to the
+       * output folder in main; this is a name, never a path.
+       */
+      subfolder: z.string().max(64).nullable().optional(),
+    }),
     response: AddLinksResultSchema,
   },
   /**

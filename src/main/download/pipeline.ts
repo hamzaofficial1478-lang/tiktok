@@ -10,7 +10,7 @@ import { commitPart, discardPart, downloadToPart, partPathFor } from './download
 import { downloadWithYtDlp } from './yt-dlp-downloader';
 import type { YtDlpStrategy } from '../resolve/yt-dlp-extractor';
 import { verifyDownload } from './verify';
-import { renderTemplate, resolveOutputPath } from './filename';
+import { renderTemplate, resolveOutputPath, resolveOutputDirectory } from './filename';
 import { computePerceptualHash, sha256File } from './hashing';
 import { assertEnoughSpace } from './disk-space';
 import type { PostProcessor } from '../postprocess/processor';
@@ -119,8 +119,19 @@ export class DownloadPipeline implements MediaPipeline {
     });
     log.info({ stream: selection.stream.id, strategy: selection.strategy }, selection.reason);
 
-    const directory = this.options.outputDir?.() ?? config.outputDir;
-    if (!directory) throw new AppError('PERMISSION_DENIED', 'no output folder has been chosen yet');
+    const root = this.options.outputDir?.() ?? config.outputDir;
+    if (!root) throw new AppError('PERMISSION_DENIED', 'no output folder has been chosen yet');
+
+    /**
+     * An account queued from a profile link gets its own folder.
+     *
+     * The name comes from a TikTok handle, which is remote input — so it goes
+     * through the same sanitiser filenames do, and the result is checked to be
+     * inside the output folder before anything is written. A handle of "../.."
+     * is not a plausible accident, but "the path came from a remote response
+     * and was joined without checking" is exactly the shape of a real one.
+     */
+    const directory = resolveOutputDirectory(root, input.item.output_subdir);
 
     // 2. Fail fast rather than part-way through (section 9 step 5).
     if (selection.stream.filesize) assertEnoughSpace(directory, selection.stream.filesize);

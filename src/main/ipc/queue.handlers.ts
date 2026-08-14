@@ -20,8 +20,8 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
     state: { running: queue.isRunning, paused: queue.isPaused, active: queue.activeCount },
   }));
 
-  registry.handle('queue:addLinks', ({ urls }) => {
-    const result = queue.addLinks(urls);
+  registry.handle('queue:addLinks', ({ urls, subfolder }) => {
+    const result = queue.addLinks(urls, undefined, subfolder ?? null);
     // Pasting links is the user saying "download these"; making them press
     // start as well is a step with no decision in it.
     if (result.added > 0 && !queue.isRunning) queue.start();

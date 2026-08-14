@@ -30,6 +30,8 @@ export interface QueueItemRow {
   watermark_removed: number | null;
   /** 1-based ordinal within this batch — the number the user counted. */
   batch_index: number | null;
+  /** Folder under the output directory; null means the output directory itself. */
+  output_subdir: string | null;
 }
 
 export interface EnqueueInput {
@@ -38,6 +40,8 @@ export interface EnqueueInput {
   canonicalUrl?: string | null;
   awemeId?: string | null;
   status?: QueueStatus;
+  /** Set for links that came from one account, so they are filed together. */
+  outputSubdir?: string | null;
 }
 
 export interface QueueItemPatch {
@@ -102,8 +106,10 @@ export class QueueItemsRepository {
   enqueue(inputs: readonly EnqueueInput[], now: number = Date.now()): QueueItemRow[] {
     const insert = this.db.prepare(
       `INSERT INTO queue_items (
-         position, batch_index, batch_id, raw_url, canonical_url, aweme_id, status, progress, attempt_count, created_at
-       ) VALUES (@position, @batchIndex, @batchId, @rawUrl, @canonicalUrl, @awemeId, @status, 0, 0, @createdAt)`,
+         position, batch_index, batch_id, raw_url, canonical_url, aweme_id, status, progress, attempt_count,
+         created_at, output_subdir
+       ) VALUES (@position, @batchIndex, @batchId, @rawUrl, @canonicalUrl, @awemeId, @status, 0, 0, @createdAt,
+         @outputSubdir)`,
     );
 
     const run = this.db.transaction((items: readonly EnqueueInput[]): number[] => {
@@ -123,6 +129,7 @@ export class QueueItemsRepository {
           rawUrl: item.rawUrl,
           canonicalUrl: item.canonicalUrl ?? null,
           awemeId: item.awemeId ?? null,
+          outputSubdir: item.outputSubdir ?? null,
           status: item.status ?? 'queued',
           createdAt: now,
         });
