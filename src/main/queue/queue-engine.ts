@@ -9,6 +9,7 @@ import type { VideosRepository } from '../db/repositories/videos';
 import type { DownloadsRepository } from '../db/repositories/downloads';
 import type { UrlNormalizer } from '../resolve/url-normalizer';
 import type { Extractor, NormalizedUrl } from '../resolve/types';
+import { buildCanonicalUrl } from '@shared/url-parse';
 import type { Clock } from '../clock';
 import { RateLimiter } from './rate-limiter';
 import { decideRetry, MAX_RETRIES } from './retry-policy';
@@ -352,7 +353,9 @@ export class QueueEngine {
    * ---------------------------------------------------------------- */
 
   private async processItem(row: QueueItemRow, signal: AbortSignal): Promise<void> {
+    this.log.debug({ itemId: row.id }, 'resolving the link');
     const normalized = await this.normalize(row, signal);
+    this.log.info({ itemId: row.id, awemeId: normalized.awemeId, viaShortLink: normalized.viaShortLink }, 'link resolved');
 
     // A carousel is knowable from the URL alone, so it fails without ever
     // spending an outbound request (section 2).
@@ -416,13 +419,55 @@ export class QueueEngine {
 
   private async normalize(row: QueueItemRow, signal: AbortSignal): Promise<NormalizedUrl> {
     const parsed = this.options.normalizer.parse(row.raw_url);
-    // Only a short link costs a request, so only a short link pays the rate
-    // limit — otherwise a 300-item paste of full URLs would crawl for no reason.
-    if (parsed.status === 'needs-redirect') {
-      await this.options.rateLimiter.acquire(signal);
-      throwIfAborted(signal);
+
+    // A full URL needs no request, so it pays no rate limit — otherwise a
+    // 300-item paste of full URLs would crawl for no reason.
+    if (parsed.status !== 'needs-redirect') {
+      return this.options.normalizer.normalize(row.raw_url, { signal });
     }
-    return this.options.normalizer.normalize(row.raw_url, { signal });
+
+    await this.options.rateLimiter.acquire(signal);
+    throwIfAborted(signal);
+
+    try {
+      return await this.options.normalizer.normalize(row.raw_url, { signal });
+    } catch (err) {
+      const appError = toAppError(err, 'RESOLVE_FAILED');
+      // A genuinely dead link must still fail; only a transport problem is
+      // worth a second opinion.
+      if (appError.code !== 'NETWORK_ERROR' && appError.code !== 'RESOLVE_FAILED') throw err;
+
+      /**
+       * Fall back to the extractor for short links.
+       *
+       * Following the redirect ourselves is a bare HEAD request on the global
+       * fetch, which is the one outbound call in the app that honours none of
+       * the user's settings — no proxy, no forced IPv4, no browser session. It
+       * is also entirely redundant: yt-dlp resolves vm.tiktok.com itself, using
+       * its own network stack and every one of those settings.
+       *
+       * So when our shortcut fails, the work is handed to the component that
+       * was always better placed to do it, rather than failing an item over a
+       * hop that did not need to exist.
+       */
+      this.log.warn(
+        { itemId: row.id, code: appError.code, detail: appError.detail },
+        'could not follow the short link directly; asking the extractor instead',
+      );
+
+      const resolved = await this.options.extractor.resolve(row.raw_url, { signal });
+      const awemeId = resolved.metadata.awemeId;
+      if (!awemeId) throw err;
+
+      return {
+        awemeId,
+        canonicalUrl: buildCanonicalUrl(awemeId, resolved.metadata.authorHandle),
+        authorHandle: resolved.metadata.authorHandle,
+        kind: resolved.metadata.isPhotoPost ? 'photo' : 'video',
+        viaShortLink: true,
+        rawUrl: row.raw_url,
+      };
+    }
   }
 
   /** Layer 3: park the question, free the worker, keep the queue moving. */

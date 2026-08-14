@@ -177,8 +177,11 @@ export class FakeExtractor implements Extractor {
     return true;
   }
 
+  /** Short URLs the extractor can follow itself, as yt-dlp does. */
+  readonly shortLinks = new Map<string, string>();
+
   async resolve(canonicalUrl: string): Promise<ResolvedVideo> {
-    const awemeId = /\/(\d{15,21})/.exec(canonicalUrl)?.[1] ?? '';
+    const awemeId = this.shortLinks.get(canonicalUrl) ?? /\/(\d{15,21})/.exec(canonicalUrl)?.[1] ?? '';
     const queued = this.failures.get(awemeId);
     if (queued && queued.length > 0) {
       const code = queued.shift() as ErrorCode;
@@ -217,6 +220,10 @@ export function createHarness(
   options: {
     config?: Partial<AppConfig>;
     redirects?: Record<string, string>;
+    /** Makes our own HEAD hop fail, as it does when TikTok is unreachable. */
+    redirectFails?: AppError;
+    /** Short URL -> aweme id, for the extractor fallback. */
+    extractorResolvesShortLinks?: Record<string, string>;
     engineOverrides?: Partial<QueueEngineOptions>;
   } = {},
 ): Harness {
@@ -230,6 +237,7 @@ export function createHarness(
 
   const redirectResolver: RedirectResolver = {
     resolve: async (url: string) => {
+      if (options.redirectFails) throw options.redirectFails;
       const target = options.redirects?.[url];
       if (!target) throw new AppError('NETWORK_ERROR', `no redirect stub for ${url}`);
       return target;
@@ -240,6 +248,9 @@ export function createHarness(
   const existingFiles = new Set<string>();
   const pipeline = new FakePipeline(existingFiles);
   const extractor = new FakeExtractor();
+  for (const [url, id] of Object.entries(options.extractorResolvesShortLinks ?? {})) {
+    extractor.shortLinks.set(url, id);
+  }
   const clock = new TestClock();
   const events: QueueEvent[] = [];
 

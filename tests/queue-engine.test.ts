@@ -7,6 +7,7 @@ import {
   type Harness,
 } from './helpers/queue-fixtures';
 import type { PendingDuplicate, QueueEvent } from '@main/queue/types';
+import { AppError } from '@shared/errors';
 
 let harness: Harness;
 
@@ -454,5 +455,52 @@ describe('accounting: every link ends up somewhere (section 8)', () => {
     // place in the order, which is how links go missing.
     expect(new Set(positions).size).toBe(positions.length);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+});
+
+describe('short links when our own redirect hop fails', () => {
+  it('asks the extractor instead of failing the item', async () => {
+    const id = awemeIdFor(1);
+    harness = createHarness({
+      // Our HEAD request times out — exactly the 8s failure seen in the field,
+      // where every item died before the extractor was ever reached.
+      redirectFails: new AppError('NETWORK_ERROR', 'timed out resolving short link after 0 hop(s)'),
+      extractorResolvesShortLinks: { 'https://vm.tiktok.com/ZMabcdef/': id },
+    });
+
+    harness.engine.addLinks(['https://vm.tiktok.com/ZMabcdef/']);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    // The item completes: yt-dlp follows vm.tiktok.com itself, using the proxy,
+    // forced IPv4 and browser session that our bare fetch honoured none of.
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('completed');
+    expect(harness.engine.getSnapshot()[0]?.awemeId).toBe(id);
+  });
+
+  it('still fails a link that is genuinely gone, rather than masking it', async () => {
+    harness = createHarness({
+      redirectFails: new AppError('VIDEO_DELETED', 'short link returned 404'),
+    });
+
+    harness.engine.addLinks(['https://vm.tiktok.com/ZMgone/']);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    // Only a transport problem earns a second opinion; a dead link is dead.
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('failed');
+    expect(harness.engine.getSnapshot()[0]?.errorCode).toBe('VIDEO_DELETED');
+  });
+
+  it('does not touch the network for a full URL', async () => {
+    harness = createHarness({
+      redirectFails: new AppError('NETWORK_ERROR', 'should never be called'),
+    });
+
+    harness.engine.addLinks([makeUrl(5)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('completed');
   });
 });
