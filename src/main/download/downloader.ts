@@ -202,11 +202,29 @@ async function pipeToFile(
   onChunk: (size: number) => void,
 ): Promise<void> {
   const reader = body.getReader();
+
+  /**
+   * A write stream that errors with nothing listening throws globally, and in
+   * the main process an uncaught exception is a dead application. The failure
+   * arrives asynchronously from the filesystem callback, so the try/catch below
+   * cannot see it: a dropped connection destroys the sink, a write already in
+   * flight lands afterwards, and ERR_STREAM_DESTROYED escapes as an uncaught
+   * exception. Holding the first error here keeps it inside the promise.
+   */
+  let sinkError: Error | null = null;
+  const captureError = (err: Error): void => {
+    sinkError ??= err;
+  };
+  sink.on('error', captureError);
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!value) continue;
+      if (sinkError) throw sinkError;
+      // Writing to a destroyed stream is the same asynchronous throw again.
+      if (sink.destroyed) throw sinkError ?? new Error('the output file was closed before the download finished');
       onChunk(value.byteLength);
       if (!sink.write(value)) {
         await new Promise<void>((resolve, reject) => {
@@ -223,6 +241,7 @@ async function pipeToFile(
     sink.destroy();
     throw err;
   } finally {
+    sink.off('error', captureError);
     try {
       await reader.cancel();
     } catch {
