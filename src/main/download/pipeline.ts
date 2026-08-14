@@ -104,8 +104,16 @@ export class DownloadPipeline implements MediaPipeline {
      * Handing the transfer to the process that holds the session is the only
      * way short of reimplementing TikTok's challenge flow.
      *
-     * The direct downloader remains for any extractor that hands back a URL
-     * needing no session, and is exercised by its own tests.
+     * The branch below is unreachable as the app ships today: yt-dlp is what
+     * resolves the video, so an absent yt-dlp fails at extraction and never
+     * arrives here. It is kept because section 2's extractor seam exists for a
+     * second implementation, and that one may well hand back a URL needing no
+     * session — but nothing currently exercises it outside its own tests.
+     *
+     * Worth stating because it has already misled a diagnosis: an error
+     * carrying downloadToPart's wording ("the CDN refused the download with
+     * 403") cannot have come from a run where yt-dlp was installed, and is
+     * therefore evidence about which build produced a log, not about TikTok.
      */
     const progressSink = (progress: {
       bytesDone: number;
