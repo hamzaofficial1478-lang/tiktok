@@ -433,9 +433,23 @@ export class QueueEngine {
       return await this.options.normalizer.normalize(row.raw_url, { signal });
     } catch (err) {
       const appError = toAppError(err, 'RESOLVE_FAILED');
-      // A genuinely dead link must still fail; only a transport problem is
-      // worth a second opinion.
-      if (appError.code !== 'NETWORK_ERROR' && appError.code !== 'RESOLVE_FAILED') throw err;
+      /**
+       * Which failures earn a second opinion.
+       *
+       * NOT_A_TIKTOK_URL is here because of what it means for a short link
+       * specifically: vt.tiktok.com answered our request by redirecting to
+       * `https://www.tiktok.com/?_r=1`, its homepage. The link is fine — the
+       * request was not recognised as a browser, so TikTok sent us nowhere in
+       * particular. Treating that as "this is not a TikTok URL" fails a
+       * perfectly good video, terminally, without a retry.
+       *
+       * A deleted or private video keeps its own code and still fails.
+       */
+      const worthRetrying =
+        appError.code === 'NETWORK_ERROR' ||
+        appError.code === 'RESOLVE_FAILED' ||
+        appError.code === 'NOT_A_TIKTOK_URL';
+      if (!worthRetrying) throw err;
 
       /**
        * Fall back to the extractor for short links.

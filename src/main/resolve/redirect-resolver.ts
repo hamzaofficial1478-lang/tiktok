@@ -96,7 +96,15 @@ export class HttpRedirectResolver implements RedirectResolver {
           method,
           redirect: 'manual',
           signal: controller.signal,
-          headers: { 'user-agent': this.userAgent, accept: '*/*' },
+          headers: {
+            'user-agent': this.userAgent,
+            // TikTok's short-link host decides where to send you based on how
+            // the request looks. Asked with HEAD and `Accept: */*`, it answers
+            // with the homepage — a redirect that succeeds and points nowhere.
+            // These are the headers a browser navigation carries.
+            accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'accept-language': 'en-US,en;q=0.9',
+          },
         });
       } finally {
         clearTimeout(timer);
@@ -106,8 +114,11 @@ export class HttpRedirectResolver implements RedirectResolver {
     };
 
     try {
-      const response = await attempt('HEAD');
-      if (response.status === 405 || response.status === 501) return await attempt('GET');
+      // GET first, not HEAD. `redirect: 'manual'` returns the moment the 3xx
+      // arrives, so no body is transferred and the saving HEAD offered was
+      // never real — while HEAD is exactly what TikTok answers wrongly.
+      const response = await attempt('GET');
+      if (response.status === 405 || response.status === 501) return await attempt('HEAD');
       return response;
     } catch (err) {
       if (external?.aborted) throw new AppError('CANCELLED', 'short link resolution cancelled');

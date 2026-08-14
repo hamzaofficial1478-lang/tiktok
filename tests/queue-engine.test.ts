@@ -504,3 +504,39 @@ describe('short links when our own redirect hop fails', () => {
     expect(harness.engine.getSnapshot()[0]?.status).toBe('completed');
   });
 });
+
+describe('a short link that redirects to the TikTok homepage', () => {
+  it('asks the extractor rather than calling a good link invalid', async () => {
+    const id = awemeIdFor(3);
+    harness = createHarness({
+      // Verbatim from the field: vt.tiktok.com answered our request with its
+      // homepage, so parsing found a TikTok host carrying no video.
+      redirects: { 'https://vt.tiktok.com/ZSVe933SSr': 'https://www.tiktok.com/?_r=1' },
+      extractorResolvesShortLinks: { 'https://vt.tiktok.com/ZSVe933SSr': id },
+    });
+
+    harness.engine.addLinks(['https://vt.tiktok.com/ZSVe933SSr']);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    const item = harness.engine.getSnapshot()[0];
+    // Previously: NOT_A_TIKTOK_URL, terminal, no retry — a working video
+    // rejected because our redirect was not recognised as a browser.
+    expect(item?.status).toBe('completed');
+    expect(item?.awemeId).toBe(id);
+  });
+
+  it('still rejects a short link that really points off TikTok', async () => {
+    harness = createHarness({
+      redirects: { 'https://vt.tiktok.com/ZSelsewhere': 'https://youtube.com/watch?v=abc' },
+    });
+
+    harness.engine.addLinks(['https://vt.tiktok.com/ZSelsewhere']);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    // The extractor is asked, finds no video, and the item fails — but it
+    // fails on evidence rather than on our own bad redirect.
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('failed');
+  });
+});
