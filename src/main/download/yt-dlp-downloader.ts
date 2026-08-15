@@ -282,6 +282,16 @@ async function attemptDownload(
     BROWSER_USER_AGENT,
     '-f',
     options.formatId,
+    /**
+     * Only when a merge is actually happening.
+     *
+     * `-o` ends in `.download`, which is not a container yt-dlp recognises, so
+     * with two formats to join it would pick one itself and rename the result.
+     * The output would still be found — the printed path and the adopt
+     * fallback see to that — but it would arrive as an .mkv the rest of the
+     * app named .mp4.
+     */
+    ...(options.formatId.includes('+') ? ['--merge-output-format', 'mp4'] : []),
     '-o',
     toOutputTemplate(paths.workPath),
   ];

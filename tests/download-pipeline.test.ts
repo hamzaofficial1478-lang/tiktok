@@ -430,3 +430,63 @@ describe('an account gets its own folder', () => {
     expect(resolveOutputDirectory(root, 'na:me?')).toBe(join(root, 'name'));
   });
 });
+
+describe('a downloaded video must not be silent', () => {
+  /**
+   * The reported failure: some videos in a batch had sound and some did not.
+   *
+   * TikTok's app API offers video-only formats alongside muxed ones, and they
+   * are often the highest resolution on offer. Ranking by resolution alone
+   * picked those and saved them exactly as served — silent, with nothing in
+   * the UI to say why.
+   */
+  const options = { audioOnly: false, watermarkMode: 'auto' } as const;
+
+  it('takes sound over resolution', () => {
+    const result = selectStream(
+      [
+        stream({ id: 'video-only-1080', width: 1080, height: 1920, hasAudio: false }),
+        stream({ id: 'muxed-720', width: 720, height: 1280, hasAudio: true }),
+      ],
+      options,
+    );
+    expect(result.stream.id).toBe('muxed-720');
+    expect(result.formatId).toBe('muxed-720');
+  });
+
+  it('merges in the audio when every video track is silent', () => {
+    const result = selectStream(
+      [
+        stream({ id: 'video-only-1080', width: 1080, height: 1920, hasAudio: false }),
+        stream({ id: 'audio', kind: 'audio', bitrate: 128, hasAudio: true }),
+      ],
+      options,
+    );
+    // yt-dlp's own syntax for "download both and join them".
+    expect(result.formatId).toBe('video-only-1080+audio');
+    expect(result.audioStream?.id).toBe('audio');
+    expect(result.reason).toMatch(/merged with TikTok's separate audio/);
+  });
+
+  it('downloads a genuinely silent post, and says that is what it is', () => {
+    // Plenty of TikToks have no sound at all; failing them would be wrong.
+    const result = selectStream([stream({ id: 'only', hasAudio: false })], options);
+    expect(result.stream.id).toBe('only');
+    expect(result.formatId).toBe('only');
+    expect(result.reason).toMatch(/TikTok offers no audio for this post/);
+  });
+
+  it('still puts a clean source ahead of a watermarked one', () => {
+    // Sound ranks within a watermark class, never across it.
+    const result = selectStream(
+      [
+        stream({ id: 'watermarked', watermarked: true, hasAudio: true, width: 1080, height: 1920 }),
+        stream({ id: 'clean-silent', watermarked: false, hasAudio: false, width: 480, height: 854 }),
+        stream({ id: 'audio', kind: 'audio', bitrate: 128 }),
+      ],
+      options,
+    );
+    expect(result.stream.id).toBe('clean-silent');
+    expect(result.formatId).toBe('clean-silent+audio');
+  });
+});

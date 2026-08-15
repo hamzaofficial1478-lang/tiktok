@@ -9,9 +9,9 @@ rem  It does what you were typing by hand, in order, and stops at the first step
 rem  that fails with a message saying which one — rather than flashing a window
 rem  shut and leaving you to guess. Nothing here needs PowerShell.
 rem
-rem  Later runs skip everything that is already done, so the second start is
-rem  quick: dependencies are only installed when node_modules is missing, and
-rem  the app is only rebuilt when the built output is missing.
+rem  Dependencies are installed only when they are missing, so the second start
+rem  skips the slow part. The app is rebuilt EVERY time, on purpose - see the
+rem  note above the build step.
 rem ---------------------------------------------------------------------------
 
 cd /d "%~dp0"
@@ -64,21 +64,23 @@ if not exist "node_modules\electron\dist\electron.exe" (
 )
 
 rem --- Build -----------------------------------------------------------------
-rem  Rebuilt only when the output is missing. To force one after changing the
-rem  code, delete the "out" folder, or run: npm run build
-if not exist "out\main\index.js" (
-  echo   [3/3] Building the app. First run only.
+rem  Always. This used to skip the build whenever "out" already existed, which
+rem  was wrong in the one case that matters: after pulling new code, the old
+rem  build is still sitting there, so the app started and showed the previous
+rem  version. The only way to see the new one was to run npm run dev by hand,
+rem  which is exactly what this file exists to avoid.
+rem
+rem  A rebuild of unchanged code takes a few seconds. Being a few seconds slower
+rem  every time is worth never once running the wrong version.
+echo   [3/3] Building the app...
+echo.
+call npm run build
+if errorlevel 1 (
   echo.
-  call npm run build
-  if errorlevel 1 (
-    echo.
-    echo   [X] The build failed. The lines above say why.
-    echo.
-    pause
-    exit /b 1
-  )
-) else (
-  echo   [3/3] Build: OK
+  echo   [X] The build failed. The lines above say why.
+  echo.
+  pause
+  exit /b 1
 )
 
 echo.

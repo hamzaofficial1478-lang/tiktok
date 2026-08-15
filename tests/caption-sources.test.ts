@@ -108,7 +108,9 @@ describe('the sidecar file', () => {
       generateSeo({ cues: [], caption: null, hashtags: ['guitar'], authorHandle: 'creator', durationMs: 30_000 }),
       metadata,
     );
-    expect(thin).toContain('there was little to work from');
+    expect(thin).toContain('nobody speaks in this video');
+    // And says what would change it, rather than leaving the user guessing.
+    expect(thin).toContain('Turning captions on');
 
     const rich = renderSidecar(
       generateSeo({

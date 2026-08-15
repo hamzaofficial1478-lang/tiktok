@@ -22,6 +22,21 @@ import type { StreamCandidate } from '../resolve/types';
 export interface SelectionResult {
   readonly stream: StreamCandidate;
   /**
+   * The audio to merge in, set only when the chosen video carries none.
+   *
+   * TikTok's app API offers video-only formats alongside muxed ones, and they
+   * are often the highest resolution on offer. Picking one and downloading it
+   * as-is produces a silent video — which is exactly what happened: some
+   * downloads from a batch had sound and some did not, with nothing in the UI
+   * to say why.
+   */
+  readonly audioStream?: StreamCandidate;
+  /**
+   * What to pass to yt-dlp's `-f`. `a+b` asks it to merge, which is the one
+   * place the download needs to know a merge is happening.
+   */
+  readonly formatId: string;
+  /**
    * What this choice implies for post-processing. 'clean_source' means the
    * file needs no watermark work at all; 'raw' means a watermarked stream was
    * the only option.
@@ -52,7 +67,7 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
     if (!best) {
       throw new AppError('UNSUPPORTED_MEDIA', 'audio-only was requested but no audio stream is available');
     }
-    return { stream: best, strategy: 'raw', reason: 'audio-only requested' };
+    return { stream: best, formatId: best.id, strategy: 'raw', reason: 'audio-only requested' };
   }
 
   const video = streams.filter((s) => s.kind === 'video');
@@ -60,8 +75,23 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
     throw new AppError('EXTRACTOR_FAILED', 'no video streams were offered for this video');
   }
 
-  const clean = [...video.filter((s) => !s.watermarked)].sort(byQualityDesc);
-  const watermarked = [...video.filter((s) => s.watermarked)].sort(byQualityDesc);
+  /**
+   * Sound first, resolution second.
+   *
+   * A stream that carries audio outranks a higher-resolution one that does
+   * not, and only when no muxed stream exists at all is a video-only stream
+   * taken — and then it is merged with the best audio rather than saved
+   * silent. Ranking by resolution alone is what produced a batch where some
+   * videos had sound and some did not.
+   */
+  const rank = (candidates: readonly StreamCandidate[]): StreamCandidate[] => {
+    const withAudio = candidates.filter((s) => s.hasAudio).sort(byQualityDesc);
+    const silent = candidates.filter((s) => !s.hasAudio).sort(byQualityDesc);
+    return [...withAudio, ...silent];
+  };
+
+  const clean = rank(video.filter((s) => !s.watermarked));
+  const watermarked = rank(video.filter((s) => s.watermarked));
 
   // "Keep watermark" makes the watermarked variant a first-class choice; it is
   // usually the higher-quality encode TikTok offers for download.
@@ -69,14 +99,34 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
   if (!preferred) throw new AppError('EXTRACTOR_FAILED', 'no usable video stream was offered');
 
   const isClean = !preferred.watermarked;
+  const audioStream = preferred.hasAudio
+    ? undefined
+    : [...streams.filter((s) => s.kind === 'audio')].sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0];
+
+  const base = isClean
+    ? `clean source at ${describe(preferred)}, exactly as TikTok serves it`
+    : options.watermarkMode === 'keep'
+      ? `watermarked source at ${describe(preferred)} (watermark kept by preference)`
+      : `only a watermarked source was available at ${describe(preferred)}; it will need re-encoding`;
+
+  /**
+   * A silent stream with no audio anywhere is a legitimate TikTok post — plenty
+   * are genuinely silent — so it is downloaded rather than failed. It is said
+   * out loud, because "the file has no sound" needs an explanation that is not
+   * "the downloader lost it".
+   */
+  const reason = preferred.hasAudio
+    ? base
+    : audioStream
+      ? `${base}; the video track carries no audio, so it is merged with TikTok's separate audio track`
+      : `${base}; TikTok offers no audio for this post, so the file is silent`;
+
   return {
     stream: preferred,
+    ...(audioStream ? { audioStream } : {}),
+    formatId: audioStream ? `${preferred.id}+${audioStream.id}` : preferred.id,
     strategy: isClean ? 'clean_source' : 'raw',
-    reason: isClean
-      ? `clean source at ${describe(preferred)}, exactly as TikTok serves it`
-      : options.watermarkMode === 'keep'
-        ? `watermarked source at ${describe(preferred)} (watermark kept by preference)`
-        : `only a watermarked source was available at ${describe(preferred)}; it will need re-encoding`,
+    reason,
   };
 }
 

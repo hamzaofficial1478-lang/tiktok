@@ -36,6 +36,8 @@ export function writeSeoSidecar(input: SidecarInput): SidecarResult {
     hashtags: input.metadata.hashtags,
     authorHandle: input.metadata.authorHandle,
     durationMs: input.metadata.durationMs,
+    musicTitle: input.metadata.musicTitle,
+    uploadedAt: input.metadata.uploadedAt,
   });
 
   const path = sidecarPathFor(input.videoPath);
@@ -69,9 +71,21 @@ export function renderSidecar(seo: SeoResult, metadata: VideoMetadata): string {
       seo.basis === 'transcript'
         ? 'what is said in the video'
         : seo.basis === 'caption'
-          ? "the creator's caption (this video has no transcript)"
-          : 'hashtags and video details only — there was little to work from'
+          ? "the creator's caption (nobody speaks in this video, or no transcript was available)"
+          : 'the tags, the sound and the post details — nobody speaks in this video and its caption is too short to write from'
     }`,
+    /**
+     * The honest answer to "how does it decide when nobody is speaking?".
+     *
+     * It cannot, beyond what the post itself carries — so it says so, and says
+     * what would change it. Silently producing a confident-looking title from
+     * nothing would be the alternative, and that is the failure this whole
+     * module was built to avoid.
+     */
+    seo.basis === 'thin'
+      ? 'There was no speech to work from. Turning captions on transcribes the audio, which gives the ' +
+        'title and description real material; a video with no speech at all can only be described by its tags.'
+      : null,
     `SEO score: ${seo.score.total}/100`,
     ...(failed.length > 0 ? ['', 'Worth a look before posting:'] : []),
     ...failed.map((check) => `  · ${check.note}`),

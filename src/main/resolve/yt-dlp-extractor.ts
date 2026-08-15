@@ -371,8 +371,38 @@ function toStream(format: YtDlpFormat): StreamCandidate {
   };
 }
 
+/**
+ * The hashtags written into a TikTok caption.
+ *
+ * They were not extracted at all — the field was hard-coded empty with the
+ * note "nothing consumes them", which stopped being true the moment titles and
+ * descriptions were written from a video's own words. For a silent video with
+ * a short caption they are often the *only* thing distinguishing one post from
+ * the next, and their absence is why a whole account's videos came out with
+ * identical titles.
+ */
+export function extractHashtags(text: string | null | undefined): string[] {
+  if (!text) return [];
+  const seen = new Set<string>();
+  for (const match of text.matchAll(/#([\p{L}\p{N}_]{2,60})/gu)) {
+    const tag = (match[1] as string).toLowerCase();
+    if (!seen.has(tag)) seen.add(tag);
+  }
+  return [...seen];
+}
+
 function toMetadata(payload: YtDlpPayload, canonicalUrl: string): VideoMetadata {
-  const caption = payload.title ?? payload.description ?? null;
+  /**
+   * The full caption, not the shortened one.
+   *
+   * yt-dlp fills `title` from the description and truncates it for display,
+   * so preferring `title` threw away the end of every caption — including
+   * hashtags, which usually sit there.
+   */
+  const caption =
+    (payload.description?.trim() ?? '') !== ''
+      ? (payload.description as string)
+      : (payload.title ?? null);
   const durationSeconds = typeof payload.duration === 'number' ? payload.duration : null;
   const formats = payload.formats ?? [];
   const hasVideoFormat = formats.some((f) => f.vcodec !== undefined && f.vcodec !== 'none');
@@ -394,8 +424,7 @@ function toMetadata(payload: YtDlpPayload, canonicalUrl: string): VideoMetadata 
     coverUrl: payload.thumbnail ?? null,
     musicTitle: payload.track ?? payload.artist ?? null,
     uploadedAt: toEpochMs(payload),
-    // Hashtags are not extracted: nothing consumes them.
-    hashtags: [],
+    hashtags: extractHashtags(payload.description ?? payload.title ?? null),
     isPhotoPost,
     stats: {
       views: payload.view_count ?? null,

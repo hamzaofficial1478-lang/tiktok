@@ -197,7 +197,7 @@ export class DownloadPipeline implements MediaPipeline {
           binaryPath: ytDlpPath,
           runner: this.options.runner,
           url: input.normalized.canonicalUrl,
-          formatId: selection.stream.id,
+          formatId: selection.formatId,
           routes: downloadRoutes(input.resolved.extractorArgs, this.options.downloadStrategies?.() ?? []),
           targetPath,
           signal: input.signal,

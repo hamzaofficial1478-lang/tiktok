@@ -114,9 +114,29 @@ describe('YtDlpExtractor — metadata', () => {
     expect(metadata.stats).toEqual({ views: 120_000, likes: 9_400, comments: 210, shares: 55 });
   });
 
-  it('does not extract hashtags, since nothing consumes them', async () => {
+  /**
+   * These used to be hard-coded empty, with the note "nothing consumes them".
+   * That stopped being true when titles and descriptions started being written
+   * from a video's own words: for a silent video with a short caption the tags
+   * are often the only thing telling one post from the next, and their absence
+   * is why a whole account came out with identical titles.
+   */
+  it('extracts the hashtags a creator wrote into the caption', async () => {
     const { metadata } = await extractorFor(CLEAN_AND_WATERMARKED).resolve(CANONICAL);
-    expect(metadata.hashtags).toEqual([]);
+    expect(metadata.hashtags).toEqual(['tags', 'more']);
+  });
+
+  it('reads them out of the full description, not the shortened title', async () => {
+    // yt-dlp truncates `title` for display, which cut the tags off the end of
+    // every caption — they usually sit there.
+    const payload = {
+      ...CLEAN_AND_WATERMARKED,
+      title: 'a caption with #tags and…',
+      description: 'a caption with #tags and #more #SourDough_2 at the end',
+    };
+    const { metadata } = await extractorFor(payload).resolve(CANONICAL);
+    expect(metadata.hashtags).toEqual(['tags', 'more', 'sourdough_2']);
+    expect(metadata.caption).toContain('at the end');
   });
 
   it('falls back to upload_date when no timestamp is present', async () => {

@@ -42,6 +42,10 @@ export interface SeoSource {
   readonly hashtags: readonly string[];
   readonly authorHandle: string | null;
   readonly durationMs: number | null;
+  /** The sound the post uses — often the only thing a silent video says. */
+  readonly musicTitle?: string | null;
+  /** When it was posted, used only to tell two otherwise identical posts apart. */
+  readonly uploadedAt?: number | null;
 }
 
 export interface SeoResult {
@@ -93,7 +97,9 @@ export function generateSeo(source: SeoSource): SeoResult {
   const caption = cleanCaption(source.caption ?? '');
   const basis: SeoResult['basis'] = transcript.length > 80 ? 'transcript' : caption.length > 20 ? 'caption' : 'thin';
 
-  const keywords = rankKeywords([transcript, caption, source.hashtags.join(' ')].join(' '));
+  const keywords = rankKeywords(
+    [transcript, caption, source.hashtags.join(' '), source.musicTitle ?? ''].join(' '),
+  );
   const title = buildTitle({ transcript, caption, keywords, hashtags: source.hashtags, source });
   const description = buildDescription({ transcript, caption, keywords, source });
 
@@ -167,10 +173,43 @@ function buildTitle(input: {
   const fromCaption = shapeTitle(input.caption, input.keywords);
   if (fromCaption.length >= 12) return fromCaption;
 
-  const tags = input.hashtags.filter((tag) => tag.length > 2).slice(0, 3);
-  if (tags.length > 0) return shapeTitle(tags.join(' '), input.keywords);
+  /**
+   * Nothing was said and the caption is too short to be one — a silent clip
+   * with a two-word caption, which a whole account can consist of.
+   *
+   * What is left still differs from post to post: the tags the creator chose,
+   * the sound they used. Both are the creator's own words about this video and
+   * neither is invented, so they are used in that order rather than falling
+   * through to a template. That template is what produced "Video by @creator"
+   * as the title of every video in a batch — a result so useless it read as
+   * the feature being broken, which is fair.
+   */
+  const tags = input.hashtags.filter((tag) => tag.length > 2).slice(0, 4);
+  const parts: string[] = [];
+  if (fromCaption !== '') parts.push(fromCaption);
+  if (tags.length > 0) parts.push(tags.map(spaceOutTag).join(', '));
+  if (input.source.musicTitle) parts.push(`sound: ${input.source.musicTitle}`);
 
-  return input.source.authorHandle ? `Video by @${input.source.authorHandle}` : 'Untitled video';
+  const assembled = shapeTitle(parts.join(' — '), input.keywords);
+  if (assembled.length >= 8) return assembled;
+
+  // Genuinely nothing: no speech, no caption, no tags, no sound. The date is
+  // the last thing that distinguishes one of these from the next.
+  const when = input.source.uploadedAt ? new Date(input.source.uploadedAt).toISOString().slice(0, 10) : null;
+  const who = input.source.authorHandle ? `@${input.source.authorHandle}` : 'Unknown creator';
+  return when ? `${who} — ${when}` : who;
+}
+
+/** `guitarpractice` reads as one word; `guitar practice` reads as two. */
+function spaceOutTag(tag: string): string {
+  return tag
+    .replace(/[_-]+/g, ' ')
+    // camelCase and digit boundaries are the only splits that are safe without
+    // a dictionary; splitting a lowercase run would mangle real words.
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([a-zA-Z])(\d)/g, '$1 $2')
+    .toLowerCase()
+    .trim();
 }
 
 /**
@@ -273,19 +312,28 @@ function buildDescription(input: {
 
   if (description !== '' && !/[.!?]$/.test(description)) description += '.';
 
-  // Too short to be a description: say plainly what the video is rather than
-  // padding it out with words the video never contained.
+  /**
+   * Too short to be a description: state what is known rather than padding it
+   * out with words the video never contained.
+   *
+   * Everything added here varies per post — the tags the creator chose, the
+   * sound, the length — so two silent videos from the same account do not end
+   * up with the same paragraph, which is what happened when the only fallback
+   * mentioned the creator and the duration.
+   */
   if (wordCount(description) < 12) {
-    const subject = input.keywords.slice(0, 4).join(', ');
     const who = input.source.authorHandle ? `@${input.source.authorHandle}` : 'this creator';
     const seconds = input.source.durationMs ? Math.round(input.source.durationMs / 1_000) : null;
-    description = [
-      description,
-      subject === '' ? `A short clip from ${who}.` : `A ${seconds ? `${seconds}-second ` : ''}clip from ${who} about ${subject}.`,
-    ]
-      .filter((part) => part !== '')
-      .join(' ')
-      .trim();
+    const tags = input.source.hashtags.slice(0, 5);
+
+    const facts = [
+      `A ${seconds ? `${seconds}-second ` : ''}clip from ${who}`,
+      tags.length > 0 ? `tagged ${tags.map((tag) => `#${tag}`).join(' ')}` : '',
+      input.source.musicTitle ? `set to ${input.source.musicTitle}` : '',
+      input.keywords.length > 0 ? `about ${input.keywords.slice(0, 4).join(', ')}` : '',
+    ].filter((part) => part !== '');
+
+    description = [description, `${facts.join(', ')}.`].filter((part) => part !== '').join(' ').trim();
   }
 
   return trimToWords(description, DESCRIPTION_MAX_WORDS);

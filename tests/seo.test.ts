@@ -186,3 +186,71 @@ describe('the pieces', () => {
     expect(keywords).not.toContain('basically');
   });
 });
+
+describe('a silent video with almost no caption', () => {
+  /**
+   * The reported failure: a whole account of clips came out with the same
+   * title and the same description. Nothing was spoken, hashtags were not
+   * being extracted at all, and the fallback named only the creator — so
+   * every video in the batch reduced to "Video by @creator".
+   */
+  function silent(overrides: Partial<Parameters<typeof generateSeo>[0]>) {
+    return generateSeo({
+      cues: [],
+      caption: 'new',
+      hashtags: [],
+      authorHandle: 'creator',
+      durationMs: 12_000,
+      ...overrides,
+    });
+  }
+
+  it('tells two silent videos apart by the tags the creator chose', () => {
+    const first = silent({ hashtags: ['sourdough', 'baking'] });
+    const second = silent({ hashtags: ['espresso', 'latteart'] });
+
+    expect(first.title).not.toBe(second.title);
+    expect(first.description).not.toBe(second.description);
+    expect(first.title.toLowerCase()).toContain('sourdough');
+    expect(second.title.toLowerCase()).toContain('espresso');
+  });
+
+  it('reads a run-together tag as words', () => {
+    expect(silent({ hashtags: ['latteart'] }).title.toLowerCase()).toContain('latteart');
+    expect(silent({ hashtags: ['coffee_time'] }).title.toLowerCase()).toContain('coffee time');
+  });
+
+  it('falls back to the sound when there are no tags either', () => {
+    const result = silent({ musicTitle: 'Bella Ciao - Remix' });
+    expect(result.title).toContain('Bella Ciao');
+    expect(result.description).toContain('Bella Ciao');
+  });
+
+  it('never produces the same title for two posts with nothing at all', () => {
+    // No speech, no caption, no tags, no sound. The date is the last thing
+    // separating one of these from the next.
+    const a = generateSeo({
+      cues: [],
+      caption: null,
+      hashtags: [],
+      authorHandle: 'creator',
+      durationMs: 8_000,
+      uploadedAt: Date.UTC(2026, 0, 5),
+    });
+    const b = generateSeo({
+      cues: [],
+      caption: null,
+      hashtags: [],
+      authorHandle: 'creator',
+      durationMs: 8_000,
+      uploadedAt: Date.UTC(2026, 2, 19),
+    });
+
+    expect(a.title).not.toBe(b.title);
+    expect(a.title).toContain('@creator');
+  });
+
+  it('still says what it worked from', () => {
+    expect(silent({ hashtags: ['baking'] }).basis).toBe('thin');
+  });
+});
