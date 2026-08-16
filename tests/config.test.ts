@@ -41,12 +41,84 @@ describe('ConfigStore', () => {
     expect(store.get().outroMode).toBe(DEFAULT_CONFIG.outroMode);
   });
 
-  it('backs up an invalid config and starts from defaults rather than refusing to launch', () => {
+  it('backs up an invalid config rather than refusing to launch', () => {
     writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, concurrency: 99 }));
 
     const store = ConfigStore.load(file, silent);
     expect(store.get()).toEqual(DEFAULT_CONFIG);
     expect(readdirSync(dir).some((f) => f.includes('.invalid-'))).toBe(true);
+  });
+
+  it('resets only the setting that is broken, and keeps the rest', () => {
+    writeFileSync(
+      file,
+      JSON.stringify({ ...DEFAULT_CONFIG, outputDir: 'D:/TikTok', proxyUrl: 'not a url', concurrency: 3 }),
+    );
+
+    const store = ConfigStore.load(file, silent);
+    // One unreadable field used to cost every field. Losing a chosen output
+    // folder because a proxy URL was malformed is not a settings reset, it is
+    // an app that forgets.
+    expect(store.get().proxyUrl).toBe('');
+    expect(store.get().outputDir).toBe('D:/TikTok');
+    expect(store.get().concurrency).toBe(3);
+  });
+
+  it('keeps the output folder when a nested block gains a field in a later version', () => {
+    // Exactly the upgrade path that reset people's output folder: captions was
+    // written by an older build and the schema has moved on since.
+    const { captions: _dropped, ...rest } = DEFAULT_CONFIG;
+    writeFileSync(
+      file,
+      JSON.stringify({ ...rest, outputDir: 'D:/TikTok', captions: { mode: 'burn', style: 'not-a-style' } }),
+    );
+
+    const store = ConfigStore.load(file, silent);
+    expect(store.get().outputDir).toBe('D:/TikTok');
+  });
+
+  it('rescues a nested block that is merely missing a newly added option', () => {
+    const { source: _added, ...olderCaptions } = DEFAULT_CONFIG.captions;
+    writeFileSync(
+      file,
+      JSON.stringify({ ...DEFAULT_CONFIG, outputDir: 'D:/TikTok', captions: { ...olderCaptions, mode: 'burn' } }),
+    );
+
+    const store = ConfigStore.load(file, silent);
+    expect(store.get().outputDir).toBe('D:/TikTok');
+    // Merged over the default rather than thrown away, so the user's other
+    // caption choices survive too.
+    expect(store.get().captions.mode).toBe('burn');
+    expect(store.get().captions.source).toBe(DEFAULT_CONFIG.captions.source);
+  });
+
+  it('rescues a style block written before the newest options existed', () => {
+    // Two levels down, which is where the caption options actually live — a
+    // shallow merge would have replaced the whole style block and failed.
+    const { fontFamily: _added, ...olderStyle } = DEFAULT_CONFIG.captions.style;
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...DEFAULT_CONFIG,
+        outputDir: 'D:/TikTok',
+        captions: { ...DEFAULT_CONFIG.captions, style: { ...olderStyle, bold: !DEFAULT_CONFIG.captions.style.bold } },
+      }),
+    );
+
+    const store = ConfigStore.load(file, silent);
+    expect(store.get().outputDir).toBe('D:/TikTok');
+    expect(store.get().captions.style.fontFamily).toBe(DEFAULT_CONFIG.captions.style.fontFamily);
+    expect(store.get().captions.style.bold).toBe(!DEFAULT_CONFIG.captions.style.bold);
+  });
+
+  it('writes the repaired config back, so the next launch is clean', () => {
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, outputDir: 'D:/TikTok', proxyUrl: 'not a url' }));
+
+    ConfigStore.load(file, silent);
+    const reloaded = ConfigStore.load(file, silent);
+    expect(reloaded.get().outputDir).toBe('D:/TikTok');
+    // Repaired once: the second load found nothing to back up.
+    expect(readdirSync(dir).filter((f) => f.includes('.invalid-'))).toHaveLength(1);
   });
 
   it('survives an unparseable config file', () => {

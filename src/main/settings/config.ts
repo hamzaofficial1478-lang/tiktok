@@ -6,16 +6,92 @@ import { AppConfigSchema, DEFAULT_CONFIG, type AppConfig } from '@shared/config-
 /**
  * The single settings module (spec section 13).
  *
- * Two behaviours worth stating because they are the ones users notice:
+ * Three behaviours worth stating because they are the ones users notice:
  *
  * 1. Unknown or invalid values never throw the app into a broken state. A
- *    config file that fails validation is backed up and replaced with defaults,
+ *    config file that fails validation is backed up rather than refused,
  *    because refusing to start over a malformed JSON file is a far worse
  *    outcome than losing preferences.
- * 2. Writes are atomic (temp file + fsync + rename). A power cut mid-save
+ * 2. A setting is only lost if that setting is the broken one. See
+ *    `recoverConfig` — this is the fix for an output folder that reset itself
+ *    on launch.
+ * 3. Writes are atomic (temp file + fsync + rename). A power cut mid-save
  *    leaves the previous config intact rather than a truncated file — the same
  *    guarantee section 8 demands for downloads, applied to settings.
  */
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The saved value laid over the default, all the way down.
+ *
+ * Recursive rather than shallow because the settings that change shape are the
+ * nested ones — `captions.style` gains options as the caption work continues,
+ * and a shallow merge would replace the whole style block with an older one
+ * that is missing the new keys, failing validation for the very reason this is
+ * trying to avoid.
+ */
+function overlay(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    const existing = base[key];
+    out[key] = isPlainObject(existing) && isPlainObject(value) ? overlay(existing, value) : value;
+  }
+  return out;
+}
+
+/**
+ * Salvages everything still valid from a config file that failed validation.
+ *
+ * The bug this exists for: settings were validated as one object, so a single
+ * unreadable field reset *every* setting to its default. The field that
+ * actually changed shape was `captions`, which gains options as the caption
+ * work continues — and because the load merge is shallow, an older nested
+ * captions object is handed to the schema exactly as it was written. The user
+ * chose an output folder, the app added a caption option, and the next launch
+ * had no output folder. Nothing about that is obvious from where they sit;
+ * it just looks like the app forgets.
+ *
+ * So each field is now judged on its own. A nested object gets one more
+ * chance first, merged over its default, which is what rescues a captions
+ * block that is merely missing a newly added key rather than wrong.
+ */
+export function recoverConfig(raw: Record<string, unknown>): { config: AppConfig; reset: string[] } {
+  const shape = AppConfigSchema.shape as Record<string, { safeParse(value: unknown): { success: boolean; data?: unknown } }>;
+  const merged: Record<string, unknown> = { ...DEFAULT_CONFIG };
+  const reset: string[] = [];
+
+  for (const key of Object.keys(shape)) {
+    if (!(key in raw)) continue;
+    const field = shape[key];
+    if (!field) continue;
+
+    const direct = field.safeParse(raw[key]);
+    if (direct.success) {
+      merged[key] = direct.data;
+      continue;
+    }
+
+    const fallback = DEFAULT_CONFIG[key as keyof AppConfig];
+    const saved = raw[key];
+    if (isPlainObject(saved) && isPlainObject(fallback)) {
+      const patched = field.safeParse(overlay(fallback, saved));
+      if (patched.success) {
+        merged[key] = patched.data;
+        continue;
+      }
+    }
+
+    reset.push(key);
+  }
+
+  const parsed = AppConfigSchema.safeParse(merged);
+  // Defaults alone must always validate, so this branch means a default is
+  // itself broken — a bug in this file, not in the user's config.
+  return { config: parsed.success ? parsed.data : { ...DEFAULT_CONFIG }, reset };
+}
 export class ConfigStore {
   private current: AppConfig;
   private readonly subscribers = new Set<(config: AppConfig) => void>();
@@ -41,6 +117,10 @@ export class ConfigStore {
         if (parsed.success) {
           config = parsed.data;
         } else {
+          // Keep everything that still reads, and say precisely what did not.
+          const recovered = recoverConfig(merged);
+          config = recovered.config;
+
           const backup = `${filePath}.invalid-${Date.now()}`;
           try {
             renameSync(filePath, backup);
@@ -48,8 +128,15 @@ export class ConfigStore {
             /* best effort */
           }
           log.warn(
-            { issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`), backup },
-            'config failed validation; reset to defaults',
+            {
+              issues: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`),
+              reset: recovered.reset,
+              kept: Object.keys(AppConfigSchema.shape).filter((key) => !recovered.reset.includes(key)).length,
+              backup,
+            },
+            recovered.reset.length > 0
+              ? 'some settings could not be read and were reset; the rest were kept'
+              : 'the config file needed repairing; every setting was kept',
           );
         }
       } catch (err) {
