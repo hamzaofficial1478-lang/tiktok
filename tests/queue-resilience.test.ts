@@ -40,11 +40,51 @@ describe('retries (section 8)', () => {
     await vi.waitFor(() => {
       const item = harness.engine.getSnapshot()[0];
       expect(item?.status).toBe('failed');
-      expect(item?.attemptCount).toBe(MAX_RETRIES + 1);
+      // The ladder's four attempts, plus the single end-of-run sweep that
+      // runs once the rest of the batch has finished.
+      expect(item?.attemptCount).toBe(MAX_RETRIES + 2);
     });
 
+    // The sweep spends no backoff: its whole premise is that the time taken by
+    // the rest of the run is the wait.
     expect(retrySleeps(harness.clock)).toEqual([...RETRY_DELAYS_MS]);
     expect(harness.engine.getSnapshot()[0]?.errorCode).toBe('NETWORK_ERROR');
+  });
+
+  it('retries the failures once at the end of the run, without holding up the rest', async () => {
+    harness = createHarness();
+    // Fails on the first pass and succeeds on the second — the "press refresh
+    // and it works" case, automated.
+    harness.pipeline.failFor(awemeIdFor(1), Array.from({ length: 4 }, () => 'NETWORK_ERROR' as const));
+
+    harness.engine.addLinks([makeUrl(1), makeUrl(2), makeUrl(3)]);
+    harness.engine.start();
+
+    await vi.waitFor(() => {
+      expect(harness.engine.getSnapshot().map((item) => item.status)).toEqual([
+        'completed',
+        'completed',
+        'completed',
+      ]);
+    });
+
+    // The failing link did not block the two behind it: they finished first.
+    expect(harness.pipeline.processed).toEqual([awemeIdFor(2), awemeIdFor(3), awemeIdFor(1)]);
+  });
+
+  it('does not sweep a failure that can never succeed', async () => {
+    harness = createHarness();
+    harness.extractor.failFor(awemeIdFor(1), ['VIDEO_DELETED', 'VIDEO_DELETED']);
+
+    harness.engine.addLinks([makeUrl(1), makeUrl(2)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    const item = harness.engine.getSnapshot()[0];
+    expect(item?.status).toBe('failed');
+    // One attempt, and no second one at the end: a deleted video will still be
+    // deleted, and the request would only buy the same answer again.
+    expect(item?.attemptCount).toBe(1);
   });
 
   /** The acceptance criterion: a deleted video must not consume retries. */

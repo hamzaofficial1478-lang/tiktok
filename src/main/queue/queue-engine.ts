@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
-import { AppError, toAppError, type ErrorCode } from '@shared/errors';
+import { AppError, isAutoRetryable, toAppError, type ErrorCode } from '@shared/errors';
 import type { AppConfig } from '@shared/config-schema';
 import type { DuplicateAction } from '@shared/types';
 import type { QueueItemRow, QueueItemsRepository } from '../db/repositories/queue-items';
@@ -90,6 +90,14 @@ export class QueueEngine {
    * in-memory only. Section 7: never permanent, never across batches.
    */
   private readonly batchChoices = new Map<string, DuplicateAction>();
+  /**
+   * Batches whose failures have already had their end-of-run second chance.
+   *
+   * In-memory and batch-scoped, like `batchChoices`: the sweep is "before I
+   * tell you this run is finished, try the failures once more", not a policy
+   * that should survive a restart and re-run yesterday's failures.
+   */
+  private readonly sweptBatches = new Set<string>();
   private readonly listeners = new Set<(event: QueueEvent) => void>();
   private readonly lastProgressEmit = new Map<number, number>();
   private idleWaiters: (() => void)[] = [];
@@ -874,6 +882,7 @@ export class QueueEngine {
     this.retryTimers.clear();
     this.pendingDuplicates.clear();
     this.batchChoices.clear();
+    this.sweptBatches.clear();
 
     // Same reason as removeCompleted: a silent delete leaves a full screen.
     const ids = this.options.queueItems.allIds();
@@ -971,6 +980,51 @@ export class QueueEngine {
     );
     if (outstanding) return;
 
+    /**
+     * One more attempt at the failures before the run is called finished.
+     *
+     * A link that failed early in a batch failed under whatever conditions
+     * existed at that moment — a rate limit, a dropped connection, TikTok
+     * having a bad minute. By the end of a run those have usually passed, and
+     * the retry costs one request against a link the user has already asked
+     * for. It happens here, at the end, rather than by blocking: the failed
+     * item never held up the ones behind it, which is the property that
+     * matters most in a long batch.
+     *
+     * Only transient codes qualify. Retrying a deleted or private video at the
+     * end of every run would spend requests to be told the same thing again.
+     */
+    if (!this.sweptBatches.has(batchId)) {
+      this.sweptBatches.add(batchId);
+      const retryable = rows.filter((row) => row.status === 'failed' && row.error_code && isAutoRetryable(row.error_code));
+
+      if (retryable.length > 0) {
+        this.log.info(
+          { batchId, count: retryable.length, codes: [...new Set(retryable.map((r) => r.error_code))] },
+          'end of run: giving the failures one more attempt',
+        );
+
+        /**
+         * One attempt, not a second ladder.
+         *
+         * `attemptCount` is deliberately left where it is rather than reset
+         * the way a manual retry resets it. These items have already spent
+         * their 2s/8s/30s budget, so carrying the count forward means the next
+         * failure is final: `decideRetry` sees the budget is gone and stops.
+         * Resetting it would turn every transient failure in a batch into
+         * eight attempts and eighty seconds of backoff.
+         */
+        for (const row of retryable) {
+          this.update(row.id, { status: 'queued', progress: 0, startedAt: null, finishedAt: null, errorDetail: null });
+          this.emitItem(this.options.queueItems.findById(row.id));
+        }
+        this.pump();
+        // Not finished after all; the next completion re-checks and this time
+        // finds the batch already swept.
+        return;
+      }
+    }
+
     const summary: BatchSummary = {
       batchId,
       completed: rows.filter((r) => r.status === 'completed').length,
@@ -980,8 +1034,10 @@ export class QueueEngine {
     };
 
     this.knownBatches.delete(batchId);
-    // The batch choice must not outlive its batch (section 7).
+    // The batch choice must not outlive its batch (section 7); nor must the
+    // record of having swept it.
     this.batchChoices.delete(batchId);
+    this.sweptBatches.delete(batchId);
     this.emit({ type: 'batch-complete', summary });
     this.log.info(summary, 'batch complete');
   }
