@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ERROR_CODES } from '../errors';
 import { DUPLICATE_ACTIONS, LOG_LEVELS, QUEUE_STATUSES, SOURCE_STRATEGIES } from '../types';
 import { AppConfigSchema } from '../config-schema';
+import { CAPTION_MODES } from '../caption-schema';
 import { INVOKE_CHANNELS, EVENT_CHANNELS, type InvokeChannel, type EventChannel } from './channels';
 
 export { INVOKE_CHANNELS, EVENT_CHANNELS };
@@ -158,6 +159,20 @@ const ItemId = z.object({ itemId: z.number().int().positive() });
  * schema without a name does too. `satisfies` rather than a type annotation so
  * the literal shapes survive for InvokeRequest/InvokeResponse inference.
  */
+/** A saved account, as the Creators panel renders it. */
+export const CreatorSchema = z.object({
+  id: z.number(),
+  handle: z.string(),
+  profileUrl: z.string(),
+  videoLimit: z.number(),
+  captionMode: z.enum(CAPTION_MODES).nullable(),
+  enabled: z.boolean(),
+  addedAt: z.number(),
+  lastQueuedAt: z.number().nullable(),
+  videosQueued: z.number(),
+});
+export type CreatorDto = z.infer<typeof CreatorSchema>;
+
 export const invokeContract = {
   'app:getVersions': { request: z.void(), response: VersionsSchema },
   'app:getSidecarStatus': {
@@ -223,6 +238,40 @@ export const invokeContract = {
       truncated: z.boolean(),
     }),
   },
+  /**
+   * The saved creator list — many accounts, each with its own count.
+   *
+   * Kept apart from `queue:addLinks` because it is a different kind of thing:
+   * a standing list that survives restarts, rather than one paste. The run is
+   * sequential and reports progress per account over `creators:progress`.
+   */
+  'creators:list': { request: z.void(), response: z.object({ creators: z.array(CreatorSchema) }) },
+  'creators:add': {
+    request: z.object({
+      // One box, many links: pasting ten profile URLs at once is the point.
+      input: z.string().min(1).max(20_000),
+      videoLimit: z.number().int().min(1).max(1000).optional(),
+    }),
+    response: z.object({
+      creators: z.array(CreatorSchema),
+      added: z.number(),
+      alreadySaved: z.array(z.string()),
+      invalid: z.array(z.string()),
+    }),
+  },
+  'creators:update': {
+    request: z.object({
+      id: z.number().int().positive(),
+      videoLimit: z.number().int().min(1).max(1000).optional(),
+      captionMode: z.enum(CAPTION_MODES).nullable().optional(),
+      enabled: z.boolean().optional(),
+    }),
+    response: z.object({ creator: CreatorSchema.nullable() }),
+  },
+  'creators:remove': { request: z.object({ id: z.number().int().positive() }), response: Ok },
+  'creators:run': { request: z.void(), response: z.object({ queued: z.number(), creators: z.number() }) },
+  'creators:cancelRun': { request: z.void(), response: Ok },
+
   'queue:start': { request: z.void(), response: Ok },
   'queue:pause': { request: z.void(), response: Ok },
   'queue:resume': { request: z.void(), response: Ok },
@@ -365,6 +414,15 @@ export const eventContract = {
   'queue:duplicateResolved': z.object({ itemId: z.number(), action: z.enum(DUPLICATE_ACTIONS) }),
   'queue:batchComplete': BatchSummarySchema,
   'queue:state': QueueStateSchema,
+  'creators:progress': z.object({
+    creatorId: z.number(),
+    handle: z.string(),
+    phase: z.enum(['listing', 'queued', 'downloading', 'done', 'failed', 'nothing-new']),
+    queued: z.number(),
+    index: z.number(),
+    total: z.number(),
+    message: z.string().optional(),
+  }),
 } as const satisfies Record<EventChannel, z.ZodType>;
 
 export type EventContract = typeof eventContract;

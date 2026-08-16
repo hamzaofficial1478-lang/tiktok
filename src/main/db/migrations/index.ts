@@ -3,6 +3,7 @@ import appMeta002 from './002_app_meta.sql?raw';
 import queueStrategy003 from './003_queue_strategy.sql?raw';
 import batchIndex004 from './004_batch_index.sql?raw';
 import outputSubdir005 from './005_output_subdir.sql?raw';
+import creators006 from './006_creators.sql?raw';
 import type { Migration } from '../migrator';
 
 /**
@@ -22,4 +23,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 3, name: '003_queue_strategy', sql: queueStrategy003 },
   { version: 4, name: '004_batch_index', sql: batchIndex004 },
   { version: 5, name: '005_output_subdir', sql: outputSubdir005 },
+  { version: 6, name: '006_creators', sql: creators006 },
 ];

@@ -1,5 +1,8 @@
 import { existsSync, rmSync } from 'node:fs';
 import { AppError } from '@shared/errors';
+import { parseProfile } from '@shared/url-parse';
+import type { CreatorDto } from '@shared/ipc/contract';
+import type { CreatorRow } from '../db/repositories/creators';
 import type { LibraryEntryDto } from '@shared/ipc/contract';
 import type { LibraryRow } from '../db/repositories/downloads';
 import type { AppServices } from '../services';
@@ -46,6 +49,88 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
       urls: [...expansion.urls],
       truncated: expansion.truncated,
     };
+  });
+
+  const toCreatorDto = (row: CreatorRow): CreatorDto => ({
+    id: row.id,
+    handle: row.handle,
+    profileUrl: row.profile_url,
+    videoLimit: row.video_limit,
+    captionMode: row.caption_mode,
+    enabled: row.enabled === 1,
+    addedAt: row.added_at,
+    lastQueuedAt: row.last_queued_at,
+    videosQueued: row.videos_queued,
+  });
+
+  registry.handle('creators:list', () => ({
+    creators: services.repos.creators.list().map(toCreatorDto),
+  }));
+
+  /**
+   * Adds many accounts from one paste.
+   *
+   * Every line is parsed here rather than trusted: a line that is not a profile
+   * link is reported back as invalid instead of being saved as an account that
+   * will fail on every run.
+   */
+  registry.handle('creators:add', ({ input, videoLimit }) => {
+    const lines = input
+      .split(/[\n,]/)
+      .map((line) => line.trim())
+      .filter((line) => line !== '');
+
+    const parsed = lines.map((line) => ({ line, profile: parseProfile(line) }));
+    const invalid = parsed.filter((entry) => entry.profile === null).map((entry) => entry.line);
+
+    const result = services.repos.creators.addMany(
+      parsed
+        .filter((entry) => entry.profile !== null)
+        .map((entry) => ({
+          handle: entry.profile!.handle,
+          profileUrl: entry.profile!.profileUrl,
+          ...(videoLimit === undefined ? {} : { videoLimit }),
+        })),
+    );
+
+    return {
+      creators: services.repos.creators.list().map(toCreatorDto),
+      added: result.added.length,
+      alreadySaved: result.skipped,
+      invalid,
+    };
+  });
+
+  registry.handle('creators:update', ({ id, videoLimit, captionMode, enabled }) => {
+    const row = services.repos.creators.update(id, {
+      ...(videoLimit === undefined ? {} : { videoLimit }),
+      ...(captionMode === undefined ? {} : { captionMode }),
+      ...(enabled === undefined ? {} : { enabled }),
+    });
+    return { creator: row ? toCreatorDto(row) : null };
+  });
+
+  registry.handle('creators:remove', ({ id }) => {
+    services.repos.creators.remove(id);
+    return { ok: true as const };
+  });
+
+  /**
+   * Starts the run and does not wait for it.
+   *
+   * A run is minutes to hours of work; holding the IPC call open for it would
+   * time out and tell the renderer nothing in the meantime. Progress arrives
+   * on `creators:progress` instead.
+   */
+  registry.handle('creators:run', async () => {
+    const list = services.repos.creators.list().filter((row) => row.enabled === 1);
+    void services.creatorRunner.run().catch(() => undefined);
+    return { queued: 0, creators: list.length };
+  });
+
+  registry.handle('creators:cancelRun', () => {
+    services.creatorRunner.cancel();
+    return { ok: true as const };
   });
 
   registry.handle('queue:start', () => {

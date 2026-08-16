@@ -9,9 +9,9 @@ rem  It does what you were typing by hand, in order, and stops at the first step
 rem  that fails with a message saying which one — rather than flashing a window
 rem  shut and leaving you to guess. Nothing here needs PowerShell.
 rem
-rem  Dependencies are installed only when they are missing, so the second start
-rem  skips the slow part. The app is rebuilt EVERY time, on purpose - see the
-rem  note above the build step.
+rem  It also updates itself: the latest code is pulled before the build, so
+rem  double-clicking this file is the whole update procedure. Dependencies are
+rem  installed only when missing; the app is rebuilt every time, on purpose.
 rem ---------------------------------------------------------------------------
 
 cd /d "%~dp0"
@@ -42,6 +42,28 @@ if !NODE_MAJOR! LSS 20 (
   exit /b 1
 )
 echo   [1/3] Node.js: OK
+
+rem --- Updates ---------------------------------------------------------------
+rem  Pulls the latest code before building, so double-clicking this file is the
+rem  whole update procedure and there is nothing to remember.
+rem
+rem  --ff-only on purpose: it takes updates cleanly or not at all, and never
+rem  invents a merge commit in someone's working folder. Any failure here is a
+rem  warning, not a stop — offline, or a folder with local edits, should start
+rem  the version already on disk rather than refusing to start at all.
+if exist ".git" (
+  where git >nul 2>&1
+  if not errorlevel 1 (
+    echo   [*] Checking for updates...
+    git pull --ff-only >nul 2>&1
+    if errorlevel 1 (
+      echo       Could not update ^(offline, or this folder has local changes^).
+      echo       Starting the version already here.
+    ) else (
+      echo       Up to date.
+    )
+  )
+)
 
 rem --- Dependencies ----------------------------------------------------------
 rem  --include=dev is deliberate: electron-vite and the build tooling live in

@@ -76,18 +76,29 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
   }
 
   /**
-   * Sound first, resolution second.
+   * Best picture, and never at the cost of the sound.
    *
-   * A stream that carries audio outranks a higher-resolution one that does
-   * not, and only when no muxed stream exists at all is a video-only stream
-   * taken — and then it is merged with the best audio rather than saved
-   * silent. Ranking by resolution alone is what produced a batch where some
-   * videos had sound and some did not.
+   * The first fix for silent downloads ranked audio-bearing streams above
+   * everything, which stopped the silence and quietly cost resolution: TikTok's
+   * highest-quality format is frequently video-only, so preferring a muxed
+   * stream meant preferring a smaller one. That is a bad trade and it was the
+   * wrong instinct — there is no need to choose.
+   *
+   * Highest quality wins outright. If that stream carries no audio, TikTok's
+   * separate audio track is merged into it, which costs a remux and no picture
+   * quality at all. Only when a silent winner has no audio track to pair with
+   * does audio outrank resolution, and only then is a lower muxed stream taken.
    */
+  const audioTracks = [...streams.filter((s) => s.kind === 'audio')].sort(
+    (a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0),
+  );
+  const hasSeparateAudio = audioTracks.length > 0;
+
   const rank = (candidates: readonly StreamCandidate[]): StreamCandidate[] => {
-    const withAudio = candidates.filter((s) => s.hasAudio).sort(byQualityDesc);
-    const silent = candidates.filter((s) => !s.hasAudio).sort(byQualityDesc);
-    return [...withAudio, ...silent];
+    const byQuality = [...candidates].sort(byQualityDesc);
+    if (hasSeparateAudio) return byQuality;
+    // Nothing to merge with, so a muxed stream is the only way to keep sound.
+    return [...byQuality.filter((s) => s.hasAudio), ...byQuality.filter((s) => !s.hasAudio)];
   };
 
   const clean = rank(video.filter((s) => !s.watermarked));
@@ -99,9 +110,7 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
   if (!preferred) throw new AppError('EXTRACTOR_FAILED', 'no usable video stream was offered');
 
   const isClean = !preferred.watermarked;
-  const audioStream = preferred.hasAudio
-    ? undefined
-    : [...streams.filter((s) => s.kind === 'audio')].sort((a, b) => (b.bitrate ?? 0) - (a.bitrate ?? 0))[0];
+  const audioStream = preferred.hasAudio ? undefined : audioTracks[0];
 
   const base = isClean
     ? `clean source at ${describe(preferred)}, exactly as TikTok serves it`
@@ -118,7 +127,7 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
   const reason = preferred.hasAudio
     ? base
     : audioStream
-      ? `${base}; the video track carries no audio, so it is merged with TikTok's separate audio track`
+      ? `${base}; the best picture TikTok offers has no audio in it, so its separate audio track is merged in — no quality is lost`
       : `${base}; TikTok offers no audio for this post, so the file is silent`;
 
   return {

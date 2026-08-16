@@ -155,6 +155,9 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     services.onInstallProgress = (progress) => eventBus?.emit('sidecars:installProgress', progress);
+    // Per-account run progress, so the Creators panel can show which account is
+    // in flight and how far the run has got.
+    services.onCreatorProgress = (progress) => eventBus?.emit('creators:progress', progress);
 
     const registry = new IpcRegistry(ipcMain, services.logging.log.child({ scope: 'ipc' }));
     eventBus = new EventBus(services.logging.log.child({ scope: 'ipc' }));

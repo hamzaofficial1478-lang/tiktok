@@ -442,7 +442,23 @@ describe('a downloaded video must not be silent', () => {
    */
   const options = { audioOnly: false, watermarkMode: 'auto' } as const;
 
-  it('takes sound over resolution', () => {
+  it('keeps the best picture and merges the sound into it', () => {
+    // The first fix for this ranked audio above everything, which stopped the
+    // silence and quietly cost resolution — TikTok's best format is often
+    // video-only. There is no need to choose between them.
+    const result = selectStream(
+      [
+        stream({ id: 'video-only-1080', width: 1080, height: 1920, hasAudio: false }),
+        stream({ id: 'muxed-720', width: 720, height: 1280, hasAudio: true }),
+        stream({ id: 'audio', kind: 'audio', bitrate: 128 }),
+      ],
+      options,
+    );
+    expect(result.stream.id).toBe('video-only-1080');
+    expect(result.formatId).toBe('video-only-1080+audio');
+  });
+
+  it('takes sound over resolution only when there is no audio track to merge', () => {
     const result = selectStream(
       [
         stream({ id: 'video-only-1080', width: 1080, height: 1920, hasAudio: false }),
@@ -465,7 +481,7 @@ describe('a downloaded video must not be silent', () => {
     // yt-dlp's own syntax for "download both and join them".
     expect(result.formatId).toBe('video-only-1080+audio');
     expect(result.audioStream?.id).toBe('audio');
-    expect(result.reason).toMatch(/merged with TikTok's separate audio/);
+    expect(result.reason).toMatch(/separate audio track is merged in/);
   });
 
   it('downloads a genuinely silent post, and says that is what it is', () => {

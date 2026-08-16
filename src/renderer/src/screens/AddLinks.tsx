@@ -8,6 +8,7 @@ import { Button, EmptyState, PageHeader, Panel } from '../components/primitives'
 import { SegmentedControl, TextInput } from '../components/form';
 import { ScanReportPanel } from '../components/ScanReportPanel';
 import { CaptionSettings } from '../components/CaptionSettings';
+import { Creators } from '../components/Creators';
 
 /**
  * Add Links — spec section 10.
@@ -243,12 +244,17 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
         onChange={setMode}
         options={[
           { value: 'links', label: 'Video links', hint: 'Paste or import individual TikTok links' },
-          { value: 'profile', label: 'Creator profile', hint: 'Fetch every video from one account' },
+          { value: 'profile', label: 'Creators', hint: 'Save accounts and take the newest videos from each' },
         ]}
       />
 
+      {mode === 'profile' && <Creators />}
+
       {mode === 'profile' && (
-        <Panel title="Fetch a creator's videos">
+        <Panel
+          title="Or fetch one account now"
+          description="A one-off: lists every video from a single account without saving it to the list above."
+        >
           <div className="flex flex-wrap items-start gap-3">
             <div className="min-w-64 flex-1" onKeyDown={(event) => {
               if (event.key === 'Enter' && profileTarget && !fetching) void fetchProfile(profileInput);

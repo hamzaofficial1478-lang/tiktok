@@ -7,6 +7,7 @@ import { openDatabase, type DatabaseHandle } from './db/database';
 import { VideosRepository } from './db/repositories/videos';
 import { DownloadsRepository } from './db/repositories/downloads';
 import { QueueItemsRepository } from './db/repositories/queue-items';
+import { CreatorsRepository } from './db/repositories/creators';
 import { AppMetaRepository, EXTRACTOR_CHECKED_AT_KEY, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
 import { SidecarResolver } from './media/sidecars';
 import { ExtractorUpdater, shouldCheckExtractor } from './media/extractor-updater';
@@ -14,6 +15,7 @@ import { FfmpegInstaller, type InstallProgress } from './media/ffmpeg-installer'
 import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
 import { UrlNormalizer } from './resolve/url-normalizer';
 import { ProfileExpander } from './resolve/profile-expander';
+import { CreatorRunner, type CreatorRunProgress } from './creators/creator-runner';
 import { HttpRedirectResolver } from './resolve/redirect-resolver';
 import { QueueEngine } from './queue/queue-engine';
 import { RateLimiter } from './queue/rate-limiter';
@@ -47,7 +49,12 @@ export interface AppServices {
     readonly videos: VideosRepository;
     readonly downloads: DownloadsRepository;
     readonly queueItems: QueueItemsRepository;
+    readonly creators: CreatorsRepository;
   };
+  /** Works the saved creator list, one account at a time. */
+  readonly creatorRunner: CreatorRunner;
+  /** Set by the Electron shell so run progress reaches the window. */
+  onCreatorProgress?: (progress: CreatorRunProgress) => void;
   readonly sidecars: SidecarResolver;
   /** Phase 2's resolution layer: URL canonicalisation and the extractor chain. */
   readonly resolution: {
@@ -334,10 +341,13 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       capabilities: () => snapshot.capabilities,
     });
 
+  const creators = new CreatorsRepository(database.db);
+  const downloadsRepo = new DownloadsRepository(database.db);
+
   const queue = new QueueEngine({
     queueItems,
     videos: new VideosRepository(database.db),
-    downloads: new DownloadsRepository(database.db),
+    downloads: downloadsRepo,
     normalizer,
     extractor,
     pipeline: downloadPipeline,
@@ -394,7 +404,21 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
 
   config.subscribe((next) => logging.setLevel(next.logLevel));
 
-  return {
+  /**
+   * Built after the queue because it drives it, and given a mutable progress
+   * hook so the Electron shell can forward run progress to the window without
+   * this module knowing a window exists.
+   */
+  const creatorRunner = new CreatorRunner({
+    creators,
+    downloads: downloadsRepo,
+    profiles,
+    queue,
+    onProgress: (progress) => services.onCreatorProgress?.(progress),
+    log: logging.log.child({ scope: 'creators' }),
+  });
+
+  const services: AppServices = {
     paths,
     logging,
     log,
@@ -402,9 +426,11 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     database,
     repos: {
       videos: new VideosRepository(database.db),
-      downloads: new DownloadsRepository(database.db),
+      downloads: downloadsRepo,
       queueItems,
+      creators,
     },
+    creatorRunner,
     sidecars,
     extractorUpdater,
     ffmpegInstaller,
@@ -418,9 +444,12 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       // left for crash recovery.
       // The process is going down, not the user pausing: keep the run
       // state so the next launch resumes the batch.
+      creatorRunner.cancel();
       await queue.stop({ keepRunState: true });
       database.close();
       await logging.close();
     },
   };
+
+  return services;
 }

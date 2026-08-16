@@ -131,6 +131,7 @@ describe('migration runner', () => {
       // links, which have no account in common.
       'output_subdir',
     ]);
+    expect(columns('creators')).toContain('video_limit');
     expect(columns('downloads')).toContain('source_strategy');
     expect(columns('downloads')).toContain('file_exists');
   });
