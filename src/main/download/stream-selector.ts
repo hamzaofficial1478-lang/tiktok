@@ -72,7 +72,19 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
 
   const video = streams.filter((s) => s.kind === 'video');
   if (video.length === 0) {
-    throw new AppError('EXTRACTOR_FAILED', 'no video streams were offered for this video');
+    /**
+     * Audio tracks and no video is what a photo post looks like by the time it
+     * reaches here, and it is not an extractor problem.
+     *
+     * EXTRACTOR_FAILED renders as "Extractor out of date. TikTok changed how
+     * videos are served" — so a user with a perfectly current extractor
+     * updated it, was told it was already current, and got the same message
+     * again. The post was never a video.
+     */
+    throw new AppError(
+      'UNSUPPORTED_MEDIA',
+      'this post has no video track — it is a photo slideshow or an audio-only post, not a video',
+    );
   }
 
   /**

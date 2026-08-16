@@ -408,12 +408,21 @@ function toMetadata(payload: YtDlpPayload, canonicalUrl: string): VideoMetadata 
   const hasVideoFormat = formats.some((f) => f.vcodec !== undefined && f.vcodec !== 'none');
 
   /**
-   * Slideshow detection. yt-dlp's own source notes that "audio-only slideshows
-   * have a video duration of 0", and such a post exposes no video format at
-   * all. Requiring both signals avoids misreading a genuine short video whose
-   * duration simply failed to parse.
+   * Slideshow detection, by the signal that actually decides it.
+   *
+   * This used to also require a zero or missing duration, on the reasoning
+   * that yt-dlp's source calls out "audio-only slideshows have a video
+   * duration of 0". That is true of some of them and not all: a photo post
+   * carrying a music track reports the music's duration, sailed past this
+   * check, and then died three steps later in the stream selector with "no
+   * video streams were offered" — which the error taxonomy renders as
+   * "Extractor out of date". A perfectly current extractor, a post that is
+   * simply not a video, and a message pointing the user at the wrong thing.
+   *
+   * A post with formats and not one video track among them is a photo post.
+   * The duration adds nothing to that and was only ever able to hide it.
    */
-  const isPhotoPost = (durationSeconds === 0 || durationSeconds === null) && formats.length > 0 && !hasVideoFormat;
+  const isPhotoPost = formats.length > 0 && !hasVideoFormat;
 
   return {
     awemeId: payload.id ?? extractIdFromUrl(canonicalUrl),

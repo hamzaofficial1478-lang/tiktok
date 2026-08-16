@@ -112,6 +112,15 @@ describe('stream selection (section 9 step 4)', () => {
   it('fails clearly when there is nothing to download', () => {
     // The user-facing message comes from the taxonomy; the specifics live in
     // `detail`, so that is what identifies the cause.
+    const codeOf = (fn: () => unknown): string => {
+      try {
+        fn();
+      } catch (err) {
+        return (err as { code?: string }).code ?? '';
+      }
+      throw new Error('expected a throw');
+    };
+
     const detailOf = (fn: () => unknown): string => {
       try {
         fn();
@@ -122,7 +131,14 @@ describe('stream selection (section 9 step 4)', () => {
     };
 
     expect(detailOf(() => selectStream([], options))).toMatch(/no streams/i);
-    expect(detailOf(() => selectStream([stream({ kind: 'audio' })], options))).toMatch(/no video streams/i);
+    /**
+     * Audio and no video is a photo post, and saying "no video streams" led
+     * the taxonomy to render it as "Extractor out of date" — so a user with a
+     * current extractor updated it, was told it was already current, and got
+     * the same message again. The post was never a video.
+     */
+    expect(detailOf(() => selectStream([stream({ kind: 'audio' })], options))).toMatch(/photo slideshow/i);
+    expect(codeOf(() => selectStream([stream({ kind: 'audio' })], options))).toBe('UNSUPPORTED_MEDIA');
   });
 });
 
