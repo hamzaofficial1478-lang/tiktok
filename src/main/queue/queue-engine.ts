@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
 import { AppError, isAutoRetryable, toAppError, type ErrorCode } from '@shared/errors';
 import type { AppConfig } from '@shared/config-schema';
-import type { DuplicateAction } from '@shared/types';
+import type { DuplicateAction, PhotoAction } from '@shared/types';
 import type { QueueItemRow, QueueItemsRepository } from '../db/repositories/queue-items';
 import type { VideosRepository } from '../db/repositories/videos';
 import type { DownloadsRepository } from '../db/repositories/downloads';
@@ -21,6 +21,7 @@ import {
   type BatchSummary,
   type MediaPipeline,
   type PendingDuplicate,
+  type PendingPhotoPost,
   type PipelineProgress,
   type QueueEvent,
   type QueueItemSnapshot,
@@ -85,6 +86,10 @@ export class QueueEngine {
   private readonly controllers = new Map<number, AbortController>();
   private readonly retryTimers = new Map<number, AbortController>();
   private readonly pendingDuplicates = new Map<number, PendingDuplicate>();
+  /** Slideshow questions waiting on an answer, and the answers already given. */
+  private readonly pendingPhotos = new Map<number, PendingPhotoPost>();
+  private readonly photoChoices = new Map<number, PhotoAction>();
+  private readonly photoBatchChoices = new Map<string, PhotoAction>();
   /**
    * "Apply to all remaining duplicates in this batch" — batch-scoped and
    * in-memory only. Section 7: never permanent, never across batches.
@@ -390,10 +395,24 @@ export class QueueEngine {
     // needs in order to remember never to offer it again.
     this.update(row.id, { canonicalUrl: normalized.canonicalUrl, awemeId: normalized.awemeId });
 
-    // A carousel is knowable from the URL alone, so it fails without ever
-    // spending an outbound request (section 2).
+    /**
+     * A slideshow the URL itself gives away.
+     *
+     * `/photo/` links are knowable offline, so deciding about them must cost
+     * nothing (section 2). Skipping and asking both settle here without an
+     * outbound request; only agreeing to download one goes on to resolve, and
+     * that request buys something.
+     */
     if (normalized.kind === 'photo') {
-      throw new AppError('UNSUPPORTED_MEDIA', `${normalized.awemeId} is a photo slideshow`);
+      const early = this.photoDecision(row);
+      if (early === 'ask') {
+        this.parkPhoto(row, normalized, null);
+        return;
+      }
+      if (early === 'skip') {
+        this.settlePhoto(row.id, normalized.awemeId, normalized.authorHandle, 'skip');
+        return;
+      }
     }
 
     const decided = row.duplicate_action ?? this.batchChoices.get(row.batch_id) ?? null;
@@ -451,6 +470,34 @@ export class QueueEngine {
       resolved = await this.options.extractor.resolve(normalized.canonicalUrl, { signal });
     }
 
+    /**
+     * A post that is a set of images rather than a video.
+     *
+     * This used to fail with "no video streams were offered", which reads like
+     * a broken app rather than a post that simply is not a video. It is also
+     * not a question with one right answer, so unless the user has already
+     * decided in Settings, it is put to them — parked, so the rest of the
+     * batch carries on — and the answer is written to the ledger, which is
+     * what stops the same slideshow being raised on every future run.
+     */
+    const isPhotoPost = normalized.kind === 'photo' || resolved.metadata.isPhotoPost;
+    let photoPost = false;
+
+    if (isPhotoPost) {
+      const mode = this.photoDecision(row);
+      if (mode === 'ask') {
+        // Resolved by now, so the question can say whose it is and how many
+        // pictures are in it rather than just "this is a slideshow".
+        this.parkPhoto(row, normalized, resolved);
+        return;
+      }
+      if (mode === 'skip') {
+        this.settlePhoto(row.id, normalized.awemeId, normalized.authorHandle, 'skip');
+        return;
+      }
+      photoPost = true;
+    }
+
     this.update(row.id, { status: 'downloading', progress: 0 });
     this.emitItem(this.options.queueItems.findById(row.id));
 
@@ -460,6 +507,7 @@ export class QueueEngine {
       normalized,
       resolved,
       duplicateAction: decided,
+      ...(photoPost ? { photoPost: true } : {}),
       signal,
       onProgress: (progress) => this.onProgress(row.id, progress),
     });
@@ -580,6 +628,108 @@ export class QueueEngine {
     this.emitItem(this.options.queueItems.findById(row.id));
     this.emit({ type: 'duplicate-pending', pending });
     this.log.info({ itemId: row.id, awemeId: normalized.awemeId }, 'duplicate awaiting a decision; continuing');
+  }
+
+  /**
+   * What to do about a slideshow: an answer already given, or the setting.
+   *
+   * Per-item first, then the batch-wide choice, then the app setting — the
+   * same precedence the duplicate question uses, so "apply to the rest of this
+   * batch" means the same thing in both places.
+   */
+  private photoDecision(row: QueueItemRow): PhotoAction | 'ask' {
+    const decided = this.photoChoices.get(row.id) ?? this.photoBatchChoices.get(row.batch_id) ?? null;
+    return decided ?? this.options.config().photoSlideshows;
+  }
+
+  /**
+   * The slideshow equivalent of `park`: ask, free the worker, keep going.
+   *
+   * `resolved` is null when the URL alone gave the post away, since resolving
+   * it first would spend a request on a question that can be answered without
+   * one. The prompt then has the id and the handle but no caption or picture
+   * count, which is enough to decide.
+   */
+  private parkPhoto(row: QueueItemRow, normalized: NormalizedUrl, resolved: ResolvedVideo | null): void {
+    const pending: PendingPhotoPost = {
+      itemId: row.id,
+      batchId: row.batch_id,
+      awemeId: normalized.awemeId,
+      canonicalUrl: normalized.canonicalUrl,
+      caption: resolved?.metadata.caption ?? null,
+      authorHandle: resolved?.metadata.authorHandle ?? normalized.authorHandle,
+      // Images arrive as separate formats, so counting them is the closest
+      // thing to "how many pictures is this?" without a second request.
+      imageCount: resolved && resolved.streams.length > 0 ? resolved.streams.length : null,
+    };
+    this.pendingPhotos.set(row.id, pending);
+    this.update(row.id, { status: 'awaiting_user' });
+    this.emitItem(this.options.queueItems.findById(row.id));
+    this.emit({ type: 'photo-pending', pending });
+    this.log.info({ itemId: row.id, awemeId: normalized.awemeId }, 'photo slideshow awaiting a decision; continuing');
+  }
+
+  /**
+   * Records a slideshow the user turned down.
+   *
+   * `declined` rather than a plain skip, because the ledger is what makes the
+   * answer stick: a declined post is settled, so listing the account again
+   * passes over it instead of asking a second time. That is the whole of the
+   * request — "make sure not to fetch that link next time".
+   */
+  private settlePhoto(itemId: number, awemeId: string, handle: string | null, action: PhotoAction): void {
+    if (action !== 'skip') return;
+    this.options.ledger?.record({
+      awemeId,
+      handle,
+      status: 'declined',
+      now: this.options.clock.now(),
+    });
+    this.finish(itemId, 'skipped', { errorCode: null, errorDetail: 'Photo slideshow — skipped.' });
+  }
+
+  /** Answers one slideshow question. Optionally applies to the rest of the batch. */
+  resolvePhotoPost(itemId: number, action: PhotoAction, applyToBatch = false): void {
+    const pending = this.pendingPhotos.get(itemId);
+    if (!pending) throw new AppError('INTERNAL_ERROR', `no pending photo decision for item ${itemId}`);
+
+    this.pendingPhotos.delete(itemId);
+    if (applyToBatch) this.photoBatchChoices.set(pending.batchId, action);
+
+    if (action === 'skip') {
+      this.settlePhoto(itemId, pending.awemeId, pending.authorHandle, 'skip');
+    } else {
+      // Recorded so the second pass reads the decision instead of asking again.
+      this.photoChoices.set(itemId, action);
+      this.update(itemId, { status: 'queued', progress: 0, startedAt: null, finishedAt: null });
+      this.emitItem(this.options.queueItems.findById(itemId));
+    }
+
+    this.emit({ type: 'photo-resolved', itemId, action });
+    this.applyPhotoBatchChoice(pending.batchId);
+    this.pump();
+  }
+
+  /** Applies a just-set batch-wide slideshow choice to the questions already parked. */
+  private applyPhotoBatchChoice(batchId: string): void {
+    const action = this.photoBatchChoices.get(batchId);
+    if (!action) return;
+    for (const pending of [...this.pendingPhotos.values()]) {
+      if (pending.batchId !== batchId) continue;
+      this.pendingPhotos.delete(pending.itemId);
+      if (action === 'skip') {
+        this.settlePhoto(pending.itemId, pending.awemeId, pending.authorHandle, 'skip');
+      } else {
+        this.photoChoices.set(pending.itemId, action);
+        this.update(pending.itemId, { status: 'queued', progress: 0, startedAt: null, finishedAt: null });
+        this.emitItem(this.options.queueItems.findById(pending.itemId));
+      }
+      this.emit({ type: 'photo-resolved', itemId: pending.itemId, action });
+    }
+  }
+
+  getPendingPhotoPosts(): PendingPhotoPost[] {
+    return [...this.pendingPhotos.values()];
   }
 
   private recordCompletion(
@@ -822,6 +972,7 @@ export class QueueEngine {
     }
 
     this.pendingDuplicates.delete(itemId);
+    this.pendingPhotos.delete(itemId);
     const row = this.options.queueItems.findById(itemId);
     if (!row || row.status === 'completed') return;
     this.finish(itemId, 'cancelled', { errorCode: 'CANCELLED', errorDetail: 'Cancelled.' });
@@ -855,6 +1006,8 @@ export class QueueEngine {
   removeItem(itemId: number): void {
     this.cancelItem(itemId);
     this.pendingDuplicates.delete(itemId);
+    this.pendingPhotos.delete(itemId);
+    this.photoChoices.delete(itemId);
     this.options.queueItems.remove(itemId);
     this.emit({ type: 'item-removed', itemId });
   }
@@ -881,6 +1034,9 @@ export class QueueEngine {
     for (const controller of this.retryTimers.values()) controller.abort();
     this.retryTimers.clear();
     this.pendingDuplicates.clear();
+    this.pendingPhotos.clear();
+    this.photoChoices.clear();
+    this.photoBatchChoices.clear();
     this.batchChoices.clear();
     this.sweptBatches.clear();
 
@@ -1037,6 +1193,7 @@ export class QueueEngine {
     // The batch choice must not outlive its batch (section 7); nor must the
     // record of having swept it.
     this.batchChoices.delete(batchId);
+    this.photoBatchChoices.delete(batchId);
     this.sweptBatches.delete(batchId);
     this.emit({ type: 'batch-complete', summary });
     this.log.info(summary, 'batch complete');

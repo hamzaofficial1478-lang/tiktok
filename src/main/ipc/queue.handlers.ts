@@ -203,6 +203,13 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
     queue.resolveDuplicate(itemId, action, applyToBatch);
     return { ok: true as const };
   });
+
+  registry.handle('queue:getPendingPhotoPosts', () => ({ pending: queue.getPendingPhotoPosts() }));
+
+  registry.handle('queue:resolvePhotoPost', ({ itemId, action, applyToBatch }) => {
+    queue.resolvePhotoPost(itemId, action, applyToBatch);
+    return { ok: true as const };
+  });
 }
 
 export function registerLibraryHandlers(registry: IpcRegistry, services: AppServices): void {
@@ -319,6 +326,12 @@ export function registerQueueEvents(bus: EventBus, services: AppServices): () =>
         break;
       case 'duplicate-resolved':
         bus.emit('queue:duplicateResolved', { itemId: event.itemId, action: event.action });
+        break;
+      case 'photo-pending':
+        bus.emit('queue:photoPending', event.pending);
+        break;
+      case 'photo-resolved':
+        bus.emit('queue:photoResolved', { itemId: event.itemId, action: event.action });
         break;
       case 'batch-complete':
         bus.emit('queue:batchComplete', event.summary);

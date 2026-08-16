@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { BROWSER_COOKIE_SOURCES, OUTRO_MODES, WATERMARK_MODES, LOG_LEVELS } from './types';
+import { BROWSER_COOKIE_SOURCES, OUTRO_MODES, PHOTO_SLIDESHOW_MODES, WATERMARK_MODES, LOG_LEVELS } from './types';
 import { CaptionSettingsSchema, DEFAULT_CAPTION_SETTINGS } from './caption-schema';
 
 /**
@@ -48,6 +48,21 @@ export const AppConfigSchema = z.object({
   outroMode: z.enum(OUTRO_MODES),
 
   audioOnly: z.boolean(),
+
+  /**
+   * What to do with a photo slideshow.
+   *
+   * TikTok posts these through the same URL shape as a video and they carry no
+   * video track at all, so they used to fail with "no video streams were
+   * offered" — a message that reads like a broken app rather than a post that
+   * is a set of images. Nor is refusing them obviously right: a slideshow is
+   * still a thing someone linked to on purpose.
+   *
+   * 'ask' puts the question to the user once per post and remembers the answer
+   * in the link ledger, so the same slideshow is never raised twice. The other
+   * two are for anyone who has already decided.
+   */
+  photoSlideshows: z.enum(PHOTO_SLIDESHOW_MODES),
 
   /**
    * Dedup layer 4's repost badge. Off by default because computing a
@@ -130,6 +145,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   outroMode: 'always',
 
   audioOnly: false,
+  // Ask, because neither answer is right for everyone and the question is
+  // asked at most once per post.
+  photoSlideshows: 'ask',
   detectReposts: false,
   autoUpdateExtractor: true,
   browserCookies: 'none',

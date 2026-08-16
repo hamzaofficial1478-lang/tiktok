@@ -261,6 +261,21 @@ export function Settings(): React.JSX.Element {
               ]}
             />
           </Field>
+
+          <Field
+            label="Photo slideshows"
+            hint="Some TikTok links are a set of images rather than a video. Whatever you decide about one post is remembered, so it is never raised twice."
+          >
+            <Select
+              value={config.photoSlideshows}
+              onChange={(value) => void set('photoSlideshows', value)}
+              options={[
+                { value: 'ask', label: 'Ask me about each one' },
+                { value: 'download', label: 'Download the images' },
+                { value: 'skip', label: 'Skip them' },
+              ]}
+            />
+          </Field>
         </div>
 
         {/* Both of the settings above degrade silently without ffmpeg, which is

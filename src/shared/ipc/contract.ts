@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ERROR_CODES } from '../errors';
-import { DUPLICATE_ACTIONS, LOG_LEVELS, QUEUE_STATUSES, SOURCE_STRATEGIES } from '../types';
+import { DUPLICATE_ACTIONS, LOG_LEVELS, PHOTO_ACTIONS, QUEUE_STATUSES, SOURCE_STRATEGIES } from '../types';
 import { AppConfigSchema } from '../config-schema';
 import { CAPTION_MODES } from '../caption-schema';
 import { INVOKE_CHANNELS, EVENT_CHANNELS, type InvokeChannel, type EventChannel } from './channels';
@@ -96,6 +96,22 @@ export const PendingDuplicateSchema = z.object({
   authorHandle: z.string().nullable(),
   existingFilePath: z.string(),
   downloadedAt: z.number(),
+});
+
+/**
+ * A photo slideshow waiting on an answer.
+ *
+ * Carries enough to decide without leaving the app: whose it is, what it says,
+ * and how many pictures are in it.
+ */
+export const PendingPhotoPostSchema = z.object({
+  itemId: z.number(),
+  batchId: z.string(),
+  awemeId: z.string(),
+  canonicalUrl: z.string(),
+  caption: z.string().nullable(),
+  authorHandle: z.string().nullable(),
+  imageCount: z.number().nullable(),
 });
 
 export const BatchSummarySchema = z.object({
@@ -330,6 +346,23 @@ export const invokeContract = {
     }),
     response: Ok,
   },
+  'queue:getPendingPhotoPosts': {
+    request: z.void(),
+    response: z.object({ pending: z.array(PendingPhotoPostSchema) }),
+  },
+  /**
+   * The answer to one slideshow. `skip` is written to the link ledger, so the
+   * same post is never raised again — including when its account is listed on
+   * a later run.
+   */
+  'queue:resolvePhotoPost': {
+    request: z.object({
+      itemId: z.number().int().positive(),
+      action: z.enum(PHOTO_ACTIONS),
+      applyToBatch: z.boolean(),
+    }),
+    response: Ok,
+  },
 
   'library:list': {
     request: z.object({
@@ -446,6 +479,8 @@ export const eventContract = {
   'queue:itemsAdded': z.object({ batchId: z.string(), items: z.array(QueueItemSchema) }),
   'queue:itemRemoved': z.object({ itemId: z.number() }),
   'queue:duplicatePending': PendingDuplicateSchema,
+  'queue:photoPending': PendingPhotoPostSchema,
+  'queue:photoResolved': z.object({ itemId: z.number(), action: z.enum(PHOTO_ACTIONS) }),
   'queue:duplicateResolved': z.object({ itemId: z.number(), action: z.enum(DUPLICATE_ACTIONS) }),
   'queue:batchComplete': BatchSummarySchema,
   'queue:state': QueueStateSchema,
@@ -476,6 +511,7 @@ export type LogEntry = z.infer<typeof LogEntrySchema>;
 export type SerializedError = z.infer<typeof SerializedErrorSchema>;
 export type QueueItemDto = z.infer<typeof QueueItemSchema>;
 export type PendingDuplicateDto = z.infer<typeof PendingDuplicateSchema>;
+export type PendingPhotoPostDto = z.infer<typeof PendingPhotoPostSchema>;
 export type BatchSummaryDto = z.infer<typeof BatchSummarySchema>;
 export type QueueStateDto = z.infer<typeof QueueStateSchema>;
 export type AddLinksResultDto = z.infer<typeof AddLinksResultSchema>;

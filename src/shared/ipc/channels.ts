@@ -46,6 +46,8 @@ export const INVOKE_CHANNELS = [
   'queue:reorder',
   'queue:getPendingDuplicates',
   'queue:resolveDuplicate',
+  'queue:getPendingPhotoPosts',
+  'queue:resolvePhotoPost',
 
   'library:list',
   'library:dailyStats',
@@ -73,6 +75,8 @@ export const EVENT_CHANNELS = [
   'queue:itemsAdded',
   'queue:itemRemoved',
   'queue:duplicatePending',
+  'queue:photoPending',
+  'queue:photoResolved',
   'queue:duplicateResolved',
   'creators:progress',
   'queue:batchComplete',

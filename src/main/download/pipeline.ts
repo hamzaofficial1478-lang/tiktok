@@ -8,6 +8,7 @@ import type { MediaPipeline, PipelineInput, PipelineResult } from '../queue/type
 import { selectStream } from './stream-selector';
 import { commitPart, discardPart, downloadToPart, partPathFor } from './downloader';
 import { downloadWithYtDlp } from './yt-dlp-downloader';
+import { downloadPhotoPost } from './photo-post';
 import type { YtDlpStrategy } from '../resolve/yt-dlp-extractor';
 import { verifyDownload } from './verify';
 import { renderTemplate, resolveOutputPath, resolveOutputDirectory } from './filename';
@@ -113,6 +114,10 @@ export class DownloadPipeline implements MediaPipeline {
   async process(input: PipelineInput): Promise<PipelineResult> {
     const config = this.options.config();
     const log = this.options.log.child({ awemeId: input.normalized.awemeId });
+
+    // A slideshow the user agreed to take. Its own path, because there is no
+    // stream to select, nothing to probe and no watermark to remove.
+    if (input.photoPost) return this.processPhotoPost(input, config, log);
 
     // 1. Pick the stream. Clean beats watermarked before resolution is even
     //    considered (section 9 step 4).
@@ -458,6 +463,76 @@ export class DownloadPipeline implements MediaPipeline {
        * reason anywhere a user would look. It rides back with the result now.
        */
       ...(captionNote ? { captionNote } : {}),
+    };
+  }
+
+  /**
+   * A photo slideshow, into a folder of its own.
+   *
+   * Everything the video path does after the transfer is skipped rather than
+   * disabled: there is no container for ffprobe to read, no watermark filter
+   * that applies to a still image, no outro on a picture, and nothing to
+   * caption. What is left is the part that matters — the images land
+   * somewhere predictable and the library gets one path to record.
+   *
+   * `sourceStrategy: 'raw'` because that is the truth: the files are exactly
+   * as TikTok served them, and claiming a clean source would put a
+   * watermark-free badge on images nobody inspected.
+   */
+  private async processPhotoPost(
+    input: PipelineInput,
+    config: AppConfig,
+    log: Logger,
+  ): Promise<PipelineResult> {
+    const root = this.options.outputDir?.() ?? config.outputDir;
+    if (!root) throw new AppError('PERMISSION_DENIED', 'no output folder has been chosen yet');
+
+    const parent = resolveOutputDirectory(root, input.item.output_subdir);
+
+    // The same template the videos use, so a slideshow sorts among them in the
+    // order it was pasted instead of drifting to one end of the folder.
+    const basename = renderTemplate(config.filenameTemplate, {
+      metadata: input.resolved.metadata,
+      awemeId: input.normalized.awemeId,
+      index: input.item.position,
+      batchIndex: input.item.batch_index,
+      extension: '',
+    });
+    const directory = resolveOutputPath({
+      directory: parent,
+      basename,
+      // No extension: this is a folder, and a folder called "…mp4" would be a
+      // small lie that costs someone a confused minute.
+      extension: '',
+      onCollision: input.duplicateAction === 'replace' ? 'replace' : 'suffix',
+    });
+
+    log.info({ directory }, 'downloading a photo slideshow');
+
+    const result = await downloadPhotoPost({
+      binaryPath: this.options.ytDlpPath?.() ?? null,
+      runner: this.options.runner,
+      url: input.normalized.canonicalUrl,
+      routes: downloadRoutes(input.resolved.extractorArgs, this.options.downloadStrategies?.() ?? []),
+      directory,
+      signal: input.signal,
+      proxyUrl: this.options.proxyUrl?.(),
+      log,
+    });
+
+    input.onProgress({ bytesDone: result.bytes, bytesTotal: result.bytes, speed: null, etaMs: 0 });
+    log.info({ directory, files: result.files.length, bytes: result.bytes }, 'slideshow saved');
+
+    return {
+      filePath: result.directory,
+      fileSize: result.bytes,
+      // Hashing a folder is not a thing, and a repost badge on a slideshow
+      // would be comparing pictures to videos.
+      sha256: null,
+      phash: null,
+      sourceStrategy: 'raw',
+      watermarkRemoved: false,
+      outroTrimmedMs: null,
     };
   }
 }

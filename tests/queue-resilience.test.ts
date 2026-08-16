@@ -275,16 +275,32 @@ describe('rate limiting (section 8)', () => {
     expect(clock.sleeps).toEqual([1_100, 1_500, 1_900]);
   });
 
-  it('does not spend a request on a link it can reject offline', async () => {
+  it('does not spend a request deciding about a link it can classify offline', async () => {
     harness = createHarness();
-    // A photo carousel is knowable from the URL, so it must cost nothing.
+    // A photo carousel is knowable from the URL, so raising the question about
+    // it must cost nothing.
     harness.engine.addLinks([`https://www.tiktok.com/@user/photo/${awemeIdFor(9)}`]);
     harness.engine.start();
     await harness.engine.whenIdle();
 
-    expect(harness.engine.getSnapshot()[0]?.errorCode).toBe('UNSUPPORTED_MEDIA');
+    expect(harness.engine.getPendingPhotoPosts()).toHaveLength(1);
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('awaiting_user');
     expect(harness.rateLimiter.acquireCount).toBe(0);
     expect(harness.extractor.resolvedIds).toEqual([]);
+  });
+
+  it('skips slideshows without a request when the user has already decided', async () => {
+    harness = createHarness({ config: { photoSlideshows: 'skip' } });
+    harness.engine.addLinks([`https://www.tiktok.com/@user/photo/${awemeIdFor(9)}`]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('skipped');
+    expect(harness.rateLimiter.acquireCount).toBe(0);
+    expect(harness.extractor.resolvedIds).toEqual([]);
+    // Declined is written to the ledger, so listing the account later passes
+    // over it instead of queueing it again.
+    expect(harness.ledger.find(awemeIdFor(9))?.status).toBe('declined');
   });
 });
 

@@ -81,7 +81,7 @@ function analyse(value: string): Line[] {
     return {
       raw,
       status: 'valid' as const,
-      note: parsed.kind === 'photo' ? 'Photo slideshow — not supported' : `@${parsed.authorHandle ?? '…'}`,
+      note: parsed.kind === 'photo' ? 'Photo slideshow — you will be asked' : `@${parsed.authorHandle ?? '…'}`,
     };
   });
 }

@@ -1,4 +1,4 @@
-import type { DuplicateAction, QueueStatus, SourceStrategy } from '@shared/types';
+import type { PhotoAction, DuplicateAction, QueueStatus, SourceStrategy } from '@shared/types';
 import type { ErrorCode } from '@shared/errors';
 import type { NormalizedUrl, ResolvedVideo } from '../resolve/types';
 import type { QueueItemRow } from '../db/repositories/queue-items';
@@ -22,6 +22,13 @@ export interface PipelineInput {
   readonly resolved: ResolvedVideo;
   /** Set when layer 3 produced a decision; 'replace' overwrites, 'redownload' suffixes. */
   readonly duplicateAction: DuplicateAction | null;
+  /**
+   * True when the post is a set of images rather than a video and the user has
+   * agreed to take it. The pipeline's video path does not apply: there is no
+   * stream to select, nothing for ffprobe to verify and no watermark to
+   * remove, so it branches to the slideshow downloader instead.
+   */
+  readonly photoPost?: boolean;
   readonly signal: AbortSignal;
   readonly onProgress: (progress: PipelineProgress) => void;
 }
@@ -111,6 +118,25 @@ export interface PendingDuplicate {
   readonly downloadedAt: number;
 }
 
+/**
+ * A slideshow waiting on an answer.
+ *
+ * Parked the same way a duplicate question is, and for the same reason: the
+ * queue must keep moving while it waits. Section 7 calls a modal that halts a
+ * 200-item batch a product defect, and a batch containing three slideshows
+ * would otherwise stop three times.
+ */
+export interface PendingPhotoPost {
+  readonly itemId: number;
+  readonly batchId: string;
+  readonly awemeId: string;
+  readonly canonicalUrl: string;
+  readonly caption: string | null;
+  readonly authorHandle: string | null;
+  /** How many images the post contains, when the extractor could say. */
+  readonly imageCount: number | null;
+}
+
 export interface BatchSummary {
   readonly batchId: string;
   readonly completed: number;
@@ -140,6 +166,8 @@ export type QueueEvent =
   | { readonly type: 'item-removed'; readonly itemId: number }
   | { readonly type: 'duplicate-pending'; readonly pending: PendingDuplicate }
   | { readonly type: 'duplicate-resolved'; readonly itemId: number; readonly action: DuplicateAction }
+  | { readonly type: 'photo-pending'; readonly pending: PendingPhotoPost }
+  | { readonly type: 'photo-resolved'; readonly itemId: number; readonly action: PhotoAction }
   | { readonly type: 'batch-complete'; readonly summary: BatchSummary }
   | { readonly type: 'queue-state'; readonly running: boolean; readonly paused: boolean; readonly active: number };
 

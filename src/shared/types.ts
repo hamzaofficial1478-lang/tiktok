@@ -58,6 +58,21 @@ export type WatermarkMode = (typeof WATERMARK_MODES)[number];
 export const OUTRO_MODES = ['ask', 'always', 'never'] as const;
 export type OutroMode = (typeof OUTRO_MODES)[number];
 
+/**
+ * What to do with a post that is a set of images rather than a video.
+ *
+ * 'ask' is the default and the interesting one: the question is put once per
+ * post and the answer is written to the link ledger, so a slideshow that was
+ * turned down is never raised again — including when the account it belongs to
+ * is listed on a later run.
+ */
+export const PHOTO_SLIDESHOW_MODES = ['ask', 'download', 'skip'] as const;
+export type PhotoSlideshowMode = (typeof PHOTO_SLIDESHOW_MODES)[number];
+
+/** What the user decided about one slideshow. */
+export const PHOTO_ACTIONS = ['download', 'skip'] as const;
+export type PhotoAction = (typeof PHOTO_ACTIONS)[number];
+
 export const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 

@@ -12,6 +12,7 @@ import { History } from './screens/History';
 import { Settings } from './screens/Settings';
 import { Logs } from './screens/Logs';
 import { DuplicateModal } from './components/DuplicateModal';
+import { PhotoPostModal } from './components/PhotoPostModal';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { Button } from './components/primitives';
 import { Sidebar, type NavItem } from './components/Sidebar';
@@ -90,12 +91,16 @@ function Toasts(): React.JSX.Element {
 }
 
 export default function App(): React.JSX.Element {
-  const { ready, bootError, queueState, pendingDuplicates, bootstrap } = useAppStore();
+  const { ready, bootError, queueState, pendingDuplicates, pendingPhotoPosts, bootstrap } = useAppStore();
   const queueCount = useAppStore((s) => s.queueItems.size);
   const proxyUrl = useAppStore((s) => s.config?.proxyUrl ?? '');
   const [screen, setScreen] = useState<Screen>('add');
   const reducedMotion = usePrefersReducedMotion();
   const setDuplicatePromptDismissed = useAppStore((s) => s.setDuplicatePromptDismissed);
+  const setPhotoPromptDismissed = useAppStore((s) => s.setPhotoPromptDismissed);
+  // Both kinds of parked question are the same thing from the navigation's
+  // point of view: a download that is waiting on the user.
+  const questions = pendingDuplicates.length + pendingPhotoPosts.length;
 
   useEffect(() => {
     void bootstrap();
@@ -148,7 +153,7 @@ export default function App(): React.JSX.Element {
   const navItems: NavItem<Screen>[] = NAV.map((item) => ({
     ...item,
     ...(item.id === 'queue' && queueCount > 0 ? { count: queueCount } : {}),
-    ...(item.id === 'queue' && pendingDuplicates.length > 0 ? { alert: true } : {}),
+    ...(item.id === 'queue' && questions > 0 ? { alert: true } : {}),
   }));
 
   return (
@@ -191,17 +196,19 @@ export default function App(): React.JSX.Element {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {pendingDuplicates.length > 0 && (
+        {questions > 0 && (
           /* A question that was put off is a stopped queue item, so the way
              back to it is a banner rather than a chip in the corner. */
           <button
-            onClick={() => setDuplicatePromptDismissed(false)}
+            onClick={() => {
+              setDuplicatePromptDismissed(false);
+              setPhotoPromptDismissed(false);
+            }}
             className="flex shrink-0 items-center gap-2 border-b border-warn-400/20 bg-warn-400/10 px-6 py-2
               text-left text-xs font-medium text-warn-400 hover:bg-warn-400/15"
           >
             <Icon name="alert" size={14} />
-            {pendingDuplicates.length} question{pendingDuplicates.length === 1 ? '' : 's'} waiting — these downloads
-            are on hold until you answer
+            {questions} question{questions === 1 ? '' : 's'} waiting — these downloads are on hold until you answer
           </button>
         )}
 
@@ -224,6 +231,7 @@ export default function App(): React.JSX.Element {
       </div>
 
       <DuplicateModal />
+      <PhotoPostModal />
       <Toasts />
     </div>
   );

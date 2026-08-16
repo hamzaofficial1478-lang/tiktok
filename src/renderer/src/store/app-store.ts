@@ -5,6 +5,7 @@ import type {
   LogEntry,
   MediaCapabilities,
   PendingDuplicateDto,
+  PendingPhotoPostDto,
   QueueItemDto,
   QueueStateDto,
   SidecarStatus,
@@ -68,15 +69,20 @@ interface AppState {
   liveProgress: Map<number, LiveProgress>;
   queueState: QueueStateDto;
   pendingDuplicates: PendingDuplicateDto[];
+  /** Slideshow questions waiting on an answer; same non-blocking contract. */
+  pendingPhotoPosts: PendingPhotoPostDto[];
   lastBatch: BatchSummaryDto | null;
   toasts: Toast[];
   /** True while the user has chosen 'Later' on the duplicate question. */
   duplicatePromptDismissed: boolean;
+  /** The same, for the slideshow question. */
+  photoPromptDismissed: boolean;
   /** Live state of an ffmpeg install, or null when none is running. */
   install: InstallState | null;
 
   bootstrap(): Promise<void>;
   setDuplicatePromptDismissed(dismissed: boolean): void;
+  setPhotoPromptDismissed(dismissed: boolean): void;
   updateConfig(patch: Partial<AppConfig>): Promise<void>;
   pushToast(toast: Omit<Toast, 'id'>): void;
   dismissToast(id: number): void;
@@ -107,22 +113,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   liveProgress: new Map(),
   queueState: { running: false, paused: false, active: 0 },
   pendingDuplicates: [],
+  pendingPhotoPosts: [],
   lastBatch: null,
   toasts: [],
   duplicatePromptDismissed: false,
+  photoPromptDismissed: false,
   install: null,
 
   async bootstrap(): Promise<void> {
     if (bootstrapped) return;
     bootstrapped = true;
     try {
-      const [versions, sidecarStatus, config, logTail, queue, duplicates] = await Promise.all([
+      const [versions, sidecarStatus, config, logTail, queue, duplicates, photos] = await Promise.all([
         invoke('app:getVersions'),
         invoke('app:getSidecarStatus'),
         invoke('config:get'),
         invoke('log:tail', { limit: 300 }),
         invoke('queue:getSnapshot'),
         invoke('queue:getPendingDuplicates'),
+        invoke('queue:getPendingPhotoPosts'),
       ]);
 
       set({
@@ -135,6 +144,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         queueItems: new Map(queue.items.map((item) => [item.id, item])),
         queueState: queue.state,
         pendingDuplicates: duplicates.pending,
+        pendingPhotoPosts: photos.pending,
         bootError: null,
       });
 
@@ -190,6 +200,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ pendingDuplicates: get().pendingDuplicates.filter((p) => p.itemId !== itemId) });
       });
 
+      subscribe('queue:photoPending', (pending) => {
+        // A new question means the "Later" dismissal has been answered by
+        // events moving on; showing the next one is the point of asking.
+        set({ pendingPhotoPosts: [...get().pendingPhotoPosts, pending], photoPromptDismissed: false });
+      });
+      subscribe('queue:photoResolved', ({ itemId }) => {
+        set({ pendingPhotoPosts: get().pendingPhotoPosts.filter((p) => p.itemId !== itemId) });
+      });
+
       subscribe('queue:batchComplete', (summary) => {
         set({ lastBatch: summary });
         // Section 10's completion summary, with the retry affordance inline.
@@ -217,6 +236,10 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setDuplicatePromptDismissed(dismissed: boolean): void {
     set({ duplicatePromptDismissed: dismissed });
+  },
+
+  setPhotoPromptDismissed(dismissed: boolean): void {
+    set({ photoPromptDismissed: dismissed });
   },
 
   async updateConfig(patch: Partial<AppConfig>): Promise<void> {
