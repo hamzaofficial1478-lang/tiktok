@@ -23,13 +23,24 @@ import type { QueueEngine } from '../queue/queue-engine';
 export interface CreatorRunProgress {
   readonly creatorId: number;
   readonly handle: string;
-  readonly phase: 'listing' | 'queued' | 'downloading' | 'done' | 'failed' | 'nothing-new';
+  readonly phase: 'listing' | 'queued' | 'downloading' | 'done' | 'failed' | 'nothing-new' | 'caught-up';
   /** How many links were queued for this account this run. */
   readonly queued: number;
   /** Position in the run, 1-based, and how many accounts the run covers. */
   readonly index: number;
   readonly total: number;
   readonly message?: string;
+}
+
+/** What a run turned out to be, once it has been through the whole list. */
+export interface CreatorRunOutcome {
+  readonly queued: number;
+  /** Enabled accounts in the list. */
+  readonly creators: number;
+  /** Accounts that had already given everything their count asks for. */
+  readonly caughtUp: number;
+  /** Accounts that were actually listed and had something to give. */
+  readonly visited: number;
 }
 
 export interface CreatorRunnerOptions {
@@ -108,29 +119,77 @@ export class CreatorRunner {
    *
    * Guarded against a second concurrent run: two of these interleaving would
    * defeat the sequencing the whole class exists for.
+   *
+   * @param options.topUp Take another full count from every account, on top of
+   *   what they have already given. Off by default, and that default is the
+   *   fix for a real bug: `selectNewVideos` takes up to `video_limit` *new*
+   *   videos on every call, so nothing stopped a second press of Run from
+   *   taking three more from an account set to three — leaving six videos on
+   *   disk from a setting that says three. A run now stops at what is
+   *   outstanding, and going beyond it is something the user asks for
+   *   explicitly rather than something that happens quietly.
    */
-  async run(): Promise<{ queued: number; creators: number }> {
-    if (this.running) return { queued: 0, creators: 0 };
+  async run(options: { topUp?: boolean } = {}): Promise<CreatorRunOutcome> {
+    if (this.running) return { queued: 0, creators: 0, caughtUp: 0, visited: 0 };
     this.running = true;
     this.cancelled = false;
 
     const list = this.options.creators.list().filter((row) => row.enabled === 1);
     let totalQueued = 0;
+    let caughtUp = 0;
+    let visited = 0;
 
     try {
       for (const [index, creator] of list.entries()) {
         if (this.cancelled) break;
-        totalQueued += await this.runOne(creator, index + 1, list.length);
+
+        const outcome = await this.runOne(creator, index + 1, list.length, options.topUp === true);
+        totalQueued += outcome.queued;
+        if (outcome.caughtUp) caughtUp++;
+        else visited++;
       }
-      return { queued: totalQueued, creators: list.length };
+      return { queued: totalQueued, creators: list.length, caughtUp, visited };
     } finally {
       this.running = false;
     }
   }
 
-  private async runOne(creator: CreatorRow, index: number, total: number): Promise<number> {
+  private async runOne(
+    creator: CreatorRow,
+    index: number,
+    total: number,
+    topUp: boolean,
+  ): Promise<{ queued: number; caughtUp: boolean }> {
     const report = (progress: Omit<CreatorRunProgress, 'creatorId' | 'handle' | 'index' | 'total'>): void =>
       this.options.onProgress?.({ creatorId: creator.id, handle: creator.handle, index, total, ...progress });
+
+    /**
+     * How many this account may give up this run.
+     *
+     * Ordinarily its count minus what it has already given, so "3 videos"
+     * means three videos in total rather than three every time the button is
+     * pressed. A top-up run is the user saying "another three", so it uses the
+     * count as-is.
+     */
+    const taken = this.options.ledger.countForHandle(creator.handle, 'downloaded');
+    const limit = topUp ? creator.video_limit : Math.max(0, creator.video_limit - taken);
+
+    if (limit === 0) {
+      /**
+       * Nothing owed, so nothing is listed.
+       *
+       * Worth noting that this is not only a correctness fix: listing an
+       * account is a network round trip that can take a minute on a large one,
+       * and spending five of those to conclude that there is nothing to do is
+       * the slowest possible way to say "already finished".
+       */
+      report({
+        phase: 'caught-up',
+        queued: 0,
+        message: `all ${creator.video_limit} already downloaded — press Run again to take the next ${creator.video_limit}`,
+      });
+      return { queued: 0, caughtUp: true };
+    }
 
     report({ phase: 'listing', queued: 0 });
 
@@ -143,12 +202,10 @@ export class CreatorRunner {
       this.options.log?.warn({ handle: creator.handle, err: message }, 'could not list a saved creator');
       report({ phase: 'failed', queued: 0, message });
       // One unreachable account does not stop the other nine.
-      return 0;
+      return { queued: 0, caughtUp: false };
     }
 
-    const { urls, skipped } = selectNewVideos(listed, creator.video_limit, (awemeId) =>
-      this.options.ledger.isSettled(awemeId),
-    );
+    const { urls, skipped } = selectNewVideos(listed, limit, (awemeId) => this.options.ledger.isSettled(awemeId));
 
     if (urls.length === 0) {
       report({
@@ -160,7 +217,7 @@ export class CreatorRunner {
             : 'this account has no videos to take',
       });
       this.options.creators.recordRun(creator.id, 0);
-      return 0;
+      return { queued: 0, caughtUp: true };
     }
 
     /**
@@ -189,6 +246,6 @@ export class CreatorRunner {
     }
 
     report({ phase: 'done', queued: result.added });
-    return result.added;
+    return { queued: result.added, caughtUp: false };
   }
 }

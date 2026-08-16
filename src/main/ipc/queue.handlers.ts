@@ -133,8 +133,21 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
    * time out and tell the renderer nothing in the meantime. Progress arrives
    * on `creators:progress` instead.
    */
-  registry.handle('creators:run', () => {
+  registry.handle('creators:run', (request) => {
+    const topUp = request?.topUp === true;
     const list = services.repos.creators.list().filter((row) => row.enabled === 1);
+
+    /**
+     * What this run will do, answered before it starts.
+     *
+     * A top-up takes another full count from every account; an ordinary run
+     * only visits the ones that still owe something. Returning both counts
+     * lets the UI say "listing 2 accounts, 3 already finished" straight away
+     * rather than leaving the user watching a progress line to work it out.
+     */
+    const taken = services.repos.linkLedger.downloadedByHandle();
+    const plan = buildRunPlan(list, (handle) => taken.get(handle) ?? 0);
+    const visited = topUp ? list.length : plan.accountsToVisit;
 
     /**
      * Started, not awaited — and its failure is logged rather than swallowed.
@@ -143,13 +156,13 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
      * whole run threw, nothing appeared anywhere. Per-account failures already
      * report themselves through progress events; this is the outer one.
      */
-    void services.creatorRunner.run().catch((err: unknown) => {
+    void services.creatorRunner.run({ topUp }).catch((err: unknown) => {
       services.log.error({ err: err instanceof Error ? err.message : String(err) }, 'the creator run failed');
     });
 
     // `queued` is zero because nothing has been queued yet: the run is minutes
     // to hours of work and reports its real counts over `creators:progress`.
-    return { queued: 0, creators: list.length };
+    return { queued: 0, creators: list.length, caughtUp: list.length - visited, visited };
   });
 
   registry.handle('creators:cancelRun', () => {

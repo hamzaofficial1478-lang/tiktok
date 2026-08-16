@@ -26,7 +26,7 @@ import { NumberInput, Select } from './form';
 interface RunProgress {
   readonly creatorId: number;
   readonly handle: string;
-  readonly phase: 'listing' | 'queued' | 'downloading' | 'done' | 'failed' | 'nothing-new';
+  readonly phase: 'listing' | 'queued' | 'downloading' | 'done' | 'failed' | 'nothing-new' | 'caught-up';
   readonly queued: number;
   readonly index: number;
   readonly total: number;
@@ -40,6 +40,7 @@ const PHASE_LABEL: Record<RunProgress['phase'], string> = {
   done: 'done',
   failed: 'could not be listed',
   'nothing-new': 'nothing new',
+  'caught-up': 'already has everything you asked for',
 };
 
 type Plan = InvokeResponse<'creators:plan'>;
@@ -53,6 +54,8 @@ export function Creators(): React.JSX.Element {
   const [running, setRunning] = useState(false);
   const [editing, setEditing] = useState<number | null>(null);
   const [progress, setProgress] = useState<RunProgress | null>(null);
+  /** True while the "take another round?" question is on screen. */
+  const [confirmingTopUp, setConfirmingTopUp] = useState(false);
   const pushToast = useAppStore((s) => s.pushToast);
   /**
    * Completed downloads, watched so the Run button's count comes down.
@@ -78,12 +81,32 @@ export function Creators(): React.JSX.Element {
     return subscribe('creators:progress', (event) => {
       setProgress(event);
       // The run is over when the last account reports a terminal phase.
-      if (event.index === event.total && ['done', 'failed', 'nothing-new'].includes(event.phase)) {
+      if (event.index === event.total && ['done', 'failed', 'nothing-new', 'caught-up'].includes(event.phase)) {
         setRunning(false);
+        /**
+         * Say what happened, and what the choice is now.
+         *
+         * The old behaviour was to finish silently and then, on the next press
+         * of Run, take another full count without a word — which is how an
+         * account set to 3 ended up with 6 videos. Ending a run by stating the
+         * position, and offering the two things the user might want, is the
+         * other half of that fix.
+         */
+        void invoke('creators:plan')
+          .then((next) => {
+            setPlan(next);
+            if (next.remaining > 0 || next.creators.length === 0) return;
+            pushToast({
+              kind: 'success',
+              message: 'Every account now has the videos you asked for. Change a count, or run again to take the next set.',
+              action: { label: 'Run again', run: () => setConfirmingTopUp(true) },
+            });
+          })
+          .catch(() => undefined);
       }
       void reload();
     });
-  }, [reload]);
+  }, [reload, pushToast]);
 
   // Re-read after each finished download, so "12 left" becomes "11 left"
   // without waiting for the run to end.
@@ -139,8 +162,40 @@ export function Creators(): React.JSX.Element {
    */
   const remainingFor = (creatorId: number): number =>
     plan?.creators.find((entry) => entry.creatorId === creatorId)?.remaining ?? 0;
+  const takenFor = (creatorId: number): number =>
+    plan?.creators.find((entry) => entry.creatorId === creatorId)?.taken ?? 0;
   const totalRemaining = plan?.remaining ?? 0;
   const enabled = creators.filter((c) => c.enabled).length;
+
+  /**
+   * Everything the list asks for is already downloaded.
+   *
+   * This is the state that used to be invisible, and that invisibility was the
+   * bug: pressing Run again quietly took another three from an account set to
+   * three, so a setting that said 3 produced 6 files. Running again is still
+   * available — it is a reasonable thing to want — but it is now a thing the
+   * user is told about and agrees to.
+   */
+  const caughtUp = enabled > 0 && totalRemaining === 0;
+  /** What another round would take, if the user asks for one. */
+  const nextRoundSize = creators.filter((c) => c.enabled).reduce((sum, c) => sum + c.videoLimit, 0);
+
+  function startRun(topUp: boolean): void {
+    setRunning(true);
+    setProgress(null);
+    setConfirmingTopUp(false);
+    void invoke('creators:run', { topUp })
+      .then((result) => {
+        if (result.visited === 0) {
+          setRunning(false);
+          pushToast({ kind: 'info', message: 'Every account already has the videos you asked for.' });
+        }
+      })
+      .catch((err: unknown) => {
+        setRunning(false);
+        pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+      });
+  }
 
   return (
     <Panel
@@ -164,26 +219,19 @@ export function Creators(): React.JSX.Element {
               <Button
                 variant="primary"
                 icon="play"
-                // Nothing owed means nothing to do. A Run button that starts a
-                // network round trip per account only to report "nothing new"
-                // is a button that lies about having work.
-                disabled={enabled === 0 || totalRemaining === 0}
+                disabled={enabled === 0}
                 title={
-                  totalRemaining === 0
-                    ? 'Every saved account has already given you the number of videos you asked for. Raise a count to take more.'
+                  caughtUp
+                    ? 'Every account has given you the number of videos you asked for. Running again asks first.'
                     : 'Lists each account in turn and downloads what it has not taken yet'
                 }
-                onClick={() => {
-                  setRunning(true);
-                  setProgress(null);
-                  void invoke('creators:run').catch((err: unknown) => {
-                    setRunning(false);
-                    pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-                  });
-                }}
+                // Caught up, Run asks rather than starting: taking another
+                // round is a reasonable thing to want and a terrible thing to
+                // do without saying so.
+                onClick={() => (caughtUp ? setConfirmingTopUp(true) : startRun(false))}
               >
-                {totalRemaining === 0
-                  ? 'All caught up'
+                {caughtUp
+                  ? `Run again — take ${nextRoundSize} more`
                   : `Run — download ${totalRemaining} video${totalRemaining === 1 ? '' : 's'}`}
               </Button>
             )}
@@ -220,6 +268,45 @@ export function Creators(): React.JSX.Element {
             {busy ? 'Adding…' : `Add ${valid || ''}`.trim()}
           </Button>
         </div>
+
+        {/**
+         * "Everything you asked for is downloaded — what now?"
+         *
+         * Inline rather than a modal, because it is not urgent and it must not
+         * cover the list it is talking about: the two answers are "take another
+         * round" and "change the counts", and the counts are the rows below.
+         */}
+        {confirmingTopUp && (
+          <div className="rounded-lg border border-accent-500/30 bg-accent-500/8 p-4">
+            <p className="text-sm font-medium text-ink-100">
+              Every account has already given you the videos you asked for.
+            </p>
+            <p className="mt-2 text-sm text-ink-300">
+              Running again takes the <strong className="text-ink-100">next {nextRoundSize}</strong> — the same count
+              you set for each account, applied to the videos below the ones you already have. Your settings for each
+              account do not change, and nothing already downloaded is taken a second time.
+            </p>
+            <ul className="mt-3 grid gap-0.5 text-xs text-ink-500">
+              {creators
+                .filter((creator) => creator.enabled)
+                .map((creator) => (
+                  <li key={creator.id}>
+                    @{creator.handle} — the next {creator.videoLimit}
+                    {creator.captionMode ? ` · captions ${creator.captionMode}` : ''}
+                  </li>
+                ))}
+            </ul>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Button variant="primary" icon="play" onClick={() => startRun(true)}>
+                Yes, take the next {nextRoundSize}
+              </Button>
+              <Button variant="secondary" icon="settings" onClick={() => setConfirmingTopUp(false)}>
+                No — let me change the counts first
+              </Button>
+            </div>
+          </div>
+        )}
 
         {creators.length > 0 && (
           <>
@@ -267,7 +354,10 @@ export function Creators(): React.JSX.Element {
                           of them were still to come. */}
                       <span className="shrink-0 text-xs text-ink-500">
                         {remainingFor(creator.id) === 0 ? (
-                          <span className="text-mint-300">all {creator.videoLimit} taken</span>
+                          // The real number downloaded, not the count that was
+                          // asked for. They can differ on accounts that were
+                          // run more than once before runs were capped.
+                          <span className="text-mint-300">{takenFor(creator.id)} downloaded</span>
                         ) : (
                           `${remainingFor(creator.id)} of ${creator.videoLimit} left`
                         )}

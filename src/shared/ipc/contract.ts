@@ -318,7 +318,27 @@ export const invokeContract = {
       taken: z.number(),
     }),
   },
-  'creators:run': { request: z.void(), response: z.object({ queued: z.number(), creators: z.number() }) },
+  /**
+   * Starts a run over the saved accounts.
+   *
+   * `topUp` is the difference between "download what you still owe me" and
+   * "give me another round of the same". Without it a run stops at each
+   * account's outstanding count, so pressing Run twice cannot leave six videos
+   * on disk from a setting that says three. With it, every account gives
+   * another full count — which the UI only sends after saying so and being
+   * told to go ahead.
+   */
+  'creators:run': {
+    request: z.object({ topUp: z.boolean().optional() }).optional(),
+    response: z.object({
+      queued: z.number(),
+      creators: z.number(),
+      /** Accounts that already had everything their count asks for. */
+      caughtUp: z.number(),
+      /** Accounts this run will actually list. */
+      visited: z.number(),
+    }),
+  },
   'creators:cancelRun': { request: z.void(), response: Ok },
 
   'queue:start': { request: z.void(), response: Ok },
@@ -493,7 +513,7 @@ export const eventContract = {
   'creators:progress': z.object({
     creatorId: z.number(),
     handle: z.string(),
-    phase: z.enum(['listing', 'queued', 'downloading', 'done', 'failed', 'nothing-new']),
+    phase: z.enum(['listing', 'queued', 'downloading', 'done', 'failed', 'nothing-new', 'caught-up']),
     queued: z.number(),
     index: z.number(),
     total: z.number(),
