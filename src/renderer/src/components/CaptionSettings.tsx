@@ -1,9 +1,12 @@
 import type { CaptionSettings as CaptionSettingsValue } from '@shared/caption-schema';
 import { CAPTION_ANIMATIONS, CAPTION_POSITIONS, translationIsSupported } from '@shared/caption-schema';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Panel } from './primitives';
 import { Icon } from './icons';
 import { ColourInput, Field, SegmentedControl, Select, Slider, Toggle } from './form';
+import { Button } from './primitives';
+import { invoke, subscribe } from '../lib/ipc';
+import { needsWordTimings } from '@shared/caption-schema';
 
 /**
  * The caption controls.
@@ -21,6 +24,27 @@ import { ColourInput, Field, SegmentedControl, Select, Slider, Toggle } from './
  * uses. The mode is on screen where the links go in, and the two dozen styling
  * controls stay folded away until someone wants them.
  */
+
+/**
+ * The four at the end need word timings, so they are marked.
+ *
+ * Hiding them until a video happens to have been transcribed would mean the
+ * best-looking options are the ones nobody discovers; saying what they need is
+ * better than pretending they are unavailable.
+ */
+const ANIMATION_LABELS: Record<string, string> = {
+  none: 'None — a hard cut',
+  fade: 'Fade in and out',
+  pop: 'Pop — scales up',
+  rise: 'Rise — drifts upward',
+  slide: 'Slide — in from the left',
+  bounce: 'Bounce — overshoots and settles',
+  typewriter: 'Typewriter — wipes in',
+  karaoke: 'Karaoke — sweeps word by word (needs transcription)',
+  'word-pop': 'Word pop — each word scales in (needs transcription)',
+  highlight: 'Highlight — colours the word being said (needs transcription)',
+  'one-word': 'One word at a time (needs transcription)',
+};
 
 const LANGUAGES: readonly { value: string; label: string }[] = [
   { value: 'auto', label: 'Same language as the video' },
@@ -43,6 +67,28 @@ export function CaptionSettings({
 
   const on = value.mode !== 'off';
   const [styleOpen, setStyleOpen] = useState(false);
+  const [whisper, setWhisper] = useState<{ installed: boolean; model: string | null } | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
+
+  useEffect(() => {
+    void invoke('app:whisperStatus').then(setWhisper);
+    return subscribe('whisper:installProgress', (event) => {
+      const megabytes = (bytes: number): string => `${(bytes / 1_048_576).toFixed(0)} MB`;
+      setInstalling(
+        event.phase === 'downloading-model' || event.phase === 'downloading-program'
+          ? `${event.message} — ${megabytes(event.receivedBytes)}${
+              event.totalBytes ? ` of ${megabytes(event.totalBytes)}` : ''
+            }`
+          : event.message,
+      );
+      if (event.phase === 'done') {
+        setInstalling(null);
+        void invoke('app:whisperStatus').then(setWhisper);
+      }
+    });
+  }, []);
+
+  const wordLevel = needsWordTimings(value.style.animation);
 
   return (
     <Panel
@@ -105,6 +151,57 @@ export function CaptionSettings({
                 />
               </Field>
             </div>
+
+            {/**
+             * The transcriber, offered where it matters rather than in
+             * Settings: this is the panel where someone picks a word-by-word
+             * animation, and that is the moment they need to know it requires
+             * one. Never installed on its own — it is a 150 MB download.
+             */}
+            {whisper && !whisper.installed && (
+              <div
+                className={`rounded-lg border p-3 ${
+                  wordLevel ? 'border-warn-400/30 bg-warn-400/8' : 'border-white/8 bg-base-900/40'
+                }`}
+              >
+                <p className="text-xs text-ink-300">
+                  <strong className="font-medium text-ink-100">Offline transcription is not installed.</strong>{' '}
+                  {wordLevel
+                    ? 'The animation you picked needs to know when each word is spoken, which only transcription produces. Without it this style falls back to a plain fade.'
+                    : "TikTok's own captions cover most videos. Transcription fills in the rest, and unlocks the word-by-word animations."}{' '}
+                  It runs entirely on this machine — no account, no key, nothing sent anywhere.
+                </p>
+
+                {installing ? (
+                  <p className="mt-2 text-xs text-ink-300" aria-live="polite">
+                    {installing}
+                  </p>
+                ) : (
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <Button
+                      variant={wordLevel ? 'primary' : 'secondary'}
+                      size="sm"
+                      onClick={() => {
+                        setInstalling('starting…');
+                        void invoke('app:installWhisper', { model: 'base.en' }).then((result) => {
+                          setInstalling(null);
+                          setWhisper({ installed: result.installed, model: result.model });
+                        });
+                      }}
+                    >
+                      Install transcriber
+                    </Button>
+                    <span className="text-xs text-ink-500">About 150 MB, once. English model.</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {whisper?.installed && wordLevel && (
+              <p className="text-xs text-mint-300">
+                Transcription is installed ({whisper.model}), so this animation has the word timings it needs.
+              </p>
+            )}
 
             <button
               type="button"
@@ -211,13 +308,48 @@ export function CaptionSettings({
                   onChange={(animation) => setStyle('animation', animation)}
                   options={CAPTION_ANIMATIONS.map((animation) => ({
                     value: animation,
-                    label: {
-                      none: 'None — a hard cut',
-                      fade: 'Fade in and out',
-                      pop: 'Pop — scales up',
-                      rise: 'Rise — drifts upward',
-                    }[animation],
+                    label: ANIMATION_LABELS[animation] ?? animation,
                   }))}
+                />
+              </Field>
+
+              <Field
+                label="Highlight colour"
+                hint="What a word turns as it is spoken, for the word-by-word styles."
+              >
+                <ColourInput
+                  value={value.style.highlightColour}
+                  onChange={(colour) => setStyle('highlightColour', colour)}
+                />
+              </Field>
+
+              <Field label="Letter spacing">
+                <Slider
+                  value={value.style.letterSpacingPct}
+                  min={-5}
+                  max={30}
+                  format={(spacing) => `${spacing}%`}
+                  onChange={(spacing) => setStyle('letterSpacingPct', spacing)}
+                />
+              </Field>
+
+              <Field label="Tilt" hint="A few degrees reads as hand-placed; more reads as a mistake.">
+                <Slider
+                  value={value.style.rotation}
+                  min={-15}
+                  max={15}
+                  format={(angle) => `${angle}°`}
+                  onChange={(angle) => setStyle('rotation', angle)}
+                />
+              </Field>
+
+              <Field label="Drop shadow">
+                <Slider
+                  value={value.style.shadowPct}
+                  min={0}
+                  max={30}
+                  format={(shadow) => (shadow === 0 ? 'none' : `${shadow}%`)}
+                  onChange={(shadow) => setStyle('shadowPct', shadow)}
                 />
               </Field>
 

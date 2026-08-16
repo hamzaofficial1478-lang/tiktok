@@ -45,7 +45,33 @@ export type CaptionPosition = (typeof CAPTION_POSITIONS)[number];
  * cue. `none` exists because a hard cut is what a subtitle traditionally does
  * and some people want exactly that.
  */
-export const CAPTION_ANIMATIONS = ['none', 'fade', 'pop', 'rise'] as const;
+export const CAPTION_ANIMATIONS = [
+  'none',
+  'fade',
+  'pop',
+  'rise',
+  'slide',
+  'bounce',
+  'typewriter',
+  // The four below need word timings, which only transcription produces.
+  'karaoke',
+  'word-pop',
+  'highlight',
+  'one-word',
+] as const;
+
+/**
+ * Styles that need to know when each word is spoken.
+ *
+ * TikTok's own caption tracks are sentence-level, so these only work on a
+ * transcribed video. Offered anyway, and labelled — the alternative is hiding
+ * the best-looking options behind a setting nobody would think to change.
+ */
+export const WORD_LEVEL_ANIMATIONS = ['karaoke', 'word-pop', 'highlight', 'one-word'] as const;
+
+export function needsWordTimings(animation: CaptionAnimation): boolean {
+  return (WORD_LEVEL_ANIMATIONS as readonly string[]).includes(animation);
+}
 export type CaptionAnimation = (typeof CAPTION_ANIMATIONS)[number];
 
 /** `#RRGGBB`, the form a colour input produces. */
@@ -81,6 +107,14 @@ export const CaptionStyleSchema = z.object({
   maxLines: z.number().int().min(1).max(4),
 
   animation: z.enum(CAPTION_ANIMATIONS),
+  /** The colour a word turns as it is spoken, for the word-level styles. */
+  highlightColour: HexColour,
+  /** Letter spacing as a percentage of font size; a look, not a fix. */
+  letterSpacingPct: z.number().min(-5).max(30),
+  /** Degrees, for captions that sit at an angle. */
+  rotation: z.number().min(-15).max(15),
+  /** Drop shadow distance as a percentage of font size. */
+  shadowPct: z.number().min(0).max(30),
 });
 
 export type CaptionStyle = z.infer<typeof CaptionStyleSchema>;
@@ -137,6 +171,12 @@ export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
   maxLines: 2,
 
   animation: 'fade',
+  // TikTok's own caption highlight is a saturated yellow-green; this is the
+  // same idea without borrowing their exact value.
+  highlightColour: '#3ce88a',
+  letterSpacingPct: 0,
+  rotation: 0,
+  shadowPct: 0,
 };
 
 export const DEFAULT_CAPTION_SETTINGS: CaptionSettings = {

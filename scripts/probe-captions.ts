@@ -23,18 +23,29 @@ if (!ffmpeg || !video || !outDir) throw new Error('usage: <ffmpeg> <video> <outD
 
 const SRT = `1
 00:00:00,200 --> 00:00:01,600
-Hola, esto es una prueba de subtitulos
+Three guitar mistakes that wreck your timing
 
 2
 00:00:01,700 --> 00:00:03,900
 <i>with markup</i> and {\\pos(0,0)} an override attempt
 `;
 
+/** Word timings, as transcription produces them, for the word-level styles. */
+const WORDS = [
+  { text: 'Three', startMs: 200, endMs: 480 },
+  { text: 'guitar', startMs: 480, endMs: 800 },
+  { text: 'mistakes', startMs: 800, endMs: 1_180 },
+  { text: 'that', startMs: 1_180, endMs: 1_340 },
+  { text: 'wreck', startMs: 1_340, endMs: 1_600 },
+];
+
 const runner = new ChildProcessRunner();
 mkdirSync(outDir, { recursive: true });
 
 for (const animation of CAPTION_ANIMATIONS) {
-  const cues = normaliseCues(parseSubtitles(SRT), {
+  const parsedCues = parseSubtitles(SRT);
+  const withWords = parsedCues.map((cue, index) => (index === 0 ? { ...cue, words: WORDS } : cue));
+  const cues = normaliseCues(withWords, {
     maxLineChars: Math.min(
       DEFAULT_CAPTION_STYLE.maxLineChars,
       fittedLineChars(540, fontSizeFor(DEFAULT_CAPTION_STYLE, 960)),

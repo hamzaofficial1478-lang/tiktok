@@ -17,6 +17,22 @@ export interface Cue {
   readonly endMs: number;
   /** Already wrapped: one array entry per rendered line. */
   readonly lines: readonly string[];
+  /**
+   * When each word is spoken, if the source knew.
+   *
+   * TikTok's tracks are sentence-level and leave this absent. Transcription
+   * produces it, and it is what the word-by-word caption styles are built on —
+   * highlighting the word being said is impossible without knowing when each
+   * one starts, which is why those styles only appear once a video has been
+   * transcribed.
+   */
+  readonly words?: readonly CueWord[];
+}
+
+export interface CueWord {
+  readonly text: string;
+  readonly startMs: number;
+  readonly endMs: number;
 }
 
 /** Timestamps as SRT writes them: `00:01:02,500`. WebVTT uses a dot. */
@@ -175,6 +191,15 @@ export function normaliseCues(cues: readonly Cue[], options: NormaliseOptions): 
         startMs: Math.max(0, Math.round(cue.startMs)),
         endMs: Math.max(0, Math.round(cue.endMs)),
         lines: wrapLine(cased, options.maxLineChars, options.maxLines),
+        /**
+         * Word timings survive normalisation, and uppercase applies to them
+         * too. Dropping them here would have silently disabled every
+         * word-by-word style — the cue would render, just with no idea when
+         * each word is spoken, which looks like the animation not working.
+         */
+        ...(cue.words
+          ? { words: cue.words.map((word) => ({ ...word, text: options.uppercase ? word.text.toUpperCase() : word.text })) }
+          : {}),
       };
     })
     .filter((cue) => cue.lines.length > 0)
@@ -205,7 +230,20 @@ export function normaliseCues(cues: readonly Cue[], options: NormaliseOptions): 
     if (limit !== null) endMs = Math.min(endMs, limit);
     if (endMs <= startMs) continue;
 
-    out.push({ startMs, endMs, lines: cue.lines });
+    out.push({
+      startMs,
+      endMs,
+      lines: cue.lines,
+      // Clamped to the cue they belong to: a word timed past a shortened cue
+      // would highlight after the line has left the screen.
+      ...(cue.words
+        ? {
+            words: cue.words
+              .filter((word) => word.startMs < endMs)
+              .map((word) => ({ ...word, endMs: Math.min(word.endMs, endMs) })),
+          }
+        : {}),
+    });
   }
 
   return out;

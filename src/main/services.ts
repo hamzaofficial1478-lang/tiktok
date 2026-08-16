@@ -1,4 +1,5 @@
 import { mkdirSync } from 'node:fs';
+import { cpus } from 'node:os';
 import type { Logger } from 'pino';
 import type { AppPaths } from './paths';
 import { createLogger, type LoggerHandle } from './logging/logger';
@@ -16,6 +17,8 @@ import { probeCapabilities, EMPTY_CAPABILITIES } from './media/capabilities';
 import { UrlNormalizer } from './resolve/url-normalizer';
 import { ProfileExpander } from './resolve/profile-expander';
 import { CreatorRunner, type CreatorRunProgress } from './creators/creator-runner';
+import { WhisperTranscriber } from './captions/whisper';
+import { WhisperInstaller, type WhisperInstallProgress } from './captions/whisper-installer';
 import { HttpRedirectResolver } from './resolve/redirect-resolver';
 import { QueueEngine } from './queue/queue-engine';
 import { RateLimiter } from './queue/rate-limiter';
@@ -67,6 +70,9 @@ export interface AppServices {
   /** Latest sidecar snapshot; refreshed on demand and after an extractor update. */
   readonly extractorUpdater: ExtractorUpdater;
   readonly ffmpegInstaller: FfmpegInstaller;
+  /** Installs the offline transcriber on request; never on its own. */
+  readonly whisperInstaller: WhisperInstaller;
+  onWhisperProgress?: (progress: WhisperInstallProgress) => void;
   /** Set by the Electron shell so install progress reaches the window. */
   onInstallProgress?: (progress: SidecarInstallProgress) => void;
   getSidecarStatus(): { sidecars: SidecarStatus[]; capabilities: MediaCapabilities };
@@ -248,6 +254,37 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     log: logging.log.child({ scope: 'extractor-update' }),
   });
 
+  const whisperInstaller = new WhisperInstaller({
+    root: paths.userData,
+    runner: processRunner,
+    onProgress: (progress) => services.onWhisperProgress?.(progress),
+    log: logging.log.child({ scope: 'whisper' }),
+  });
+
+  /**
+   * Reads its paths fresh on every video.
+   *
+   * Installing the transcriber mid-session should make the next download use
+   * it, without a restart — and `available` is what the caption step checks
+   * before deciding whether transcription is even an option.
+   */
+  const transcriber = new WhisperTranscriber({
+    get binaryPath(): string | null {
+      return whisperInstaller.status().binaryPath;
+    },
+    get modelPath(): string | null {
+      return whisperInstaller.status().modelPath;
+    },
+    get ffmpegPath(): string | null {
+      return sidecars.resolve('ffmpeg').path;
+    },
+    runner: processRunner,
+    // Whisper is CPU-bound and scales close to linearly, but taking every core
+    // makes the machine unusable while a batch runs.
+    threads: Math.max(1, Math.floor(cpus().length / 2)),
+    log: logging.log.child({ scope: 'whisper' }),
+  });
+
   const ffmpegInstaller = new FfmpegInstaller({
     overrideRoot: paths.userData,
     runner: processRunner,
@@ -339,6 +376,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       log: logging.log.child({ scope: 'download' }),
       postProcessor,
       capabilities: () => snapshot.capabilities,
+      transcriber,
     });
 
   const creators = new CreatorsRepository(database.db);
@@ -434,6 +472,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     sidecars,
     extractorUpdater,
     ffmpegInstaller,
+    whisperInstaller,
     resolution: { normalizer, extractor, profiles },
     queue,
     getSidecarStatus: () => snapshot,

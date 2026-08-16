@@ -22,6 +22,26 @@ export function registerAppHandlers(registry: IpcRegistry, services: AppServices
 
   registry.handle('app:getSidecarStatus', () => services.getSidecarStatus());
 
+  registry.handle('app:whisperStatus', () => {
+    const status = services.whisperInstaller.status();
+    return { installed: status.binaryPath !== null && status.modelPath !== null, model: status.modelId };
+  });
+
+  registry.handle('app:installWhisper', async ({ model }) => {
+    try {
+      const status = await services.whisperInstaller.install(model ?? 'base.en');
+      return {
+        installed: status.binaryPath !== null && status.modelPath !== null,
+        model: status.modelId,
+        message: `Transcriber ready (${status.modelId ?? 'unknown model'}).`,
+      };
+    } catch (err) {
+      // Reported rather than thrown: this is a long optional install, and the
+      // reason it failed is more useful on screen than an error boundary.
+      return { installed: false, model: null, message: err instanceof Error ? err.message : String(err) };
+    }
+  });
+
   registry.handle('config:get', () => services.config.get());
 
   registry.handle('config:update', (patch) => {

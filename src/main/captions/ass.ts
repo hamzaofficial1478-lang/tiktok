@@ -1,5 +1,5 @@
 import type { CaptionStyle } from '@shared/caption-schema';
-import type { Cue } from './cues';
+import type { Cue, CueWord } from './cues';
 
 /**
  * Rendering cues as an ASS subtitle file.
@@ -87,6 +87,70 @@ export function escapeText(text: string): string {
  *                              social caption usually has
  *   rise  `\move` + `\fad`  — drifts up a fraction of the frame while fading in
  */
+/**
+ * Renders a cue whose words are timed individually.
+ *
+ * `\k` is ASS's karaoke primitive: it takes a duration in centiseconds and
+ * advances a highlight through the line as that time passes, with no per-word
+ * events and no extra rendering cost. `\kf` sweeps the fill smoothly rather
+ * than switching at each boundary, which is what makes it read as following
+ * speech rather than as a flashing word.
+ *
+ * The other three are built from the same timings: `word-pop` scales each word
+ * as it arrives, `highlight` recolours only the current word, and `one-word`
+ * shows a single word at a time — the style most social captions use, because
+ * one large word is readable at arm's length on a phone.
+ */
+function wordLevelText(style: CaptionStyle, words: readonly CueWord[], cueStartMs: number): string | null {
+  if (words.length === 0) return null;
+
+  const cs = (ms: number): number => Math.max(1, Math.round(ms / 10));
+
+  switch (style.animation) {
+    case 'karaoke':
+      // SecondaryColour is what \k reveals from, so the style's highlight is
+      // set as primary and the text colour is what the sweep leaves behind.
+      return words
+        .map((word, index) => {
+          const next = words[index + 1];
+          const until = (next?.startMs ?? word.endMs) - word.startMs;
+          return `{\kf${cs(until)}}${escapeText(word.text)}`;
+        })
+        .join(' ');
+
+    case 'highlight':
+      return words
+        .map((word, index) => {
+          const next = words[index + 1];
+          const from = cs(word.startMs - cueStartMs) * 10;
+          const to = cs((next?.startMs ?? word.endMs) - cueStartMs) * 10;
+          // Recolour on arrival, and back again when the next word starts.
+          return (
+            `{\t(${from},${from + 1},\c${toAssColour(style.highlightColour)})` +
+            `\t(${to},${to + 1},\c${toAssColour(style.textColour)})}${escapeText(word.text)}`
+          );
+        })
+        .join(' ');
+
+    case 'word-pop':
+      return words
+        .map((word) => {
+          const from = Math.max(0, word.startMs - cueStartMs);
+          return (
+            `{\fscx70\fscy70\t(${from},${from + 120},\fscx100\fscy100)}${escapeText(word.text)}`
+          );
+        })
+        .join(' ');
+
+    case 'one-word':
+      // Handled by splitting into separate events; see buildAss.
+      return null;
+
+    default:
+      return null;
+  }
+}
+
 function animationTags(style: CaptionStyle, context: AssContext, cue: Cue): string {
   const durationMs = cue.endMs - cue.startMs;
   // Never animate for longer than the cue is on screen, or a short cue would
@@ -102,6 +166,33 @@ function animationTags(style: CaptionStyle, context: AssContext, cue: Cue): stri
       const { x, y } = anchorPoint(style, context);
       const travel = Math.round(context.frameHeight * 0.02);
       return `{\\move(${x},${y + travel},${x},${y},0,${inMs})\\fad(${inMs},${inMs})}`;
+    }
+    case 'slide': {
+      // In from the left, which reads as deliberate motion rather than the
+      // vertical drift `rise` gives.
+      const { x, y } = anchorPoint(style, context);
+      const travel = Math.round(context.frameWidth * 0.12);
+      return `{\\move(${x - travel},${y},${x},${y},0,${inMs})\\fad(${inMs},${Math.floor(inMs / 2)})}`;
+    }
+    case 'bounce': {
+      // Overshoots past full size and settles back, in two chained transforms.
+      const half = Math.max(1, Math.floor(inMs / 2));
+      return (
+        `{\\fscx60\\fscy60\\t(0,${half},\\fscx112\\fscy112)` +
+        `\\t(${half},${inMs},\\fscx100\\fscy100)\\fad(${Math.floor(inMs / 3)},${inMs})}`
+      );
+    }
+    case 'typewriter': {
+      // A clip wipe left to right: the closest ASS gets to text arriving a
+      // character at a time without one event per character.
+      const width = context.frameWidth;
+      const { y } = anchorPoint(style, context);
+      const band = Math.round(context.frameHeight * 0.2);
+      const reveal = Math.min(600, Math.max(120, (cue.endMs - cue.startMs) / 3));
+      return (
+        `{\\clip(0,${y - band},0,${y + band})` +
+        `\\t(0,${Math.round(reveal)},\\clip(0,${y - band},${width},${y + band}))}`
+      );
     }
     case 'none':
     default:
@@ -170,7 +261,9 @@ export function buildAss(cues: readonly Cue[], style: CaptionStyle, context: Ass
       'Style: Caption',
       assFontName(style.fontFamily),
       String(fontSize),
-      toAssColour(style.textColour),
+      // Karaoke reveals *from* SecondaryColour to PrimaryColour, so for that
+      // style the pair is swapped: the highlight is what a swept word becomes.
+      style.animation === 'karaoke' ? toAssColour(style.highlightColour) : toAssColour(style.textColour),
       toAssColour(style.textColour),
       toAssColour(style.outlineColour),
       toAssColour(style.backgroundColour, style.backgroundOpacity),
@@ -180,11 +273,13 @@ export function buildAss(cues: readonly Cue[], style: CaptionStyle, context: Ass
       '0',
       '100',
       '100',
-      '0',
-      '0',
+      // Spacing and angle, both expressed against the resolved font size so
+      // they mean the same thing at any resolution.
+      String(Number(((fontSize * style.letterSpacingPct) / 100).toFixed(1))),
+      String(style.rotation),
       String(borderStyle),
       String(outline),
-      '0',
+      String(Number(((fontSize * style.shadowPct) / 100).toFixed(1))),
       String(ALIGNMENT[style.position]),
       '40',
       '40',
@@ -196,20 +291,39 @@ export function buildAss(cues: readonly Cue[], style: CaptionStyle, context: Ass
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text',
   ];
 
-  const events = cues.map((cue) => {
-    const text = cue.lines.map(escapeText).filter((line) => line !== '').join('\\N');
-    return [
-      'Dialogue: 0',
-      toAssTime(cue.startMs),
-      toAssTime(cue.endMs),
-      'Caption',
-      '',
-      '0',
-      '0',
-      '0',
-      '',
-      `${animationTags(style, context, cue)}${text}`,
-    ].join(',');
+  const event = (startMs: number, endMs: number, body: string): string =>
+    ['Dialogue: 0', toAssTime(startMs), toAssTime(endMs), 'Caption', '', '0', '0', '0', '', body].join(',');
+
+  const events = cues.flatMap((cue) => {
+    /**
+     * One word at a time gets one event per word.
+     *
+     * The other styles are a single event carrying override tags, but this one
+     * genuinely shows different text at different moments, so it cannot be
+     * expressed as one. It is also the style most social captions use, and the
+     * reason word timings were worth extracting at all.
+     */
+    if (style.animation === 'one-word' && cue.words && cue.words.length > 0) {
+      return cue.words.map((word, index) => {
+        const next = cue.words?.[index + 1];
+        const endMs = Math.min(cue.endMs, next?.startMs ?? word.endMs);
+        const inMs = Math.min(90, Math.max(1, Math.floor((endMs - word.startMs) / 3)));
+        return event(
+          word.startMs,
+          Math.max(word.startMs + 60, endMs),
+          `{\\fscx80\\fscy80\\t(0,${inMs},\\fscx100\\fscy100)}${escapeText(word.text)}`,
+        );
+      });
+    }
+
+    const timed = cue.words ? wordLevelText(style, cue.words, cue.startMs) : null;
+    const text = timed ?? cue.lines.map(escapeText).filter((line) => line !== '').join('\\N');
+
+    // A word-level style on a cue with no word timings falls back to the plain
+    // rendering rather than showing nothing, which is what a sentence-level
+    // TikTok track would otherwise produce.
+    const tags = timed === null ? animationTags(style, context, cue) : '';
+    return [event(cue.startMs, cue.endMs, `${tags}${text}`)];
   });
 
   return [...header, ...events, ''].join('\n');

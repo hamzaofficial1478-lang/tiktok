@@ -187,6 +187,14 @@ export const invokeContract = {
     request: z.void(),
     response: z.object({ installed: z.boolean(), version: z.string().nullable(), message: z.string() }),
   },
+  'app:whisperStatus': {
+    request: z.void(),
+    response: z.object({ installed: z.boolean(), model: z.string().nullable() }),
+  },
+  'app:installWhisper': {
+    request: z.object({ model: z.enum(['tiny.en', 'base.en', 'small.en']).optional() }),
+    response: z.object({ installed: z.boolean(), model: z.string().nullable(), message: z.string() }),
+  },
   'config:get': { request: z.void(), response: AppConfigSchema },
   'config:update': { request: AppConfigSchema.partial(), response: AppConfigSchema },
   'log:tail': {
@@ -416,6 +424,12 @@ export const eventContract = {
   'queue:duplicateResolved': z.object({ itemId: z.number(), action: z.enum(DUPLICATE_ACTIONS) }),
   'queue:batchComplete': BatchSummarySchema,
   'queue:state': QueueStateSchema,
+  'whisper:installProgress': z.object({
+    phase: z.enum(['resolving', 'downloading-program', 'downloading-model', 'extracting', 'verifying', 'done']),
+    receivedBytes: z.number(),
+    totalBytes: z.number().nullable(),
+    message: z.string(),
+  }),
   'creators:progress': z.object({
     creatorId: z.number(),
     handle: z.string(),
