@@ -17,6 +17,7 @@ export type IconName =
   | 'history'
   | 'settings'
   | 'logs'
+  | 'activity'
   | 'play'
   | 'pause'
   | 'retry'
@@ -66,6 +67,8 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M14 4v5h5M8 13h8M8 17h5" />
     </>
   ),
+  /** A pulse trace: what the app is doing, as opposed to the log's document. */
+  activity: <path d="M3 12h4l2.5-7 4 14L16.5 12H21" />,
   play: <path d="M7 4l13 8-13 8V4z" />,
   pause: <path d="M8 5v14M16 5v14" />,
   retry: (

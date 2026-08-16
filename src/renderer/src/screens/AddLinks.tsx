@@ -7,10 +7,17 @@ import { invoke } from '../lib/ipc';
 import { Button, EmptyState, PageHeader, Panel } from '../components/primitives';
 import { SegmentedControl, TextInput } from '../components/form';
 import { ScanReportPanel } from '../components/ScanReportPanel';
-import { CaptionSettings } from '../components/CaptionSettings';
 import { Creators } from '../components/Creators';
 import { RunStatus } from '../components/RunStatus';
+import { Icon } from '../components/icons';
 import { Queue } from './Queue';
+
+/** How each caption source reads in one phrase, for the summary strip. */
+const CAPTION_SOURCE_LABEL: Record<string, string> = {
+  auto: "TikTok's own, transcribed if there are none",
+  tiktok: "TikTok's own captions",
+  transcribe: 'transcribed from the audio',
+};
 
 /**
  * Add Links — spec section 10.
@@ -94,8 +101,16 @@ const DOT: Record<LineStatus, string> = {
  *   navigates there on its own: the queue is rendered at the foot of this page,
  *   so the rows appear where the user is already looking instead of the page
  *   changing under them the moment they press Add.
+ * @param onOpenCaptions Switches to the Captions section, from the summary
+ *   strip that replaced the full editor here.
  */
-export function AddLinks({ onOpenQueue }: { onOpenQueue: () => void }): React.JSX.Element {
+export function AddLinks({
+  onOpenQueue,
+  onOpenCaptions,
+}: {
+  onOpenQueue: () => void;
+  onOpenCaptions: () => void;
+}): React.JSX.Element {
   const [value, setValue] = useState('');
   const [mode, setMode] = useState<Mode>('links');
   const [profileInput, setProfileInput] = useState('');
@@ -115,7 +130,6 @@ export function AddLinks({ onOpenQueue }: { onOpenQueue: () => void }): React.JS
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pushToast = useAppStore((s) => s.pushToast);
   const captions = useAppStore((s) => s.config?.captions ?? null);
-  const updateConfig = useAppStore((s) => s.updateConfig);
 
   const lines = useMemo(() => analyse(value), [value]);
   const addable = lines.filter((l) => l.status === 'valid' || l.status === 'short-link').length;
@@ -297,10 +311,39 @@ export function AddLinks({ onOpenQueue }: { onOpenQueue: () => void }): React.JS
         </Panel>
       )}
 
-      {/* Here rather than in Settings: this is a decision about the batch being
-          queued, and nobody opens Settings on their way to pasting links. */}
+      {/**
+       * A summary, not the editor.
+       *
+       * The full caption controls now have a section of their own — they had
+       * grown to a font, a size, colours, an outline, a position and an
+       * animation, all of which sat between the top of this page and the paste
+       * box. What belongs here is the one thing someone about to press Add
+       * needs to know: what will happen to these videos, and where to change
+       * it.
+       */}
       {captions && (
-        <CaptionSettings value={captions} onChange={(next) => void updateConfig({ captions: next })} />
+        <Panel bodyClassName="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
+          <span className="flex items-center gap-2 text-sm text-ink-300">
+            <Icon name="caption" size={15} className={captions.mode === 'off' ? 'text-ink-500' : 'text-accent-400'} />
+            {captions.mode === 'off' ? (
+              'Captions off — videos download exactly as posted'
+            ) : (
+              <>
+                Captions{' '}
+                <strong className="font-medium text-ink-100">
+                  {captions.mode === 'burn' ? 'burned into the video' : 'as a subtitle track'}
+                </strong>
+                {' · '}
+                {CAPTION_SOURCE_LABEL[captions.source]}
+                {' · '}
+                {captions.style.animation} · {captions.style.fontFamily}
+              </>
+            )}
+          </span>
+          <Button variant="ghost" size="sm" icon="settings" onClick={onOpenCaptions}>
+            {captions.mode === 'off' ? 'Turn captions on' : 'Change'}
+          </Button>
+        </Panel>
       )}
 
       <Panel

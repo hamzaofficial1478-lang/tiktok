@@ -4,6 +4,8 @@ import { useAppStore } from './store/app-store';
 import { invoke } from './lib/ipc';
 import { AddLinks } from './screens/AddLinks';
 import { Queue } from './screens/Queue';
+import { Captions } from './screens/Captions';
+import { Activity } from './screens/Activity';
 import { ResourceBar } from './components/ResourceBar';
 import { Library } from './screens/Library';
 import { History } from './screens/History';
@@ -25,11 +27,19 @@ const BackgroundScene = lazy(() =>
   import('./scene/BackgroundScene').then((module) => ({ default: module.BackgroundScene })),
 );
 
-type Screen = 'add' | 'queue' | 'library' | 'history' | 'settings' | 'logs';
+type Screen = 'add' | 'captions' | 'queue' | 'activity' | 'library' | 'history' | 'settings' | 'logs';
 
+/**
+ * The order is the order of the work: add links, decide how they are
+ * captioned, watch them download, see what happened, then find the files.
+ * Settings and Logs sit at the end because they are where you go when
+ * something needs configuring or explaining, not on the way through.
+ */
 const NAV: readonly { id: Screen; label: string; icon: NavItem<Screen>['icon'] }[] = [
   { id: 'add', label: 'Add links', icon: 'add' },
+  { id: 'captions', label: 'Captions', icon: 'caption' },
   { id: 'queue', label: 'Queue', icon: 'queue' },
+  { id: 'activity', label: 'Activity', icon: 'activity' },
   { id: 'library', label: 'Library', icon: 'library' },
   { id: 'history', label: 'History', icon: 'history' },
   { id: 'settings', label: 'Settings', icon: 'settings' },
@@ -197,8 +207,12 @@ export default function App(): React.JSX.Element {
 
         <main className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           <ErrorBoundary screenKey={screen}>
-            {screen === 'add' && <AddLinks onOpenQueue={() => setScreen('queue')} />}
+            {screen === 'add' && (
+              <AddLinks onOpenQueue={() => setScreen('queue')} onOpenCaptions={() => setScreen('captions')} />
+            )}
+            {screen === 'captions' && <Captions />}
             {screen === 'queue' && <Queue onAddLinks={() => setScreen('add')} />}
+            {screen === 'activity' && <Activity onOpenLibrary={() => setScreen('library')} />}
             {screen === 'library' && <Library />}
             {screen === 'history' && <History />}
             {screen === 'settings' && <Settings />}
