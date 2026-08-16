@@ -122,9 +122,22 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
    * time out and tell the renderer nothing in the meantime. Progress arrives
    * on `creators:progress` instead.
    */
-  registry.handle('creators:run', async () => {
+  registry.handle('creators:run', () => {
     const list = services.repos.creators.list().filter((row) => row.enabled === 1);
-    void services.creatorRunner.run().catch(() => undefined);
+
+    /**
+     * Started, not awaited — and its failure is logged rather than swallowed.
+     *
+     * `.catch(() => undefined)` was hiding the one case that matters: if the
+     * whole run threw, nothing appeared anywhere. Per-account failures already
+     * report themselves through progress events; this is the outer one.
+     */
+    void services.creatorRunner.run().catch((err: unknown) => {
+      services.log.error({ err: err instanceof Error ? err.message : String(err) }, 'the creator run failed');
+    });
+
+    // `queued` is zero because nothing has been queued yet: the run is minutes
+    // to hours of work and reports its real counts over `creators:progress`.
     return { queued: 0, creators: list.length };
   });
 

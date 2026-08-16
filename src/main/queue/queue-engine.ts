@@ -135,6 +135,7 @@ export class QueueEngine {
     rawUrls: readonly string[],
     batchId: string = randomUUID(),
     outputSubdir: string | null = null,
+    captionMode: string | null = null,
   ): AddLinksResult {
     const paste = dedupePaste(rawUrls, (input) => this.options.normalizer.parse(input));
 
@@ -164,7 +165,7 @@ export class QueueEngine {
     }
 
     const rows = this.options.queueItems.enqueue(
-      toEnqueue.map((item) => ({ ...item, batchId, outputSubdir })),
+      toEnqueue.map((item) => ({ ...item, batchId, outputSubdir, captionMode })),
       this.options.clock.now(),
     );
     if (rows.length > 0) this.knownBatches.add(batchId);
@@ -426,6 +427,18 @@ export class QueueEngine {
     });
 
     throwIfAborted(signal);
+
+    /**
+     * A download that finished without the captions someone asked for.
+     *
+     * Not a failure — the video is there and watchable — but it is the kind of
+     * thing that reads as one when nothing says why, so it goes to the log the
+     * Activity panel shows rather than being dropped.
+     */
+    if (result.captionNote) {
+      this.log.warn({ itemId: row.id, reason: result.captionNote }, 'captions were not applied');
+    }
+
     this.recordCompletion(row, normalized, resolved, result);
   }
 

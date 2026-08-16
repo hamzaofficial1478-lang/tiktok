@@ -20,6 +20,7 @@ import { applyCaptions, type Transcriber } from '../captions/caption-step';
 import { subtitleLanguages } from '../captions/tiktok-tracks';
 import { workPathFor } from './yt-dlp-downloader';
 import { writeSeoSidecar } from '../metadata/sidecar';
+import { selectEncoder } from '../postprocess/encoder';
 
 /**
  * The download pipeline — spec section 9 steps 4-11.
@@ -33,6 +34,8 @@ import { writeSeoSidecar } from '../metadata/sidecar';
  * metadata, since it can rewrite the file. `source_strategy` records what
  * actually happened to the bytes, not what was hoped for.
  */
+import { CAPTION_MODES, type CaptionMode } from '@shared/caption-schema';
+
 export interface DownloadPipelineOptions {
   readonly config: () => AppConfig;
   readonly runner: ProcessRunner;
@@ -319,18 +322,45 @@ export class DownloadPipeline implements MediaPipeline {
     let captionNote: string | null = null;
     let transcriptCues: readonly { startMs: number; endMs: number; lines: readonly string[] }[] = [];
 
-    if (config.captions.mode !== 'off' || config.seoMetadata) {
+    /**
+     * The item's own caption choice wins over the app's.
+     *
+     * Set when a creator with an override queued this link; null for anything
+     * pasted by hand, which then follows the app setting as before. Validated
+     * against the known modes rather than trusted — it is a text column.
+     */
+    const captionSettings =
+      input.item.caption_mode && (CAPTION_MODES as readonly string[]).includes(input.item.caption_mode)
+        ? { ...config.captions, mode: input.item.caption_mode as CaptionMode }
+        : config.captions;
+
+    if (captionSettings.mode !== 'off' || config.seoMetadata) {
       try {
         const captions = await applyCaptions({
           filePath: targetPath,
           // The tracks yt-dlp wrote share the stem of the file it wrote to.
           mediaStemPath: workPathFor(targetPath),
-          settings: config.captions,
+          settings: captionSettings,
           frameWidth: selection.stream.width,
           frameHeight: selection.stream.height,
           durationMs: input.resolved.metadata.durationMs,
           ffmpegPath: this.options.ffmpegPath(),
           runner: this.options.runner,
+          /**
+           * Chosen from what this ffmpeg build actually contains.
+           *
+           * Hard-coding libx264 here would fail on the LGPL build the app
+           * installs, which deliberately excludes it — the same encoder
+           * selection watermark removal already uses is the right source of
+           * truth, and it respects the hardware-acceleration setting too.
+           */
+          encoderArgs: (() => {
+            const encoder = selectEncoder(
+              this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
+              config.hardwareAcceleration,
+            );
+            return [encoder.name, ...encoder.args];
+          })(),
           ...(this.options.transcriber ? { transcriber: this.options.transcriber } : {}),
           ...(input.signal ? { signal: input.signal } : {}),
           log,
@@ -340,7 +370,7 @@ export class DownloadPipeline implements MediaPipeline {
         captionNote = captions.skipped;
         if (captions.applied) {
           log.info({ source: captions.source, cues: captions.cueCount }, 'captions added');
-        } else if (captions.skipped && config.captions.mode !== 'off') {
+        } else if (captions.skipped && captionSettings.mode !== 'off') {
           log.info({ reason: captions.skipped }, 'no captions were added');
         }
       } catch (err) {
@@ -361,7 +391,7 @@ export class DownloadPipeline implements MediaPipeline {
         }
       }
     }
-    void captionNote;
+
 
     /**
      * Nothing else touches the file.
@@ -420,6 +450,14 @@ export class DownloadPipeline implements MediaPipeline {
       sourceStrategy: strategy,
       watermarkRemoved,
       outroTrimmedMs,
+      /**
+       * Why captions were not applied, when they were asked for.
+       *
+       * This was computed and then thrown away — `void captionNote` — so a
+       * video that came out without the captions someone had turned on gave no
+       * reason anywhere a user would look. It rides back with the result now.
+       */
+      ...(captionNote ? { captionNote } : {}),
     };
   }
 }

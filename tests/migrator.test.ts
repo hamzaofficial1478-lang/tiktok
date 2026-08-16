@@ -130,6 +130,8 @@ describe('migration runner', () => {
       // Where a profile-sourced batch is filed; null for individually pasted
       // links, which have no account in common.
       'output_subdir',
+      // The batch's own caption choice; null follows the app setting.
+      'caption_mode',
     ]);
     expect(columns('creators')).toContain('video_limit');
     expect(columns('downloads')).toContain('source_strategy');

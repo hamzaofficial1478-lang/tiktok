@@ -32,6 +32,8 @@ export interface QueueItemRow {
   batch_index: number | null;
   /** Folder under the output directory; null means the output directory itself. */
   output_subdir: string | null;
+  /** Per-batch caption override; null means follow the app setting. */
+  caption_mode: string | null;
 }
 
 export interface EnqueueInput {
@@ -42,6 +44,7 @@ export interface EnqueueInput {
   status?: QueueStatus;
   /** Set for links that came from one account, so they are filed together. */
   outputSubdir?: string | null;
+  captionMode?: string | null;
 }
 
 export interface QueueItemPatch {
@@ -107,9 +110,9 @@ export class QueueItemsRepository {
     const insert = this.db.prepare(
       `INSERT INTO queue_items (
          position, batch_index, batch_id, raw_url, canonical_url, aweme_id, status, progress, attempt_count,
-         created_at, output_subdir
+         created_at, output_subdir, caption_mode
        ) VALUES (@position, @batchIndex, @batchId, @rawUrl, @canonicalUrl, @awemeId, @status, 0, 0, @createdAt,
-         @outputSubdir)`,
+         @outputSubdir, @captionMode)`,
     );
 
     const run = this.db.transaction((items: readonly EnqueueInput[]): number[] => {
@@ -130,6 +133,7 @@ export class QueueItemsRepository {
           canonicalUrl: item.canonicalUrl ?? null,
           awemeId: item.awemeId ?? null,
           outputSubdir: item.outputSubdir ?? null,
+          captionMode: item.captionMode ?? null,
           status: item.status ?? 'queued',
           createdAt: now,
         });

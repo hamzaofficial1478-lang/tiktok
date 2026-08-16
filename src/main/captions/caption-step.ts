@@ -45,7 +45,15 @@ export interface CaptionStepInput {
   readonly durationMs: number | null;
   readonly ffmpegPath: string | null;
   readonly runner: ProcessRunner;
-  readonly encoderArgs?: readonly string[];
+  /**
+   * The encoder to burn captions with, chosen from what ffmpeg actually has.
+   *
+   * Required rather than optional, and that is the fix for a real bug: this
+   * defaulted to `['libx264', …]`, and the LGPL ffmpeg this app installs does
+   * not contain libx264 — it is a GPL component. Every burned-in caption would
+   * have failed with "Encoder not found", on a build the app downloaded itself.
+   */
+  readonly encoderArgs: readonly string[];
   readonly transcriber?: Transcriber;
   readonly signal?: AbortSignal;
   readonly log?: Logger;
@@ -211,7 +219,7 @@ export async function applyCaptions(input: CaptionStepInput): Promise<CaptionSte
     const args = ['-v', 'error', '-i', input.filePath, ...plan.args];
     if (plan.videoFilter) args.push('-vf', plan.videoFilter);
     if (plan.reencodes) {
-      args.push('-c:v', ...(input.encoderArgs ?? ['libx264', '-crf', '20', '-preset', 'veryfast']), '-c:a', 'copy');
+      args.push('-c:v', ...input.encoderArgs, '-c:a', 'copy');
     } else {
       args.push('-c:v', 'copy', '-c:a', 'copy');
     }

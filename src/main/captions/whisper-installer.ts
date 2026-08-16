@@ -96,7 +96,15 @@ export function findWhisperBinary(directory: string, platform: NodeJS.Platform =
     }
     for (const entry of entries) {
       const full = join(dir, entry);
-      if (statSync(full).isDirectory()) {
+      // A broken symlink or a file removed mid-walk should not take the whole
+      // status check down with it.
+      let isDirectory = false;
+      try {
+        isDirectory = statSync(full).isDirectory();
+      } catch {
+        continue;
+      }
+      if (isDirectory) {
         const found = walk(full, depth + 1);
         if (found) return found;
       }
@@ -130,6 +138,14 @@ export interface WhisperPaths {
 }
 
 export class WhisperInstaller {
+  /**
+   * Cached because `status()` walks the install directory, and the transcriber
+   * reads it through two getters for every video in a batch — so a hundred
+   * videos meant two hundred directory walks to answer a question whose answer
+   * only changes when something is installed. Cleared by `install`.
+   */
+  private cached: WhisperPaths | null = null;
+
   constructor(private readonly options: WhisperInstallerOptions) {}
 
   private get dir(): string {
@@ -138,6 +154,7 @@ export class WhisperInstaller {
 
   /** What is installed right now, without touching the network. */
   status(): WhisperPaths {
+    if (this.cached) return this.cached;
     const binary = findWhisperBinary(this.dir);
 
     for (const model of WHISPER_MODELS) {
@@ -146,13 +163,17 @@ export class WhisperInstaller {
       // check that catches one, and half a model fails with a parse error
       // deep inside whisper rather than anything a user could act on.
       if (existsSync(path) && statSync(path).size > model.approxBytes * 0.5) {
-        return { binaryPath: binary, modelPath: path, modelId: model.id };
+        // Only a complete install is worth caching: a missing one is expected
+        // to change the moment someone presses the button.
+        this.cached = { binaryPath: binary, modelPath: path, modelId: model.id };
+        return this.cached;
       }
     }
     return { binaryPath: binary, modelPath: null, modelId: null };
   }
 
   async install(modelId: WhisperModelId = 'base.en'): Promise<WhisperPaths> {
+    this.cached = null;
     const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
     const report = (progress: WhisperInstallProgress): void => this.options.onProgress?.(progress);
     mkdirSync(this.dir, { recursive: true });

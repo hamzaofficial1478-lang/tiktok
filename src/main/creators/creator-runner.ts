@@ -150,8 +150,16 @@ export class CreatorRunner {
       return 0;
     }
 
-    // The handle is the folder name, so an account's videos arrive together.
-    const result = this.options.queue.addLinks(urls, undefined, creator.handle);
+    /**
+     * The handle is the folder name, and the account's caption choice travels
+     * with the links.
+     *
+     * That second argument is the fix for a setting that saved, displayed and
+     * did nothing: `caption_mode` has been on the creators table since it was
+     * added, and nothing ever read it. Null still means "follow the app
+     * setting", so a creator with no override behaves exactly as before.
+     */
+    const result = this.options.queue.addLinks(urls, undefined, creator.handle, creator.caption_mode);
     this.options.creators.recordRun(creator.id, result.added);
     report({ phase: 'queued', queued: result.added });
 

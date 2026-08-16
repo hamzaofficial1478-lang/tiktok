@@ -44,6 +44,8 @@ export interface PipelineResult {
   readonly sourceStrategy: SourceStrategy;
   readonly watermarkRemoved: boolean;
   readonly outroTrimmedMs: number | null;
+  /** Set when captions were wanted and not applied; says which step declined. */
+  readonly captionNote?: string;
 }
 
 /** A queue row projected for the renderer — the read model of section 3. */

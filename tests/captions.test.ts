@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { normaliseCues, parseSubtitles, stripMarkup, wrapLine, type Cue } from '@main/captions/cues';
 import { buildAss, escapeText, fittedLineChars, fontSizeFor, toAssColour, toAssTime, assFontName } from '@main/captions/ass';
 import { planBurn, softSubtitlesLoseStyling, SUBTITLE_FILENAME } from '@main/captions/burn';
@@ -252,5 +253,21 @@ describe('what can honestly be translated', () => {
     // Whisper translates into English and no further. Silently captioning in
     // the original language would look like the setting simply did nothing.
     expect(translationIsSupported({ ...DEFAULT_CAPTION_SETTINGS, targetLanguage: 'es' })).toBe(false);
+  });
+});
+
+describe('the burn-in encoder', () => {
+  /**
+   * The bug this pins: burn-in defaulted to libx264, which is a GPL component
+   * and is deliberately absent from the LGPL ffmpeg this app downloads for
+   * itself. Every burned-in caption would have failed with "Encoder not
+   * found" on a build the app installed.
+   */
+  it('is required, so no caller can fall back to an encoder that may not exist', () => {
+    // A compile-time guarantee: the field has no default any more. This test
+    // documents why, and fails loudly if someone reintroduces one.
+    const source = readFileSync(new URL('../src/main/captions/caption-step.ts', import.meta.url), 'utf8');
+    expect(source).not.toContain("encoderArgs ?? ['libx264'");
+    expect(source).toContain('readonly encoderArgs: readonly string[];');
   });
 });
