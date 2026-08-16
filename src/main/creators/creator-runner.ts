@@ -1,7 +1,7 @@
 import type { Logger } from 'pino';
 import { parse } from '@shared/url-parse';
 import type { CreatorRow, CreatorsRepository } from '../db/repositories/creators';
-import type { DownloadsRepository } from '../db/repositories/downloads';
+import type { LinkLedgerRepository } from '../db/repositories/link-ledger';
 import type { ProfileExpander } from '../resolve/profile-expander';
 import type { QueueEngine } from '../queue/queue-engine';
 
@@ -34,7 +34,15 @@ export interface CreatorRunProgress {
 
 export interface CreatorRunnerOptions {
   readonly creators: CreatorsRepository;
-  readonly downloads: DownloadsRepository;
+  /**
+   * What has already been settled, by TikTok's id.
+   *
+   * This replaced a downloads-table lookup that required the file to still be
+   * at the exact path it was written to. That made "have I taken this?" a
+   * question about the filesystem rather than about the video: rename it and
+   * the account re-downloaded from the top.
+   */
+  readonly ledger: LinkLedgerRepository;
   readonly profiles: ProfileExpander;
   readonly queue: QueueEngine;
   readonly onProgress?: (progress: CreatorRunProgress) => void;
@@ -45,10 +53,15 @@ export interface CreatorRunnerOptions {
  * Chooses which of an account's videos to take.
  *
  * Newest first — TikTok lists them that way and it is the order people mean by
- * "the latest 5" — and anything already in the library is passed over rather
- * than counted. That distinction is the whole point of the count: asking for 5
- * from an account you have taken 20 from before should give 5 new videos, not
- * 5 attempts that all resolve to duplicates and produce nothing.
+ * "the latest 5" — and anything already settled is passed over rather than
+ * counted. That distinction is the whole point of the count: asking for 5 from
+ * an account you have taken 20 from before should give 5 new videos, not 5
+ * attempts that all resolve to duplicates and produce nothing.
+ *
+ * "Settled" covers a slideshow that was declined and a post with no video in
+ * it as well as a finished download, because all three are questions that have
+ * already been answered and re-asking them on every run is exactly the noise
+ * this is meant to remove.
  */
 export function selectNewVideos(
   urls: readonly string[],
@@ -134,7 +147,7 @@ export class CreatorRunner {
     }
 
     const { urls, skipped } = selectNewVideos(listed, creator.video_limit, (awemeId) =>
-      this.options.downloads.findExistingByAwemeId(awemeId) !== undefined,
+      this.options.ledger.isSettled(awemeId),
     );
 
     if (urls.length === 0) {

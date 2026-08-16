@@ -305,11 +305,33 @@ describe('dedup layer 3 — against download history', () => {
     expect(harness.engine.getPendingDuplicates()[0]?.batchId).toBe('batch-b');
   });
 
-  it('re-downloads silently when the recorded file is gone', async () => {
+  it('asks rather than re-downloading when a video it has taken is no longer at its recorded path', async () => {
     harness = createHarness();
     const id = awemeIdFor(1);
     seedHistory(harness, id);
-    // The user deleted it; prompting about a file they removed is annoying.
+    // Renamed, moved, or the output folder was changed. All three look
+    // identical from here, and none of them means the video was never taken —
+    // which is why this no longer silently downloads it a second time.
+    harness.existingFiles.clear();
+
+    harness.engine.addLinks([makeUrl(1)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    expect(harness.engine.getPendingDuplicates()).toHaveLength(1);
+    expect(harness.pipeline.processed).toEqual([]);
+    // The record is still corrected: the Library must not keep claiming a
+    // path with nothing on it.
+    expect(harness.downloads.findExistingByAwemeId(id)).toBeUndefined();
+  });
+
+  it('still re-downloads silently for history that predates the ledger', async () => {
+    harness = createHarness();
+    const id = awemeIdFor(1);
+    seedHistory(harness, id);
+    // A downloads row with no ledger entry behind it. The app cannot claim to
+    // know this video was taken, so section 7's original answer stands.
+    harness.ledger.clear();
     harness.existingFiles.clear();
 
     harness.engine.addLinks([makeUrl(1)]);
@@ -319,6 +341,34 @@ describe('dedup layer 3 — against download history', () => {
     expect(harness.engine.getPendingDuplicates()).toHaveLength(0);
     expect(harness.pipeline.processed).toEqual([id]);
     expect(harness.engine.getSnapshot()[0]?.status).toBe('completed');
+  });
+
+  it('records every completion in the ledger, keyed on the id rather than the path', async () => {
+    harness = createHarness();
+    harness.engine.addLinks([makeUrl(1)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    const entry = harness.ledger.find(awemeIdFor(1));
+    expect(entry?.status).toBe('downloaded');
+    expect(entry?.handle).toBe('user1');
+    expect(entry?.file_path).toBe(`/out/${awemeIdFor(1)}.mp4`);
+  });
+
+  it('settles a post with nothing downloadable in it, so it is never offered again', async () => {
+    harness = createHarness();
+    const id = awemeIdFor(1);
+    harness.pipeline.failFor(id, ['UNSUPPORTED_MEDIA']);
+
+    harness.engine.addLinks([makeUrl(1)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('failed');
+    expect(harness.ledger.find(id)?.status).toBe('unsupported');
+    // A slideshow will still be a slideshow tomorrow; listing the account
+    // again must not queue it a second time.
+    expect(harness.ledger.isSettled(id)).toBe(true);
   });
 });
 

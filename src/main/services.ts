@@ -9,6 +9,7 @@ import { VideosRepository } from './db/repositories/videos';
 import { DownloadsRepository } from './db/repositories/downloads';
 import { QueueItemsRepository } from './db/repositories/queue-items';
 import { CreatorsRepository } from './db/repositories/creators';
+import { LinkLedgerRepository } from './db/repositories/link-ledger';
 import { AppMetaRepository, EXTRACTOR_CHECKED_AT_KEY, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
 import { SidecarResolver } from './media/sidecars';
 import { ExtractorUpdater, shouldCheckExtractor } from './media/extractor-updater';
@@ -53,6 +54,8 @@ export interface AppServices {
     readonly downloads: DownloadsRepository;
     readonly queueItems: QueueItemsRepository;
     readonly creators: CreatorsRepository;
+    /** Which videos are settled, keyed on TikTok's id rather than on a file. */
+    readonly linkLedger: LinkLedgerRepository;
   };
   /** Works the saved creator list, one account at a time. */
   readonly creatorRunner: CreatorRunner;
@@ -381,11 +384,13 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
 
   const creators = new CreatorsRepository(database.db);
   const downloadsRepo = new DownloadsRepository(database.db);
+  const linkLedger = new LinkLedgerRepository(database.db);
 
   const queue = new QueueEngine({
     queueItems,
     videos: new VideosRepository(database.db),
     downloads: downloadsRepo,
+    ledger: linkLedger,
     normalizer,
     extractor,
     pipeline: downloadPipeline,
@@ -449,7 +454,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
    */
   const creatorRunner = new CreatorRunner({
     creators,
-    downloads: downloadsRepo,
+    ledger: linkLedger,
     profiles,
     queue,
     onProgress: (progress) => services.onCreatorProgress?.(progress),
@@ -467,6 +472,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       downloads: downloadsRepo,
       queueItems,
       creators,
+      linkLedger,
     },
     creatorRunner,
     sidecars,

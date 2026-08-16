@@ -208,17 +208,32 @@ export function registerLibraryHandlers(registry: IpcRegistry, services: AppServ
     days: services.repos.downloads.dailyStats(days),
   }));
 
+  /**
+   * Forgetting one download, and meaning it.
+   *
+   * The ledger is what stops a video being taken twice, so removing the
+   * history row without removing the ledger entry would leave the link
+   * permanently unclaimable — the record gone from the Library, and every
+   * future attempt still skipped as already taken. Deleting a record is a
+   * deliberate act, so it clears both.
+   */
   registry.handle('library:deleteRecord', ({ downloadId }) => {
+    const row = services.repos.downloads.findWithVideoById(downloadId);
     services.repos.downloads.deleteRecord(downloadId);
+    if (row) services.repos.linkLedger.forget(row.aweme_id);
     return { ok: true as const };
   });
 
-  registry.handle('library:clearRecords', () => ({
-    removed: services.repos.downloads.deleteAllRecords(),
-  }));
+  registry.handle('library:clearRecords', () => {
+    const removed = services.repos.downloads.deleteAllRecords();
+    // Same reasoning at scale: "clear the history" that left the ledger intact
+    // would produce an app that remembers nothing and downloads nothing.
+    services.repos.linkLedger.clear();
+    return { removed };
+  });
 
   registry.handle('library:deleteFile', ({ downloadId }) => {
-    const row = services.repos.downloads.findById(downloadId);
+    const row = services.repos.downloads.findWithVideoById(downloadId);
     if (!row) throw new AppError('INTERNAL_ERROR', `download ${downloadId} does not exist`);
 
     try {
@@ -231,6 +246,15 @@ export function registerLibraryHandlers(registry: IpcRegistry, services: AppServ
     // re-downloads silently rather than prompting about a file the user removed
     // (section 7).
     services.repos.downloads.markFileMissing(downloadId);
+    /**
+     * This is the one deletion the app can be certain about.
+     *
+     * A file that has merely gone missing might have been renamed or moved,
+     * which is why that case now asks instead of re-downloading. A file
+     * deleted through this button was deleted on purpose, in front of us, so
+     * the ledger forgets it and the link becomes takeable again.
+     */
+    services.repos.linkLedger.forget(row.aweme_id);
     return { ok: true as const };
   });
 }

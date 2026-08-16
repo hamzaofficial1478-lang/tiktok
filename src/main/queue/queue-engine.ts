@@ -7,6 +7,7 @@ import type { DuplicateAction } from '@shared/types';
 import type { QueueItemRow, QueueItemsRepository } from '../db/repositories/queue-items';
 import type { VideosRepository } from '../db/repositories/videos';
 import type { DownloadsRepository } from '../db/repositories/downloads';
+import type { LinkLedgerRepository } from '../db/repositories/link-ledger';
 import type { UrlNormalizer } from '../resolve/url-normalizer';
 import type { Extractor, NormalizedUrl, ResolvedVideo } from '../resolve/types';
 import { buildCanonicalUrl } from '@shared/url-parse';
@@ -29,6 +30,15 @@ export interface QueueEngineOptions {
   readonly queueItems: QueueItemsRepository;
   readonly videos: VideosRepository;
   readonly downloads: DownloadsRepository;
+  /**
+   * The record of what has been settled, by TikTok's id.
+   *
+   * Optional so the existing fixtures and the CLI harness keep working, but the
+   * real app always supplies it: without it, "have I taken this?" falls back to
+   * asking the filesystem, which is the question that got renaming a file
+   * wrong.
+   */
+  readonly ledger?: LinkLedgerRepository;
   readonly normalizer: UrlNormalizer;
   readonly extractor: Extractor;
   readonly pipeline: MediaPipeline;
@@ -367,13 +377,16 @@ export class QueueEngine {
     const { normalized, resolved: alreadyResolved } = await this.normalize(row, signal);
     this.log.info({ itemId: row.id, awemeId: normalized.awemeId, viaShortLink: normalized.viaShortLink }, 'link resolved');
 
+    // Written before anything can throw, so a link that turns out to be
+    // undownloadable still leaves its id on the row — which is what the ledger
+    // needs in order to remember never to offer it again.
+    this.update(row.id, { canonicalUrl: normalized.canonicalUrl, awemeId: normalized.awemeId });
+
     // A carousel is knowable from the URL alone, so it fails without ever
     // spending an outbound request (section 2).
     if (normalized.kind === 'photo') {
       throw new AppError('UNSUPPORTED_MEDIA', `${normalized.awemeId} is a photo slideshow`);
     }
-
-    this.update(row.id, { canonicalUrl: normalized.canonicalUrl, awemeId: normalized.awemeId });
 
     const decided = row.duplicate_action ?? this.batchChoices.get(row.batch_id) ?? null;
     const verdict = decided
@@ -390,10 +403,27 @@ export class QueueEngine {
     }
 
     if (verdict.kind === 'stale-record') {
-      // The user deleted the file; correct the record and download again
-      // without asking. Section 7: prompting here is just annoying.
+      // The record points at a path with nothing on it. Correct the record
+      // either way — the Library should not keep claiming a file that is not
+      // there — but what happens next depends on the ledger.
       this.options.downloads.markFileMissing(verdict.downloadId);
       this.log.info({ itemId: row.id, awemeId: normalized.awemeId }, 'history row pointed at a missing file');
+
+      /**
+       * A missing file is not evidence the video was never taken.
+       *
+       * Renaming it, moving it into a subfolder, or choosing a different
+       * output folder all look exactly like a deletion from here, and section
+       * 7's "just download it again, quietly" answer turns any of those into a
+       * library that silently re-downloads itself. The ledger knows the video
+       * was taken regardless of where the file went, so the choice goes back
+       * to the person who moved it — who is the only one who knows whether
+       * they deleted it or filed it.
+       */
+      if (this.options.ledger?.isSettled(normalized.awemeId)) {
+        this.park(row, normalized, verdict.existing);
+        return;
+      }
     }
 
     if (verdict.kind === 'needs-decision') {
@@ -584,6 +614,21 @@ export class QueueEngine {
       completedAt: now,
     });
 
+    /**
+     * The ledger entry, written the moment the file exists.
+     *
+     * This, and not the downloads row, is what every later "have I taken
+     * this?" reads. The path goes in for reference only — nothing keys off it,
+     * so moving the file cannot un-take the video.
+     */
+    this.options.ledger?.record({
+      awemeId: normalized.awemeId,
+      handle: meta.authorHandle ?? normalized.authorHandle ?? null,
+      status: 'downloaded',
+      filePath: result.filePath,
+      now,
+    });
+
     // Layer 4 is advisory: it records a flag and never blocks or fails.
     const repost = checkRepost(this.options.downloads, result.phash, video.id);
     if (repost.isPossibleRepost) {
@@ -626,6 +671,22 @@ export class QueueEngine {
     }
 
     const decision = decideRetry(appError.code, attemptCount, this.random);
+
+    /**
+     * A post with nothing downloadable in it is settled, not failed-for-now.
+     *
+     * A photo slideshow or a post with no video track will still have no video
+     * track tomorrow, so listing the account again should not offer it again.
+     * Recording it here is what stops "16 videos to download" from including
+     * the same slideshow every single run.
+     */
+    if (!decision.retry && appError.code === 'UNSUPPORTED_MEDIA') {
+      const current = this.options.queueItems.findById(row.id);
+      const awemeId = current?.aweme_id ?? row.aweme_id;
+      if (awemeId) {
+        this.options.ledger?.record({ awemeId, status: 'unsupported', now: this.options.clock.now() });
+      }
+    }
 
     this.options.queueItems.update(row.id, {
       status: 'failed',

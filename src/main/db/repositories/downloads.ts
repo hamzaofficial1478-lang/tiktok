@@ -234,6 +234,24 @@ export class DownloadsRepository {
   }
 
   /**
+   * The same row with the video's identity attached.
+   *
+   * The Library screen works in download ids; the ledger works in TikTok's
+   * aweme ids. Forgetting a download so it can be taken again needs both, and
+   * this is the join that turns one into the other.
+   */
+  findWithVideoById(id: number): DownloadWithVideo | undefined {
+    return this.db
+      .prepare<[number], DownloadWithVideo>(
+        `SELECT d.*, v.aweme_id, v.author_handle, v.caption
+           FROM downloads d
+           JOIN videos v ON v.id = d.video_id
+          WHERE d.id = ?`,
+      )
+      .get(id);
+  }
+
+  /**
    * Dedup layer 4: same content under a different aweme_id, i.e. a repost.
    * Returns candidates only — perceptual hashing has false positives, so
    * section 7 requires this to badge rather than block.

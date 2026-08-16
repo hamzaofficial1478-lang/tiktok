@@ -5,6 +5,7 @@ import batchIndex004 from './004_batch_index.sql?raw';
 import outputSubdir005 from './005_output_subdir.sql?raw';
 import creators006 from './006_creators.sql?raw';
 import itemCaptionMode007 from './007_item_caption_mode.sql?raw';
+import linkLedger008 from './008_link_ledger.sql?raw';
 import type { Migration } from '../migrator';
 
 /**
@@ -26,4 +27,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 5, name: '005_output_subdir', sql: outputSubdir005 },
   { version: 6, name: '006_creators', sql: creators006 },
   { version: 7, name: '007_item_caption_mode', sql: itemCaptionMode007 },
+  { version: 8, name: '008_link_ledger', sql: linkLedger008 },
 ];

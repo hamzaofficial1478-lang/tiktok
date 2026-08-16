@@ -5,6 +5,7 @@ import { MIGRATIONS } from '@main/db/migrations';
 import { QueueItemsRepository } from '@main/db/repositories/queue-items';
 import { VideosRepository } from '@main/db/repositories/videos';
 import { DownloadsRepository } from '@main/db/repositories/downloads';
+import { LinkLedgerRepository } from '@main/db/repositories/link-ledger';
 import { UrlNormalizer } from '@main/resolve/url-normalizer';
 import type { RedirectResolver } from '@main/resolve/redirect-resolver';
 import type { Extractor, ResolvedVideo } from '@main/resolve/types';
@@ -206,6 +207,7 @@ export interface Harness {
   readonly queueItems: QueueItemsRepository;
   readonly videos: VideosRepository;
   readonly downloads: DownloadsRepository;
+  readonly ledger: LinkLedgerRepository;
   readonly pipeline: FakePipeline;
   readonly extractor: FakeExtractor;
   readonly clock: TestClock;
@@ -234,6 +236,9 @@ export function createHarness(
   const queueItems = new QueueItemsRepository(db);
   const videos = new VideosRepository(db);
   const downloads = new DownloadsRepository(db);
+  // Wired exactly as the app wires it, so the dedup tests exercise the real
+  // arrangement rather than a downloads-only one the app no longer runs.
+  const ledger = new LinkLedgerRepository(db);
 
   const redirectResolver: RedirectResolver = {
     resolve: async (url: string) => {
@@ -268,6 +273,7 @@ export function createHarness(
       queueItems,
       videos,
       downloads,
+      ledger,
       normalizer,
       extractor,
       pipeline,
@@ -294,6 +300,7 @@ export function createHarness(
     queueItems,
     videos,
     downloads,
+    ledger,
     pipeline,
     extractor,
     clock,
@@ -309,7 +316,14 @@ export function createHarness(
   return harness;
 }
 
-/** Seeds a completed download so layer 3 has history to find. */
+/**
+ * Seeds a completed download so layer 3 has history to find.
+ *
+ * Writes the ledger entry as well as the downloads row, because that is what a
+ * real completion does. Seeding only the downloads row would leave the ledger
+ * empty and quietly turn every dedup test into a test of the pre-ledger
+ * behaviour.
+ */
 export function seedHistory(
   harness: Harness,
   awemeId: string,
@@ -328,6 +342,13 @@ export function seedHistory(
     watermarkRemoved: true,
     sourceStrategy: 'clean_source',
     completedAt: 1_699_000_000_000,
+  });
+  harness.ledger.record({
+    awemeId,
+    handle: 'user',
+    status: 'downloaded',
+    filePath,
+    now: 1_699_000_000_000,
   });
   harness.existingFiles.add(filePath);
 }
