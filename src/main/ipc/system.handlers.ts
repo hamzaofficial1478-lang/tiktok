@@ -1,7 +1,7 @@
 import { cpus } from 'node:os';
 import { resolve, sep } from 'node:path';
 import { app, dialog, session, shell, type BrowserWindow } from 'electron';
-import { gpuNameFrom, summarise } from '../system/resource-monitor';
+import { cpuBusyPercent, gpuNameFrom, summarise, totalCpuTimes, type CpuTimes } from '../system/resource-monitor';
 import { AppError } from '@shared/errors';
 import type { AppServices } from '../services';
 import type { IpcRegistry } from './registry';
@@ -31,6 +31,11 @@ export function registerSystemHandlers(
    */
   let gpuName: string | null = null;
   let gpuAsked = false;
+  /**
+   * The previous CPU reading, kept so each call reports the window since the
+   * last one rather than an average over the whole session.
+   */
+  let previousCpu: CpuTimes | null = null;
 
   registry.handle('system:getResources', async () => {
     if (!gpuAsked) {
@@ -41,10 +46,15 @@ export function registerSystemHandlers(
         .catch(() => null);
     }
 
+    const currentCpu = totalCpuTimes(cpus());
+    const systemCpuPercent = previousCpu ? cpuBusyPercent(previousCpu, currentCpu) : null;
+    previousCpu = currentCpu;
+
     return summarise({
       metrics: app.getAppMetrics(),
       cpuCount: cpus().length,
       systemMemory: process.getSystemMemoryInfo(),
+      systemCpuPercent,
       gpuName,
       // What the app is actually rendering through, not what the machine has:
       // a GPU present but blocklisted means these frames came from the CPU.

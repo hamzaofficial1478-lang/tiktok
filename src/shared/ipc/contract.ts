@@ -334,7 +334,9 @@ export const invokeContract = {
     request: z.void(),
     response: z.object({
       cpuPercent: z.number(),
+      systemCpuPercent: z.number().nullable(),
       memoryBytes: z.number(),
+      systemMemoryUsedBytes: z.number().nullable(),
       systemMemoryBytes: z.number().nullable(),
       processCount: z.number(),
       gpu: z

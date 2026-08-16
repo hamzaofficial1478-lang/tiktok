@@ -18,9 +18,24 @@ import { formatBytes } from './primitives';
 
 const POLL_MS = 2_000;
 
+/**
+ * Never rounds a real reading down to a flat zero.
+ *
+ * A busy app using 3% of one core on a sixteen-core machine is 0.19% of the
+ * machine, and `toFixed(0)` printed that as "0%" — so the meter said idle
+ * while work was happening. "<1%" is small and honest; "0%" was neither.
+ */
+function percent(value: number): string {
+  if (value <= 0) return '0%';
+  if (value < 1) return '<1%';
+  return `${value.toFixed(value < 10 ? 1 : 0)}%`;
+}
+
 interface Sample {
   readonly cpuPercent: number;
+  readonly systemCpuPercent: number | null;
   readonly memoryBytes: number;
+  readonly systemMemoryUsedBytes: number | null;
   readonly systemMemoryBytes: number | null;
   readonly processCount: number;
   readonly gpu: { readonly name: string; readonly accelerated: boolean; readonly memoryBytes: number } | null;
@@ -87,13 +102,34 @@ export function ResourceBar(): React.JSX.Element | null {
         <span className="text-xs text-ink-500">Measuring…</span>
       ) : (
         <>
-          <Meter label="CPU" value={sample.cpuPercent} detail={`${sample.cpuPercent.toFixed(0)}%`} />
+          {/**
+           * Two figures, because they answer different questions during a
+           * download. The app's own share stays small and steady — the work is
+           * in yt-dlp and ffmpeg, which are child processes Chromium does not
+           * report — so showing only that left the meter reading 0% while the
+           * machine was busy. `percent` also never rounds a real value down to
+           * a flat zero, which made a working app look idle.
+           */}
+          <Meter
+            label="App CPU"
+            value={sample.cpuPercent}
+            detail={percent(sample.cpuPercent)}
+          />
+          {sample.systemCpuPercent !== null && (
+            <Meter
+              label="System"
+              value={sample.systemCpuPercent}
+              detail={percent(sample.systemCpuPercent)}
+            />
+          )}
           <Meter
             label="RAM"
             value={memoryShare}
             detail={
               sample.systemMemoryBytes
-                ? `${formatBytes(sample.memoryBytes)} of ${formatBytes(sample.systemMemoryBytes)}`
+                ? `${formatBytes(sample.memoryBytes)} app · ${formatBytes(
+                    sample.systemMemoryUsedBytes ?? 0,
+                  )} of ${formatBytes(sample.systemMemoryBytes)} used`
                 : formatBytes(sample.memoryBytes)
             }
           />

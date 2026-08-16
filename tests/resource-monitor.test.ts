@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gpuNameFrom, processLabel, summarise } from '@main/system/resource-monitor';
+import { cpuBusyPercent, gpuNameFrom, processLabel, summarise, totalCpuTimes } from '@main/system/resource-monitor';
 
 /**
  * The figures behind the status bar.
@@ -37,6 +37,7 @@ describe('summarising what the app costs', () => {
     const sample = summarise({ metrics, cpuCount: 8, systemMemory: { total: 16_777_216, free: 8_000_000 } });
     expect(sample.memoryBytes).toBe(500_000 * 1_024);
     expect(sample.systemMemoryBytes).toBe(16_777_216 * 1_024);
+    expect(sample.systemMemoryUsedBytes).toBe((16_777_216 - 8_000_000) * 1_024);
     expect(sample.processCount).toBe(4);
   });
 
@@ -88,5 +89,40 @@ describe('labelling processes', () => {
     expect(processLabel('Browser')).toBe('main');
     expect(processLabel('Tab')).toBe('window');
     expect(processLabel('Pepper Plugin')).toBe('pepper plugin');
+  });
+});
+
+describe('measuring the whole machine, not just Electron', () => {
+  /**
+   * The reported bug: the meter sat at 0% while the program worked.
+   *
+   * Two causes. `getAppMetrics` only sees Electron's own processes, and every
+   * expensive thing this app does happens in yt-dlp or ffmpeg — child
+   * processes Chromium knows nothing about. And a real reading of a fraction
+   * of a percent was being rounded to a flat zero on the way to the screen.
+   */
+  it('reports how busy the machine has been since the previous sample', () => {
+    const before = { idle: 1_000, total: 2_000 };
+    const after = { idle: 1_050, total: 2_100 };
+    // 100 ticks passed, 50 of them idle.
+    expect(cpuBusyPercent(before, after)).toBe(50);
+  });
+
+  it('has nothing to report on the first sample rather than claiming idle', () => {
+    const same = { idle: 1_000, total: 2_000 };
+    expect(cpuBusyPercent(same, same)).toBeNull();
+  });
+
+  it('sums the per-core times os.cpus reports', () => {
+    const times = totalCpuTimes([
+      { times: { user: 10, nice: 0, sys: 5, idle: 85, irq: 0 } },
+      { times: { user: 20, nice: 0, sys: 10, idle: 70, irq: 0 } },
+    ]);
+    expect(times.total).toBe(200);
+    expect(times.idle).toBe(155);
+  });
+
+  it('never reports more than the machine has, however the window lands', () => {
+    expect(cpuBusyPercent({ idle: 0, total: 0 }, { idle: -50, total: 100 })).toBe(100);
   });
 });

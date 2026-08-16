@@ -25,6 +25,43 @@ export interface RawSystemMemory {
   readonly free: number;
 }
 
+/** Cumulative per-core CPU times, as `os.cpus()` reports them. */
+export interface CpuTimes {
+  readonly idle: number;
+  readonly total: number;
+}
+
+/** Sums `os.cpus()` into one idle/total pair for delta comparison. */
+export function totalCpuTimes(cpus: readonly { times: Record<string, number> }[]): CpuTimes {
+  let idle = 0;
+  let total = 0;
+  for (const cpu of cpus) {
+    for (const [mode, value] of Object.entries(cpu.times)) {
+      total += value;
+      if (mode === 'idle') idle += value;
+    }
+  }
+  return { idle, total };
+}
+
+/**
+ * How busy the machine has been since the previous sample.
+ *
+ * This is what makes the meter move at all during a download. `getAppMetrics`
+ * only sees Electron's own processes, and every expensive thing this app does
+ * — yt-dlp pulling bytes, ffmpeg burning captions or removing a watermark —
+ * happens in a child process Chromium knows nothing about. Reporting only the
+ * Electron side is why the meter sat at 0% while the machine was working.
+ */
+export function cpuBusyPercent(previous: CpuTimes, current: CpuTimes): number | null {
+  const total = current.total - previous.total;
+  const idle = current.idle - previous.idle;
+  // The first sample has no previous to compare against, and a zero window
+  // would divide by zero rather than mean "idle".
+  if (total <= 0) return null;
+  return Math.min(100, Math.max(0, ((total - idle) / total) * 100));
+}
+
 export interface ResourceSample {
   /**
    * Share of the whole machine's CPU, 0-100.
@@ -35,8 +72,18 @@ export interface ResourceSample {
    * looks alarming on a laptop and fine on a workstation for identical load.
    */
   readonly cpuPercent: number;
+  /**
+   * How busy the whole machine is, 0-100, or null on the first sample.
+   *
+   * Shown next to the app's own figure rather than instead of it, because
+   * during a download they answer different questions: the app's share is
+   * small and steady, and the machine's is where the work actually shows up.
+   */
+  readonly systemCpuPercent: number | null;
   /** Bytes of working set across every process this app owns. */
   readonly memoryBytes: number;
+  /** Bytes in use across the machine, for the same reason as systemCpuPercent. */
+  readonly systemMemoryUsedBytes: number | null;
   /** Bytes the machine has in total, for "1.2 GB of 16 GB". */
   readonly systemMemoryBytes: number | null;
   readonly processCount: number;
@@ -73,6 +120,7 @@ export function summarise(input: {
   readonly metrics: readonly RawProcessMetric[];
   readonly cpuCount: number;
   readonly systemMemory?: RawSystemMemory | null;
+  readonly systemCpuPercent?: number | null;
   readonly gpuName?: string | null;
   readonly accelerated?: boolean;
 }): ResourceSample {
@@ -94,7 +142,9 @@ export function summarise(input: {
 
   return {
     cpuPercent,
+    systemCpuPercent: input.systemCpuPercent ?? null,
     memoryBytes: memoryTotal,
+    systemMemoryUsedBytes: input.systemMemory ? (input.systemMemory.total - input.systemMemory.free) * KB : null,
     systemMemoryBytes: input.systemMemory ? input.systemMemory.total * KB : null,
     processCount: input.metrics.length,
     gpu: input.gpuName
