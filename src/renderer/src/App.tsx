@@ -197,7 +197,7 @@ export default function App(): React.JSX.Element {
 
         <main className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
           <ErrorBoundary screenKey={screen}>
-            {screen === 'add' && <AddLinks onQueued={() => setScreen('queue')} />}
+            {screen === 'add' && <AddLinks onOpenQueue={() => setScreen('queue')} />}
             {screen === 'queue' && <Queue onAddLinks={() => setScreen('add')} />}
             {screen === 'library' && <Library />}
             {screen === 'history' && <History />}

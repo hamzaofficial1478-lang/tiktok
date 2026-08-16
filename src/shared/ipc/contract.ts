@@ -277,6 +277,31 @@ export const invokeContract = {
     response: z.object({ creator: CreatorSchema.nullable() }),
   },
   'creators:remove': { request: z.object({ id: z.number().int().positive() }), response: Ok },
+  /**
+   * What pressing Run will actually fetch, before anything is fetched.
+   *
+   * Answered from the ledger alone — no network call — so the button can carry
+   * a truthful number instead of the sum of everyone's limit, which never
+   * moved and went on offering to download videos that were already on disk.
+   */
+  'creators:plan': {
+    request: z.void(),
+    response: z.object({
+      creators: z.array(
+        z.object({
+          creatorId: z.number(),
+          handle: z.string(),
+          enabled: z.boolean(),
+          videoLimit: z.number(),
+          taken: z.number(),
+          remaining: z.number(),
+        }),
+      ),
+      accountsToVisit: z.number(),
+      remaining: z.number(),
+      taken: z.number(),
+    }),
+  },
   'creators:run': { request: z.void(), response: z.object({ queued: z.number(), creators: z.number() }) },
   'creators:cancelRun': { request: z.void(), response: Ok },
 

@@ -9,6 +9,8 @@ import { SegmentedControl, TextInput } from '../components/form';
 import { ScanReportPanel } from '../components/ScanReportPanel';
 import { CaptionSettings } from '../components/CaptionSettings';
 import { Creators } from '../components/Creators';
+import { RunStatus } from '../components/RunStatus';
+import { Queue } from './Queue';
 
 /**
  * Add Links — spec section 10.
@@ -87,7 +89,13 @@ const DOT: Record<LineStatus, string> = {
 
 
 
-export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Element {
+/**
+ * @param onOpenQueue Switches to the full Queue screen. Adding links no longer
+ *   navigates there on its own: the queue is rendered at the foot of this page,
+ *   so the rows appear where the user is already looking instead of the page
+ *   changing under them the moment they press Add.
+ */
+export function AddLinks({ onOpenQueue }: { onOpenQueue: () => void }): React.JSX.Element {
   const [value, setValue] = useState('');
   const [mode, setMode] = useState<Mode>('links');
   const [profileInput, setProfileInput] = useState('');
@@ -172,7 +180,6 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
       if (result.added > 0) {
         setValue('');
         setFetchedFrom(null);
-        onQueued();
       }
     } catch (err) {
       pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -236,6 +243,11 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
         title="Add links"
         description="Paste TikTok links, import a .txt or .csv, or pull every video from one account. Nothing downloads until you add it to the queue."
       />
+
+      {/* Above the fold, before the paste box: how much is left and what
+          failed. This is the answer to "is it working?", and it belongs where
+          the work is started rather than one screen away. */}
+      <RunStatus onOpenQueue={onOpenQueue} />
 
       {/* Two ways in, stated as a choice rather than left to be discovered. */}
       <SegmentedControl
@@ -380,6 +392,11 @@ export function AddLinks({ onQueued }: { onQueued: () => void }): React.JSX.Elem
       {scan && (
         <ScanReportPanel report={scan.report} fileNames={scan.fileNames} onDismiss={() => setScan(null)} />
       )}
+
+      {/* The queue itself, on the page that fills it. Empty, it renders
+          nothing at all rather than an empty-state competing with the paste
+          box directly above it. */}
+      <Queue embedded onAddLinks={onOpenQueue} />
 
       {lines.length > 0 && (
         <Panel title={`Preview (${lines.length})`}>

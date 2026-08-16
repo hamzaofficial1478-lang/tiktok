@@ -31,6 +31,7 @@ export const INVOKE_CHANNELS = [
   'creators:add',
   'creators:update',
   'creators:remove',
+  'creators:plan',
   'creators:run',
   'creators:cancelRun',
   'queue:start',

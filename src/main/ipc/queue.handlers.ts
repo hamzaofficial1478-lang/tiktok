@@ -3,6 +3,7 @@ import { AppError } from '@shared/errors';
 import { parseProfile } from '@shared/url-parse';
 import type { CreatorDto } from '@shared/ipc/contract';
 import type { CreatorRow } from '../db/repositories/creators';
+import { buildRunPlan } from '../creators/run-plan';
 import type { LibraryEntryDto } from '@shared/ipc/contract';
 import type { LibraryRow } from '../db/repositories/downloads';
 import type { AppServices } from '../services';
@@ -113,6 +114,16 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
   registry.handle('creators:remove', ({ id }) => {
     services.repos.creators.remove(id);
     return { ok: true as const };
+  });
+
+  /**
+   * Cheap enough to call on every queue event, which is what makes the count
+   * come down: one grouped query over the ledger, no network, no listing.
+   */
+  registry.handle('creators:plan', () => {
+    const taken = services.repos.linkLedger.downloadedByHandle();
+    const plan = buildRunPlan(services.repos.creators.list(), (handle) => taken.get(handle) ?? 0);
+    return { ...plan, creators: plan.creators.map((entry) => ({ ...entry })) };
   });
 
   /**

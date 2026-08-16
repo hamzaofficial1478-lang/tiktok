@@ -183,7 +183,21 @@ function Row({
   );
 }
 
-export function Queue({ onAddLinks }: { onAddLinks?: () => void }): React.JSX.Element {
+/**
+ * @param embedded Rendered inside the Add links page rather than as its own
+ *   screen. The queue is where the work actually shows up, and making people
+ *   navigate away from the box they just pasted into to find out whether
+ *   anything happened is a step with no decision in it. Embedded, it drops the
+ *   log panel (the page has its own) and takes a bounded height instead of
+ *   filling the viewport, so the rest of the page still scrolls normally.
+ */
+export function Queue({
+  onAddLinks,
+  embedded = false,
+}: {
+  onAddLinks?: () => void;
+  embedded?: boolean;
+}): React.JSX.Element {
   // Subscribe to the Map, sort in a memo. Sorting inside the selector would
   // hand zustand a new array every render — see orderedItems' note.
   const queueItems = useAppStore((s) => s.queueItems);
@@ -236,6 +250,10 @@ export function Queue({ onAddLinks }: { onAddLinks?: () => void }): React.JSX.El
     return { speed: speed || null, etaMs: etaMs || null };
   }, [liveProgress]);
 
+  // Embedded, an empty queue is simply absent: the page above it is already
+  // the "add some links" call to action, and repeating it would be noise.
+  if (items.length === 0 && embedded) return <></>;
+
   if (items.length === 0) {
     return (
       <EmptyState
@@ -255,7 +273,7 @@ export function Queue({ onAddLinks }: { onAddLinks?: () => void }): React.JSX.El
   }
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className={embedded ? 'flex flex-col gap-4' : 'flex h-full flex-col gap-4'}>
       <Panel className="shrink-0" bodyClassName="px-5 py-4">
         <div className="flex flex-wrap items-center gap-x-8 gap-y-4">
           {/* Fixed shape per figure, so the eye finds "failed" in the same
@@ -317,7 +335,10 @@ export function Queue({ onAddLinks }: { onAddLinks?: () => void }): React.JSX.El
         </div>
       </Panel>
 
-      <div ref={parentRef} className="elevation-card min-h-0 flex-[3] overflow-y-auto">
+      <div
+        ref={parentRef}
+        className={`elevation-card min-h-0 overflow-y-auto ${embedded ? 'max-h-[28rem]' : 'flex-[3]'}`}
+      >
         <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const item = items[virtualRow.index];
@@ -350,9 +371,11 @@ export function Queue({ onAddLinks }: { onAddLinks?: () => void }): React.JSX.El
 
       {/* Kept to a third of the height: the queue is the subject, this is
           context. It only fills up when something actually goes wrong. */}
-      <div className="min-h-32 flex-1">
-        <LiveLog />
-      </div>
+      {!embedded && (
+        <div className="min-h-32 flex-1">
+          <LiveLog />
+        </div>
+      )}
     </div>
   );
 }

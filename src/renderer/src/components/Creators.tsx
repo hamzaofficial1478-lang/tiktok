@@ -1,6 +1,6 @@
-import { useEffect, useState, type ChangeEvent } from 'react';
+import { useCallback, useEffect, useState, type ChangeEvent } from 'react';
 import { parseProfile } from '@shared/url-parse';
-import type { CreatorDto } from '@shared/ipc/contract';
+import type { CreatorDto, InvokeResponse } from '@shared/ipc/contract';
 import { CAPTION_MODES, type CaptionMode } from '@shared/caption-schema';
 import { invoke, subscribe } from '../lib/ipc';
 import { useAppStore } from '../store/app-store';
@@ -42,8 +42,11 @@ const PHASE_LABEL: Record<RunProgress['phase'], string> = {
   'nothing-new': 'nothing new',
 };
 
+type Plan = InvokeResponse<'creators:plan'>;
+
 export function Creators(): React.JSX.Element {
   const [creators, setCreators] = useState<CreatorDto[]>([]);
+  const [plan, setPlan] = useState<Plan | null>(null);
   const [input, setInput] = useState('');
   const [defaultLimit, setDefaultLimit] = useState(5);
   const [busy, setBusy] = useState(false);
@@ -51,18 +54,42 @@ export function Creators(): React.JSX.Element {
   const [editing, setEditing] = useState<number | null>(null);
   const [progress, setProgress] = useState<RunProgress | null>(null);
   const pushToast = useAppStore((s) => s.pushToast);
+  /**
+   * Completed downloads, watched so the Run button's count comes down.
+   *
+   * The plan is computed in main from the ledger; the one thing that changes
+   * it is a video finishing, and that is a queue event. Reading the count here
+   * rather than polling keeps the button honest without a timer.
+   */
+  const completed = useAppStore((s) => {
+    let n = 0;
+    for (const item of s.queueItems.values()) if (item.status === 'completed') n++;
+    return n;
+  });
+
+  const reload = useCallback(async (): Promise<void> => {
+    const [list, next] = await Promise.all([invoke('creators:list'), invoke('creators:plan')]);
+    setCreators(list.creators);
+    setPlan(next);
+  }, []);
 
   useEffect(() => {
-    void invoke('creators:list').then((result) => setCreators(result.creators));
+    void reload();
     return subscribe('creators:progress', (event) => {
       setProgress(event);
       // The run is over when the last account reports a terminal phase.
       if (event.index === event.total && ['done', 'failed', 'nothing-new'].includes(event.phase)) {
         setRunning(false);
-        void invoke('creators:list').then((result) => setCreators(result.creators));
       }
+      void reload();
     });
-  }, []);
+  }, [reload]);
+
+  // Re-read after each finished download, so "12 left" becomes "11 left"
+  // without waiting for the run to end.
+  useEffect(() => {
+    void invoke('creators:plan').then(setPlan).catch(() => undefined);
+  }, [completed]);
 
   const candidates = input
     .split(/[\n,]/)
@@ -75,6 +102,7 @@ export function Creators(): React.JSX.Element {
     try {
       const result = await invoke('creators:add', { input, videoLimit: defaultLimit });
       setCreators(result.creators);
+      void invoke('creators:plan').then(setPlan).catch(() => undefined);
       setInput('');
 
       const parts = [`${result.added} added`];
@@ -91,14 +119,27 @@ export function Creators(): React.JSX.Element {
   async function patch(id: number, changes: { videoLimit?: number; captionMode?: CaptionMode | null }): Promise<void> {
     const result = await invoke('creators:update', { id, ...changes });
     if (result.creator) setCreators((list) => list.map((c) => (c.id === id ? result.creator! : c)));
+    // Raising or lowering a count changes what the run owes.
+    void invoke('creators:plan').then(setPlan).catch(() => undefined);
   }
 
   async function remove(id: number): Promise<void> {
     await invoke('creators:remove', { id });
     setCreators((list) => list.filter((c) => c.id !== id));
+    void invoke('creators:plan').then(setPlan).catch(() => undefined);
   }
 
-  const totalVideos = creators.filter((c) => c.enabled).reduce((sum, c) => sum + c.videoLimit, 0);
+  /**
+   * What the run still owes, per account and in total.
+   *
+   * Not the sum of everyone's limit: that number never moved, so the button
+   * went on offering to download videos that were already on disk. This is the
+   * limit minus what has actually been taken, and it reaches zero when the
+   * list is finished.
+   */
+  const remainingFor = (creatorId: number): number =>
+    plan?.creators.find((entry) => entry.creatorId === creatorId)?.remaining ?? 0;
+  const totalRemaining = plan?.remaining ?? 0;
   const enabled = creators.filter((c) => c.enabled).length;
 
   return (
@@ -123,7 +164,15 @@ export function Creators(): React.JSX.Element {
               <Button
                 variant="primary"
                 icon="play"
-                disabled={enabled === 0}
+                // Nothing owed means nothing to do. A Run button that starts a
+                // network round trip per account only to report "nothing new"
+                // is a button that lies about having work.
+                disabled={enabled === 0 || totalRemaining === 0}
+                title={
+                  totalRemaining === 0
+                    ? 'Every saved account has already given you the number of videos you asked for. Raise a count to take more.'
+                    : 'Lists each account in turn and downloads what it has not taken yet'
+                }
                 onClick={() => {
                   setRunning(true);
                   setProgress(null);
@@ -133,7 +182,9 @@ export function Creators(): React.JSX.Element {
                   });
                 }}
               >
-                Download {totalVideos} video{totalVideos === 1 ? '' : 's'}
+                {totalRemaining === 0
+                  ? 'All caught up'
+                  : `Run — download ${totalRemaining} video${totalRemaining === 1 ? '' : 's'}`}
               </Button>
             )}
           </>
@@ -174,8 +225,13 @@ export function Creators(): React.JSX.Element {
           <>
             <div className="flex flex-wrap items-center gap-x-8 gap-y-3 border-t border-white/5 pt-4">
               <Stat label="Accounts" value={creators.length} />
-              <Stat label="Videos per run" value={totalVideos} />
-              <Stat label="Taken so far" value={creators.reduce((sum, c) => sum + c.videosQueued, 0)} />
+              <Stat
+                label="Left to download"
+                value={totalRemaining}
+                tone={totalRemaining === 0 ? 'good' : 'neutral'}
+                title="What every enabled account still owes: its count minus the videos already taken from it."
+              />
+              <Stat label="Taken so far" value={plan?.taken ?? 0} />
               {progress && (
                 <div className="text-sm">
                   <div className="font-medium text-ink-100">
@@ -205,9 +261,16 @@ export function Creators(): React.JSX.Element {
                         @{creator.handle}
                       </span>
 
+                      {/* Per account, the same sentence the button makes:
+                          how many are still owed, out of how many were asked
+                          for. "5 videos" alone said nothing about whether any
+                          of them were still to come. */}
                       <span className="shrink-0 text-xs text-ink-500">
-                        {creator.videoLimit} video{creator.videoLimit === 1 ? '' : 's'}
-                        {creator.videosQueued > 0 && ` · ${creator.videosQueued} taken`}
+                        {remainingFor(creator.id) === 0 ? (
+                          <span className="text-mint-300">all {creator.videoLimit} taken</span>
+                        ) : (
+                          `${remainingFor(creator.id)} of ${creator.videoLimit} left`
+                        )}
                         {creator.captionMode && ` · captions ${creator.captionMode}`}
                       </span>
 

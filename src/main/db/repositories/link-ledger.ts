@@ -109,13 +109,44 @@ export class LinkLedgerRepository {
     this.index().add(input.awemeId);
   }
 
-  /** How many of an account's videos have been settled, for the run plan. */
-  countForHandle(handle: string): number {
-    return (
-      this.db
-        .prepare<[string], { n: number }>('SELECT COUNT(*) AS n FROM link_ledger WHERE handle = ?')
-        .get(handle)?.n ?? 0
-    );
+  /**
+   * How many of an account's videos have been settled, for the run plan.
+   *
+   * `status` narrows it, and the run plan always passes `'downloaded'`: a
+   * declined slideshow is settled but it is not one of the videos the user
+   * asked for, so counting it against their per-account limit would quietly
+   * deliver four videos when they asked for five.
+   */
+  countForHandle(handle: string, status?: LedgerStatus): number {
+    const row = status
+      ? this.db
+          .prepare<[string, string], { n: number }>(
+            'SELECT COUNT(*) AS n FROM link_ledger WHERE handle = ? AND status = ?',
+          )
+          .get(handle, status)
+      : this.db
+          .prepare<[string], { n: number }>('SELECT COUNT(*) AS n FROM link_ledger WHERE handle = ?')
+          .get(handle);
+    return row?.n ?? 0;
+  }
+
+  /**
+   * Downloaded counts for every account in one query.
+   *
+   * The run plan asks this question once per saved account, and a user with
+   * forty accounts pressing Run should not produce forty round trips to answer
+   * a question one GROUP BY covers.
+   */
+  downloadedByHandle(): Map<string, number> {
+    const rows = this.db
+      .prepare<[], { handle: string; n: number }>(
+        `SELECT handle, COUNT(*) AS n
+           FROM link_ledger
+          WHERE status = 'downloaded' AND handle IS NOT NULL
+          GROUP BY handle`,
+      )
+      .all();
+    return new Map(rows.map((row) => [row.handle, row.n]));
   }
 
   /** Forgetting one video, so it can be taken again on purpose. */
