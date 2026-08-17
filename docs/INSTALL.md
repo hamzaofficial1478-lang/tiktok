@@ -1,73 +1,92 @@
 # Installing on another PC
 
-From a machine that has never seen this project to a working app. Windows is
-the primary target; the macOS and Linux differences are noted at the end.
-
-Total time: about ten minutes, most of it waiting for two downloads.
+Windows 10 or 11, using PowerShell. About ten minutes, most of it waiting for
+two downloads.
 
 ---
 
-## What you actually have to install by hand
+## Install two things by hand
 
-Exactly two things. Everything else the app fetches itself.
+That is the whole list.
 
-| | Why | Where |
-| --- | --- | --- |
-| **Node.js 20 or newer** | The app runs on it | <https://nodejs.org> — take the **LTS** button |
-| **Git** | To get the code, and to update it later | <https://git-scm.com/download/win> |
+1. **Node.js** — <https://nodejs.org>, click the big **LTS** button, run the
+   installer, accept every default.
+   - It offers a checkbox called **"Tools for Native Modules"**. Leave it
+     unticked. This project needs none of it, and ticking it starts a long
+     install of things you will never use.
+2. **Git** — <https://git-scm.com/download/win>, run it, accept every default.
 
-**Not needed, despite what a generic guide might tell you:** Visual Studio,
-C++ Build Tools, Python, ffmpeg, or yt-dlp. The one native module in this app
-(`better-sqlite3`) is built against Node-API and ships a ready-made binary for
-every platform, so nothing is compiled during install. ffmpeg and yt-dlp are
-handled below without you touching a website.
+You do **not** need Visual Studio, C++ Build Tools, Python, ffmpeg, or yt-dlp.
+If a guide tells you to install those for a Node project, it does not apply
+here — nothing in this app is compiled on your machine.
 
-Accept the default options in both installers. The Node.js installer offers a
-checkbox for "Tools for Native Modules" — you do not need it, and ticking it
-adds a long Chocolatey install for nothing.
+**Close PowerShell after installing, then open a new one.** An already-open
+window cannot see newly installed programs.
 
 ---
 
-## Step 1 — Check the two prerequisites
+## Step 1 — Let PowerShell run npm
 
-Open **Command Prompt** (press Start, type `cmd`, Enter) and run:
+Do this once. Open PowerShell and paste:
 
-```bat
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
+
+Answer `Y` when it asks.
+
+**Why:** `npm` on Windows is a PowerShell script, and Windows 10 ships with
+script-running switched off. Without this you get
+*"npm.ps1 cannot be loaded because running scripts is disabled on this system"*
+the moment you try to install anything — an error that looks like a broken Node
+install and is not. `CurrentUser` needs no administrator rights and changes
+nothing for other accounts on the PC.
+
+---
+
+## Step 2 — Check both programs are there
+
+```powershell
 node -v
 git --version
 ```
 
-You want `v20.x` or higher from the first, and any version from the second. If
-either says *"is not recognized as an internal or external command"*, that
-program is not installed or the installer has not been picked up yet — close
-Command Prompt, open a new one, and try again before reinstalling.
+You want `v20` or higher from the first, and any number from the second.
+
+If either says *"is not recognized"*, close PowerShell, open a new one, and try
+again — that fixes it far more often than reinstalling does.
 
 ---
 
-## Step 2 — Get the code
+## Step 3 — Download the code
 
-Pick where it should live. Your user folder is a good choice; avoid
-`C:\Program Files`, which needs administrator rights the app does not want.
-
-```bat
-cd %USERPROFILE%
+```powershell
+cd $HOME
 git clone https://github.com/hamzaofficial1478-lang/tiktok.git
 cd tiktok
 git checkout claude/tiktok-downloader-desktop-0bsyo1
 ```
 
-That last line matters. The work lives on that branch, not on `main`, so
-without it you get an older version of the app.
+**Do not skip the last line.** The app lives on that branch. Without it you get
+an older version missing everything recent.
+
+This puts the app in `C:\Users\<you>\tiktok`. Anywhere in your user folder is
+fine; avoid `C:\Program Files`, which needs administrator rights the app does
+not want.
 
 ---
 
-## Step 3 — Start it
+## Step 4 — Start it
 
-Open the `tiktok` folder in File Explorer and **double-click
-`Run TikTok Downloader.bat`**.
+```powershell
+.\"Run TikTok Downloader.bat"
+```
 
-That is the whole installation. The batch file does four things in order and
-stops with a plain-English message if any of them fails:
+The `.\` is required — PowerShell will not run a file in the current folder
+without it. You can also just double-click the file in File Explorer, which
+avoids the quoting entirely.
+
+It prints four steps and stops with a plain message if any of them fails:
 
 ```
 [1/4] Node.js: OK
@@ -76,133 +95,144 @@ stops with a plain-English message if any of them fails:
 [4/4] Building the app...
 ```
 
-Step 2 downloads about 300 MB, most of it Electron, and takes a few minutes on
-a normal connection. Step 3 fetches yt-dlp, which is the program that actually
-talks to TikTok — without it the app opens but every download fails. Both are
-first-run only; afterwards the batch file skips straight to the build and the
-app opens in ten to twenty seconds.
+Steps 2 and 3 only happen the first time. Step 2 downloads about 300 MB, mostly
+Electron. After that, starting the app takes ten to twenty seconds.
 
-Leave the black Command Prompt window open while you use the app. Closing it
-closes the app. It can be minimised.
+Keep the window open while you use the app — closing it closes the app. You can
+minimise it.
 
-### If you would rather type it than double-click
+---
 
-The batch file is only running these:
+## Step 5 — First launch
 
-```bat
-npm install --include=dev
+The app opens on **Add links** and makes its own download folder,
+`Videos\TikTok Downloads`. Nothing needs configuring. Paste a TikTok link,
+press **Add to queue**, and it downloads.
+
+Change where files go in **Settings → Output folder**. That choice is saved.
+
+---
+
+## About yt-dlp
+
+**You do not download it yourself.** yt-dlp is the program that actually talks
+to TikTok, and step 3 above fetches it for you, straight from its official
+GitHub releases into `resources\bin\win32-x64\yt-dlp.exe` inside the project
+folder.
+
+It is not shipped with the code on purpose. TikTok changes things often, and
+yt-dlp has to be replaceable on its own schedule rather than waiting for an app
+release — so the app also **updates it by itself** every time it starts. A
+stale yt-dlp is the single most common reason a downloader suddenly stops
+working, and this is what stops that happening to you.
+
+To fetch it by hand, or to re-fetch it if you suspect it is broken:
+
+```powershell
 npm run fetch:sidecars
-npm run build
-npx electron .
 ```
 
----
+To check it arrived:
 
-## Step 4 — First launch
+```powershell
+Test-Path .\resources\bin\win32-x64\yt-dlp.exe
+```
 
-The app opens on **Add links** and creates its own download folder,
-`Videos\TikTok Downloads`, so there is nothing to configure before your first
-paste. Change it in **Settings → Output folder** if you want it elsewhere; that
-choice is saved and survives restarts.
-
-Paste a TikTok link, press **Add to queue**, and it downloads. If that works,
-you are finished.
+`True` means you are set. Expect the fetch to also print two skip warnings
+about ffmpeg and ffprobe — those are correct and expected, and explained next.
 
 ---
 
-## Optional extras, installed from inside the app
+## Two optional extras, installed by a button in the app
 
-Neither is needed for downloading. Both are buttons, not websites.
+Neither is needed to download videos. Neither involves a website.
 
-**ffmpeg** — only used when TikTok offers no watermark-free version of a video,
-and for burning captions into the picture. Most videos never need it. Install
-from **Settings → Processing**, where a missing ffmpeg is reported with an
-Install button. It fetches an LGPL build, which is the licensing-safe one for a
-commercial product.
+**ffmpeg** — used only when TikTok has no watermark-free copy of a video, and
+for burning captions into the picture. Most videos need neither.
+**Settings → Processing** reports it as missing and has an **Install** button.
 
-**Whisper (offline transcription)** — only needed if you want captions on
-videos TikTok published no caption track for. Install from the **Captions**
-section; pick `base.en` unless you have a reason not to. It is roughly a 150 MB
-model download and runs entirely on your machine, with nothing sent anywhere.
+**Whisper** — offline transcription, only needed for captions on videos TikTok
+published no captions for. Install from the **Captions** section and choose
+`base.en`. Around 150 MB, and it runs entirely on your PC.
 
 ---
 
 ## Updating later
 
-Double-click `Run TikTok Downloader.bat`. It pulls the newest code before
-building, so that is the whole update procedure — there is nothing else to
-remember and no second command to run.
+Run the same file:
 
-If it prints *"Could not update (offline, or this folder has local changes)"*
-it starts the version already on disk rather than refusing to run. That message
-means either no internet, or you have edited a file in the folder.
+```powershell
+.\"Run TikTok Downloader.bat"
+```
 
-yt-dlp updates itself separately, on launch, because TikTok changes often
-enough that waiting for an app release would break downloads in the meantime.
+It pulls the newest code before building. That is the entire update procedure.
+
+If it says *"Could not update (offline, or this folder has local changes)"* it
+starts the version already on disk instead of refusing to run.
 
 ---
 
-## Moving your library and settings across
+## Bringing your library over from the old PC
 
-Optional. Skip this if a fresh start on the new PC is fine.
+Optional — skip it if starting fresh is fine.
 
-Everything the app remembers — the download history that stops videos being
-taken twice, your saved creator accounts, and every setting — lives in one
-folder:
+Everything the app remembers lives in one folder: the record that stops videos
+being downloaded twice, your saved creator accounts, and every setting.
 
+**With the app closed on both PCs**, copy this folder across to the same place:
+
+```powershell
+explorer $env:APPDATA\tiktok-downloader
 ```
-%APPDATA%\tiktok-downloader
-```
 
-Copy that folder from the old PC to the same place on the new one **while the
-app is closed on both**, and the new machine picks up exactly where the old one
-left off. The downloaded video files themselves are separate; copy your output
-folder too if you want those.
-
-If you copy the library but not the videos, the app will notice the files are
-missing from where it recorded them and ask before re-downloading, rather than
-silently fetching them all again.
+Copy your videos folder too if you want the files themselves. If you bring the
+library but not the videos, the app notices the files are missing and asks
+before downloading them again rather than silently re-fetching everything.
 
 ---
 
-## When something goes wrong
+## If something goes wrong
 
-**"Node.js is not installed, or is not on your PATH"** — install Node, then
-open a *new* Command Prompt. An already-open window does not see a PATH change.
+**"npm.ps1 cannot be loaded because running scripts is disabled"** — step 1 was
+skipped. Run it, then try again.
 
-**"Installing dependencies failed"** — almost always a half-finished install.
-Delete the `node_modules` folder inside `tiktok` and double-click the batch
-file again.
+**"node is not recognized"** — open a new PowerShell window. If it still
+happens, Node did not install; run its installer again.
 
-**"Could not download yt-dlp"** — a connection problem, or a corporate network
-blocking GitHub. Run it again; if it keeps failing, `npm run fetch:sidecars`
-from Command Prompt prints the actual error.
+**"Installing dependencies failed"** — a half-finished install, almost always.
+Delete the `node_modules` folder inside `tiktok` and run the file again:
 
-**The app opens but every download fails** — check
-`resources\bin\win32-x64\yt-dlp.exe` exists. If it does not, run
-`npm run fetch:sidecars`.
+```powershell
+Remove-Item -Recurse -Force .\node_modules
+```
 
-**Windows SmartScreen warns about the batch file** — it is unsigned, which is
-expected for a file you cloned yourself. *More info* → *Run anyway*.
+**The app opens but every download fails** — yt-dlp is missing. Check with the
+`Test-Path` command above, and run `npm run fetch:sidecars` if it says `False`.
 
-**Anything else** — the full log is in `%APPDATA%\tiktok-downloader\logs`, and
-the app's own **Logs** section has a search box and an Export button that puts
-the lines on your clipboard.
+**Windows protected your PC / SmartScreen** — expected for a file you cloned
+yourself rather than downloaded signed. **More info** → **Run anyway**.
 
-To check the engine itself without opening a window:
+**Anything else** — the app's **Logs** section has a search box and an Export
+button that copies the lines to your clipboard. The same log is on disk:
 
-```bat
+```powershell
+explorer $env:APPDATA\tiktok-downloader\logs
+```
+
+To test the download engine without opening the app at all:
+
+```powershell
 npm run verify
 ```
 
-Typecheck plus the full test suite, offline, in a few seconds. If that is green
-the download engine is intact and the problem is elsewhere.
+A typecheck and the full offline test suite, in a few seconds. Green means the
+engine is intact and the problem is somewhere else.
 
 ---
 
 ## macOS and Linux
 
-The same steps, without the batch file:
+Same idea, no batch file and no execution policy:
 
 ```bash
 git clone https://github.com/hamzaofficial1478-lang/tiktok.git
@@ -213,10 +243,8 @@ npm run fetch:sidecars
 npm run dev
 ```
 
-Two differences worth knowing. The settings folder is
-`~/Library/Application Support/tiktok-downloader` on macOS and
-`~/.config/tiktok-downloader` on Linux. And Whisper has no ready-made build for
-either platform — the app says so plainly rather than downloading something
-that will not run — so offline transcription needs whisper.cpp built from
-source. Everything else, including all downloading and captioning from TikTok's
-own caption tracks, works identically.
+The settings folder is `~/Library/Application Support/tiktok-downloader` on
+macOS and `~/.config/tiktok-downloader` on Linux. Whisper has no ready-made
+build for either, so offline transcription needs whisper.cpp compiled from
+source — the app says so plainly rather than downloading something that cannot
+run. Everything else works identically.

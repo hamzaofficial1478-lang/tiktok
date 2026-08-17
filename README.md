@@ -48,10 +48,10 @@ npm run dev
 ```
 
 **[docs/INSTALL.md](docs/INSTALL.md) is the guide for putting this on a PC that
-has never seen it** — what has to be installed by hand (Node and Git, and
-nothing else), what the app fetches itself, and how to carry your library and
-settings across from another machine. On Windows, double-clicking
-`Run TikTok Downloader.bat` does all of it.
+has never seen it** — Windows and PowerShell, start to finish. Two things to
+install by hand (Node and Git), one execution-policy line PowerShell needs
+before npm will run at all, and then `Run TikTok Downloader.bat` does the rest,
+yt-dlp included.
 
 **[docs/RUNNING.md](docs/RUNNING.md) is the developer's step-by-step** — clean
 machine to a downloaded, watermark-free video, including how to read the
