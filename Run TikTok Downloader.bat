@@ -41,7 +41,7 @@ if !NODE_MAJOR! LSS 20 (
   pause
   exit /b 1
 )
-echo   [1/3] Node.js: OK
+echo   [1/4] Node.js: OK
 
 rem --- Updates ---------------------------------------------------------------
 rem  Pulls the latest code before building, so double-clicking this file is the
@@ -69,7 +69,7 @@ rem --- Dependencies ----------------------------------------------------------
 rem  --include=dev is deliberate: electron-vite and the build tooling live in
 rem  devDependencies, and npm skips those when NODE_ENV happens to be production.
 if not exist "node_modules\electron\dist\electron.exe" (
-  echo   [2/3] Installing dependencies. First run only - this takes a few minutes.
+  echo   [2/4] Installing dependencies. First run only - this takes a few minutes.
   echo.
   call npm install --include=dev
   if errorlevel 1 (
@@ -82,7 +82,35 @@ if not exist "node_modules\electron\dist\electron.exe" (
     exit /b 1
   )
 ) else (
-  echo   [2/3] Dependencies: OK
+  echo   [2/4] Dependencies: OK
+)
+
+rem --- yt-dlp ----------------------------------------------------------------
+rem  The one binary the app cannot work without, and it is deliberately not in
+rem  git: it is platform-specific, and TikTok changes often enough that yt-dlp
+rem  has to be replaceable on its own schedule rather than an app release's.
+rem
+rem  Fetching it here is the fix for a genuinely bad first run on a new machine.
+rem  Without this step the app installed, built and opened perfectly — and then
+rem  failed every single download with an extraction error, because the very
+rem  thing that does the downloading was never fetched. "Works, but nothing
+rem  downloads" is a far worse first impression than a slower first start.
+rem
+rem  Only when missing: once it is on disk, the app updates it itself on launch.
+if not exist "resources\bin\win32-x64\yt-dlp.exe" (
+  echo   [3/4] Fetching yt-dlp. First run only.
+  call npm run fetch:sidecars
+  if errorlevel 1 (
+    echo.
+    echo   [X] Could not download yt-dlp. Check your internet connection and
+    echo       run this file again. Without it, nothing can be downloaded.
+    echo.
+    pause
+    exit /b 1
+  )
+  echo.
+) else (
+  echo   [3/4] yt-dlp: OK
 )
 
 rem --- Build -----------------------------------------------------------------
@@ -94,7 +122,7 @@ rem  which is exactly what this file exists to avoid.
 rem
 rem  A rebuild of unchanged code takes a few seconds. Being a few seconds slower
 rem  every time is worth never once running the wrong version.
-echo   [3/3] Building the app...
+echo   [4/4] Building the app...
 echo.
 call npm run build
 if errorlevel 1 (

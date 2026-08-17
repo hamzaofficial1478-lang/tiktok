@@ -47,7 +47,13 @@ npm run fetch:sidecars     # downloads yt-dlp; see docs/SIDECARS.md for ffmpeg
 npm run dev
 ```
 
-**[docs/RUNNING.md](docs/RUNNING.md) is the step-by-step version** — clean
+**[docs/INSTALL.md](docs/INSTALL.md) is the guide for putting this on a PC that
+has never seen it** — what has to be installed by hand (Node and Git, and
+nothing else), what the app fetches itself, and how to carry your library and
+settings across from another machine. On Windows, double-clicking
+`Run TikTok Downloader.bat` does all of it.
+
+**[docs/RUNNING.md](docs/RUNNING.md) is the developer's step-by-step** — clean
 machine to a downloaded, watermark-free video, including how to read the
 per-item watermark badge and what to do when a video comes back watermarked.
 
