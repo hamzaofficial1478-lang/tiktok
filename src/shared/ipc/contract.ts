@@ -316,6 +316,14 @@ export const invokeContract = {
       accountsToVisit: z.number(),
       remaining: z.number(),
       taken: z.number(),
+      /**
+       * A run is in flight, or its downloads still are.
+       *
+       * Read from the engine rather than remembered by the window, so it
+       * survives a reload, a restart and a power cut — all of which used to
+       * bring the button back enabled halfway through a run.
+       */
+      running: z.boolean(),
     }),
   },
   /**

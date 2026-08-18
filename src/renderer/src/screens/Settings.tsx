@@ -327,6 +327,11 @@ export function Settings(): React.JSX.Element {
                 'TikTok answers some IPv6 clients with 403 while serving the same request over IPv4.',
               ],
               [
+                'startOnLogin',
+                'Start when I sign in',
+                'Comes up minimised and picks the queue straight back up, so an interrupted batch finishes itself after a restart.',
+              ],
+              [
                 'groupByCreator',
                 'A folder for each account',
                 'Files every download under the account that posted it, however the link was added.',

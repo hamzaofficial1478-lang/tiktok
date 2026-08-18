@@ -6,6 +6,7 @@ import { EventBus, IpcRegistry } from './ipc/registry';
 import { registerAppEvents, registerAppHandlers } from './ipc/app.handlers';
 import { registerLibraryHandlers, registerQueueEvents, registerQueueHandlers } from './ipc/queue.handlers';
 import { registerSystemHandlers } from './ipc/system.handlers';
+import { applyStartOnLogin, startedByLogin } from './system/auto-start';
 
 /**
  * The Electron shell — the only file in the main process that imports
@@ -86,8 +87,22 @@ function createWindow(): BrowserWindow {
     },
   });
 
-  // Avoid the white flash before React paints against a near-black UI.
-  window.once('ready-to-show', () => window.show());
+  /**
+   * Avoid the white flash before React paints against a near-black UI.
+   *
+   * Started by the system at login, it comes up minimised instead. The queue
+   * resumes and downloads run either way — the work is in the main process,
+   * not the window — but a window that seizes the screen every time the
+   * machine boots is the thing that gets a startup item switched back off.
+   */
+  window.once('ready-to-show', () => {
+    if (startedByLogin()) {
+      window.showInactive();
+      window.minimize();
+    } else {
+      window.show();
+    }
+  });
 
   /**
    * `shell.openExternal` hands a URL to the operating system, which will act on
@@ -196,6 +211,29 @@ if (!app.requestSingleInstanceLock()) {
     powerMonitor.on('resume', () => {
       engine.resumeFromSuspend();
     });
+
+    /**
+     * Keep the login item in step with the setting, on every launch.
+     *
+     * Not only when the switch is toggled: the registered entry names an
+     * absolute path, and moving or reinstalling the project leaves a stale one
+     * pointing at nothing. Re-registering on each start repairs that silently,
+     * which is the difference between a feature that works and one that works
+     * until the first time you tidy your folders.
+     */
+    const syncLoginItem = (enabled: boolean): void => {
+      const result = applyStartOnLogin(enabled, app, {
+        isPackaged: app.isPackaged,
+        execPath: process.execPath,
+        appPath: app.getAppPath(),
+      });
+      if (!result.applied && enabled) {
+        services?.log.warn({ reason: result.reason }, 'could not register the app to start at login');
+      }
+    };
+
+    syncLoginItem(services.config.get().startOnLogin);
+    services.config.subscribe((next) => syncLoginItem(next.startOnLogin));
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {

@@ -52,6 +52,11 @@ export interface QueueEngineOptions {
   readonly random?: () => number;
   readonly progressThrottleMs?: number;
   /**
+   * How often progress is *written to SQLite*, as opposed to pushed to the
+   * screen. Far larger than the emit throttle on purpose — see `onProgress`.
+   */
+  readonly progressPersistMs?: number;
+  /**
    * Persists whether the queue is meant to be running, so an unexpected exit
    * does not turn into a queue that quietly sits idle on next launch.
    */
@@ -105,6 +110,8 @@ export class QueueEngine {
   private readonly sweptBatches = new Set<string>();
   private readonly listeners = new Set<(event: QueueEvent) => void>();
   private readonly lastProgressEmit = new Map<number, number>();
+  /** When each item's progress last reached the database, as opposed to the screen. */
+  private readonly lastProgressWrite = new Map<number, number>();
   private idleWaiters: (() => void)[] = [];
   private readonly knownBatches = new Set<string>();
 
@@ -377,6 +384,7 @@ export class QueueEngine {
     } finally {
       this.controllers.delete(row.id);
       this.lastProgressEmit.delete(row.id);
+      this.lastProgressWrite.delete(row.id);
       this.checkBatchComplete(row.batch_id);
     }
   }
@@ -1117,13 +1125,51 @@ export class QueueEngine {
         ? Math.min(1, progress.bytesDone / progress.bytesTotal)
         : 0;
 
-    this.options.queueItems.update(itemId, {
-      progress: ratio,
-      bytesDone: progress.bytesDone,
-      bytesTotal: progress.bytesTotal,
-      ...(progress.processing ? { status: 'processing' as const } : {}),
-    });
-    this.emitItem(this.options.queueItems.findById(itemId));
+    /**
+     * Written to disk far less often than it is shown on screen.
+     *
+     * These are two different jobs that were being done by one write. The
+     * screen wants a bar that moves — four times a second, which is what the
+     * throttle above is for. SQLite wants to know roughly how far a download
+     * got, so that a restart can say "62%" instead of "0%" until the first
+     * tick arrives; a value two seconds stale is indistinguishable from a
+     * fresh one for that purpose.
+     *
+     * Doing both at 4 Hz meant a 200-item batch wrote tens of thousands of
+     * rows nobody would ever read, and that write rate was the stated reason
+     * the database ran at a durability setting that can lose committed work in
+     * a power cut. Separating them buys back the durability at no visible cost.
+     *
+     * A status change and the final tick are always persisted, because those
+     * are the ones a restart actually reads.
+     */
+    const persistEveryMs = this.options.progressPersistMs ?? 2_000;
+    const lastWrite = this.lastProgressWrite.get(itemId) ?? 0;
+    if (complete || progress.processing || now - lastWrite >= persistEveryMs) {
+      this.lastProgressWrite.set(itemId, now);
+      this.options.queueItems.update(itemId, {
+        progress: ratio,
+        bytesDone: progress.bytesDone,
+        bytesTotal: progress.bytesTotal,
+        ...(progress.processing ? { status: 'processing' as const } : {}),
+      });
+      this.emitItem(this.options.queueItems.findById(itemId));
+    } else {
+      /**
+       * Not persisted, but still shown.
+       *
+       * The row on screen is the stored row with the live figures laid over
+       * it, so the bar keeps moving between writes rather than stepping every
+       * two seconds. Nothing here touches the database.
+       */
+      const row = this.options.queueItems.findById(itemId);
+      if (row) {
+        this.emit({
+          type: 'item-updated',
+          item: toSnapshot({ ...row, progress: ratio, bytes_done: progress.bytesDone, bytes_total: progress.bytesTotal }),
+        });
+      }
+    }
 
     this.emit({
       type: 'item-progress',

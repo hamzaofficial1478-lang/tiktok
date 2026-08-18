@@ -123,7 +123,18 @@ export function registerQueueHandlers(registry: IpcRegistry, services: AppServic
   registry.handle('creators:plan', () => {
     const taken = services.repos.linkLedger.downloadedByHandle();
     const plan = buildRunPlan(services.repos.creators.list(), (handle) => taken.get(handle) ?? 0);
-    return { ...plan, creators: plan.creators.map((entry) => ({ ...entry })) };
+    /**
+     * Whether a run is under way, answered by the engine rather than by the
+     * screen that started it.
+     *
+     * The Run button used to key off a React flag set when it was clicked,
+     * which is lost the moment the window reloads or the app restarts — so a
+     * run interrupted by a power cut came back with the button enabled and
+     * inviting a second one on top of the first. The runner and the queue
+     * both know the truth; this reports it.
+     */
+    const running = services.creatorRunner.isRunning || services.queue.hasPendingWork();
+    return { ...plan, running, creators: plan.creators.map((entry) => ({ ...entry })) };
   });
 
   /**

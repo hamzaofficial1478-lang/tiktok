@@ -80,6 +80,20 @@ export const AppConfigSchema = z.object({
   groupByCreator: z.boolean(),
 
   /**
+   * Start the app when you sign in to the machine.
+   *
+   * An interrupted queue already resumes exactly where it stopped — but only
+   * once something starts the app, and until now that something was a person
+   * remembering to. This is what turns "it survives a power cut" into "you do
+   * not have to notice there was one".
+   *
+   * Off by default. Adding an entry to a machine's startup without being asked
+   * is precisely the behaviour that makes people distrust software, so it is a
+   * switch rather than an assumption.
+   */
+  startOnLogin: z.boolean(),
+
+  /**
    * Dedup layer 4's repost badge. Off by default because computing a
    * perceptual hash means decoding the video with ffmpeg — a second full pass
    * over every file, for a badge most users never look at.
@@ -166,6 +180,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   // On, because the alternative is a single folder that becomes unusable at a
   // few hundred files, and every account already had this when queued whole.
   groupByCreator: true,
+  startOnLogin: false,
   detectReposts: false,
   autoUpdateExtractor: true,
   browserCookies: 'none',

@@ -168,6 +168,21 @@ export function Creators(): React.JSX.Element {
   const enabled = creators.filter((c) => c.enabled).length;
 
   /**
+   * A run is under way — asked of the engine, not remembered by this screen.
+   *
+   * The local flag alone was wrong in exactly the case that matters: it is
+   * lost when the window reloads and when the app restarts, so a run cut short
+   * by a power failure came back with the button enabled, inviting a second
+   * run on top of the first one still resuming in the background. `plan.running`
+   * is true while the runner is working *or* the queue still has items, which
+   * is the whole span the button must stay shut for.
+   *
+   * The local flag is kept as well, purely so the button reacts on the click
+   * rather than after the next round trip.
+   */
+  const busyRunning = running || plan?.running === true;
+
+  /**
    * Everything the list asks for is already downloaded.
    *
    * This is the state that used to be invisible, and that invisibility was the
@@ -176,12 +191,13 @@ export function Creators(): React.JSX.Element {
    * available — it is a reasonable thing to want — but it is now a thing the
    * user is told about and agrees to.
    */
-  const caughtUp = enabled > 0 && totalRemaining === 0;
+  const caughtUp = enabled > 0 && totalRemaining === 0 && !busyRunning;
   /** What another round would take, if the user asks for one. */
   const nextRoundSize = creators.filter((c) => c.enabled).reduce((sum, c) => sum + c.videoLimit, 0);
 
   function startRun(topUp: boolean): void {
     setRunning(true);
+    setPlan((current) => (current ? { ...current, running: true } : current));
     setProgress(null);
     setConfirmingTopUp(false);
     void invoke('creators:run', { topUp })
@@ -204,17 +220,29 @@ export function Creators(): React.JSX.Element {
       actions={
         creators.length > 0 && (
           <>
-            {running ? (
-              <Button
-                variant="secondary"
-                icon="pause"
-                onClick={() => {
-                  void invoke('creators:cancelRun');
-                  setRunning(false);
-                }}
-              >
-                Stop after this one
-              </Button>
+            {busyRunning ? (
+              /**
+               * While a run is on, Run is not merely hidden — there is nothing
+               * to press that would start a second one. The count keeps
+               * falling as videos land, so this reads as progress rather than
+               * as a frozen button.
+               */
+              <>
+                <span className="text-sm tabular-nums text-ink-300" aria-live="polite">
+                  <strong className="font-medium text-ink-100">{totalRemaining}</strong> left to download
+                </span>
+                <Button
+                  variant="secondary"
+                  icon="pause"
+                  title="Finishes the account it is on, then stops. Nothing already downloaded is lost."
+                  onClick={() => {
+                    void invoke('creators:cancelRun');
+                    setRunning(false);
+                  }}
+                >
+                  Stop after this one
+                </Button>
+              </>
             ) : (
               <Button
                 variant="primary"
