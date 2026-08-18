@@ -144,6 +144,17 @@ export const AppConfigSchema = z.object({
    * phone. Empty means "not generated yet"; start-up fills it in.
    */
   deviceId: z.string().regex(/^\d*$/, 'Device ID must be numeric'),
+  /**
+   * The install identity that goes with the device.
+   *
+   * Also not a setting. TikTok's app API is sent a device id, an install id
+   * and an openudid together; supplying only the device left the install id
+   * absent, because `filter_dict` in `_build_api_query` drops it when it is
+   * None. A device with no install behind it is not a shape a real phone
+   * produces. Kept for the same reason the device id is: one that changes
+   * every launch is the signature of a script.
+   */
+  installId: z.string().regex(/^\d*$/, 'Install ID must be numeric'),
 
   reduceEffects: z.boolean(),
   logLevel: z.enum(LOG_LEVELS),
@@ -193,6 +204,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   proxyUrl: '',
 
   deviceId: '',
+  installId: '',
 
   reduceEffects: false,
   logLevel: 'info',

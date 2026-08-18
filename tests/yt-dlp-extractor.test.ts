@@ -339,10 +339,13 @@ describe('multiple routes to TikTok', () => {
       (strategy) => new YtDlpExtractor({ binaryPath: '/fake', runner: capturing([]).runner, strategy }).name,
     );
 
+    // App API first, web last: the web page is the route TikTok gates with
+    // bot detection, and leading with it made every video pay that lottery
+    // before anything else was tried.
     expect(names).toEqual([
-      'yt-dlp (web)',
       'yt-dlp (mobile app api)',
       'yt-dlp (mobile app api (alt region))',
+      'yt-dlp (web)',
     ]);
     // Distinct names matter: the chain logs which extractor failed, and three
     // identically named ones would make that log useless.

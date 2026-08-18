@@ -30,7 +30,7 @@ import { Ffprobe } from './media/ffprobe';
 import { DownloadPipeline } from './download/pipeline';
 import { PostProcessor } from './postprocess/processor';
 import { YtDlpExtractor, ytDlpStrategies } from './resolve/yt-dlp-extractor';
-import { generateDeviceId, isValidDeviceId } from './resolve/device-id';
+import { generateDeviceId, generateInstallId, isValidDeviceId } from './resolve/device-id';
 import { ExtractorChain } from './resolve/extractor-chain';
 import type { Extractor } from './resolve/types';
 import type { MediaCapabilities, SidecarStatus } from '@shared/ipc/contract';
@@ -151,7 +151,18 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     config.update({ deviceId: generateDeviceId() });
     log.info('minted a device identity for the mobile app route');
   }
-  const strategies = ytDlpStrategies(config.get().deviceId);
+  /**
+   * The install id, minted the same way and for the same reason.
+   *
+   * Separate from the device id rather than derived from it: TikTok is sent
+   * both, and two values that are visibly related would describe a phone that
+   * does not exist just as clearly as one missing value does.
+   */
+  if (!isValidDeviceId(config.get().installId)) {
+    config.update({ installId: generateInstallId() });
+    log.info('minted an install identity for the mobile app route');
+  }
+  const strategies = ytDlpStrategies(config.get().deviceId, config.get().installId);
 
   const database = openDatabase({ file: paths.database, log: logging.log.child({ scope: 'db' }) });
 

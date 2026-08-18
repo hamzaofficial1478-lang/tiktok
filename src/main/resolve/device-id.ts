@@ -40,3 +40,88 @@ export function isValidDeviceId(value: string): boolean {
   const parsed = BigInt(value);
   return parsed >= MIN_DEVICE_ID && parsed <= MAX_DEVICE_ID;
 }
+
+/**
+ * The install identity, which is the other half and was missing entirely.
+ *
+ * Reading `_build_api_query` in yt_dlp/extractor/tiktok.py settles what a
+ * request to TikTok's app API actually carries:
+ *
+ *     'iid': self._APP_INFO.get('iid'),
+ *     'device_id': self._DEVICE_ID,
+ *     'openudid': ''.join(random.choices('0123456789abcdef', k=16)),
+ *
+ * — all three wrapped in `filter_dict`, which drops anything falsy. Supplying
+ * only `device_id` leaves `iid` as None, so `filter_dict` removes it and the
+ * request goes out with a device that has no install behind it. A real phone
+ * never does that.
+ *
+ * The install id has to arrive through `app_info` rather than an argument of
+ * its own, because that is the only channel yt-dlp offers for it:
+ *
+ *     _APP_INFO_DEFAULTS = { 'iid': None, 'app_name': …, 'app_version': …,
+ *                            'manifest_app_version': …, 'aid': '0' }
+ *
+ * and `app_info` is parsed by zipping those keys against a `/`-separated
+ * string. Hence the shape built by `appInfoArg` below.
+ */
+export function generateInstallId(): string {
+  // Same range as the device id: both are Snowflake-style ids issued by the
+  // same service, and one that looked different would stand out from it.
+  return generateDeviceId();
+}
+
+/**
+ * One `app_info` entry: `iid/app_name/app_version/manifest_app_version/aid`.
+ *
+ * The field order is `_APP_INFO_DEFAULTS`' own, because yt-dlp splits on `/`
+ * and zips positionally against those keys — a field in the wrong place is
+ * silently accepted and quietly wrong.
+ *
+ * `aid` matters more than it looks. Its default is `'0'`, commented in the
+ * source as "universal", while the app names carry their own ids — musical_ly
+ * is 1233, trill is 1180. Sending `app_name=musical_ly` with `aid=0` describes
+ * an app that does not exist, and it is the combination the default produces.
+ */
+export function appInfoArg(input: {
+  readonly installId: string;
+  readonly appName: 'musical_ly' | 'trill';
+  readonly appVersion: string;
+  readonly manifestVersion: string;
+  readonly aid: string;
+}): string {
+  return [input.installId, input.appName, input.appVersion, input.manifestVersion, input.aid].join('/');
+}
+
+/**
+ * The identities the app route may present, in order.
+ *
+ * More than one on purpose. `_call_api` pops the next entry out of
+ * `_APP_INFO_POOL` when a request comes back unparseable, so a pool of two is
+ * the difference between one attempt and a genuine retry with a different
+ * identity — and with no `app_info` supplied at all, `_KNOWN_APP_INFO` is
+ * `['']`, a pool of exactly one empty entry, which is where the single
+ * iid-less attempt came from.
+ *
+ * musical_ly is TikTok everywhere except a handful of Asian markets; trill is
+ * those markets. Offering both means a video that one app build will not serve
+ * gets asked for by the other.
+ */
+export function appInfoPool(installId: string): readonly string[] {
+  return [
+    appInfoArg({
+      installId,
+      appName: 'musical_ly',
+      appVersion: '35.1.3',
+      manifestVersion: '2023501030',
+      aid: '1233',
+    }),
+    appInfoArg({
+      installId,
+      appName: 'trill',
+      appVersion: '34.1.2',
+      manifestVersion: '2023401020',
+      aid: '1180',
+    }),
+  ];
+}

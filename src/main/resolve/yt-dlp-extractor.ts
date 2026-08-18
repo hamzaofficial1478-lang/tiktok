@@ -1,4 +1,5 @@
 import type { Logger } from 'pino';
+import { appInfoPool } from './device-id';
 import { AppError } from '@shared/errors';
 import type { Extractor, ResolvedVideo, StreamCandidate, VideoMetadata } from './types';
 import type { ProcessRunner } from './process-runner';
@@ -122,54 +123,63 @@ export interface YtDlpStrategy {
 }
 
 /**
- * The routes, ordered cheapest-and-most-likely first.
+ * The routes a video may be fetched by, best first.
  *
- * ## What was wrong with the previous list
+ * ## Why the app API leads, and the web page is now the fallback
  *
- * It had three entries and one route. The two "mobile api" entries set
- * `api_hostname` and nothing else, and `api_hostname` on its own does not
- * select the mobile API — it renames an endpoint that is never contacted.
- * yt-dlp gates its app path on having a device identity:
+ * These were the other way round, and the order was costing downloads. Reading
+ * `TikTokIE._real_extract` in yt_dlp/extractor/tiktok.py:
  *
- *     @functools.cached_property
- *     def _KNOWN_APP_INFO(self):
- *         default = [''] if self._KNOWN_DEVICE_ID else []
- *         return self._configuration_arg('app_info', default, ie_key=TikTokIE)
+ *     if self._KNOWN_APP_INFO:
+ *         try:
+ *             return self._extract_aweme_app(video_id)
+ *         except ExtractorError as e:
+ *             e.expected = True
+ *             self.report_warning(f'{e}; trying with webpage')
  *
- *     def _real_extract(self, url):
- *         if self._KNOWN_APP_INFO:                     # empty without device_id
- *             try:
- *                 return self._extract_aweme_app(video_id)
- *             ...
- *         video_data, status = self._extract_web_data_and_status(url, video_id)
+ *     url = self._create_url(user_id, video_id)
+ *     video_data, status = self._extract_web_data_and_status(url, video_id)
  *
- * — yt_dlp/extractor/tiktok.py. With neither `device_id` nor `app_info` given,
- * `_KNOWN_APP_INFO` is empty, the app branch is skipped, and all three routes
- * scraped the same web page. So a link that failed with "Unable to extract
- * universal data for rehydration" — the web page not carrying the JSON blob —
- * failed identically on every route and every retry, which is exactly what four
- * attempts of the same error in the queue looked like.
+ * The web page is where "Unable to extract universal data for rehydration"
+ * comes from: TikTok only embeds that data blob for requests it accepts as a
+ * browser, and refuses in bursts. The app API is the path built for
+ * programmatic access and does not have that failure mode at all.
  *
- * Passing `device_id` switches the branch on. `_build_api_query` sends it as
- * the device and drops the absent install ID (`filter_dict` strips None), so no
- * fabricated install ID is needed. The app route also falls back to the web
- * page internally if it fails, so these routes are strictly additive.
+ * Leading with the page meant every video paid the bot-detection lottery
+ * before anything else was tried — and because yt-dlp reports an app-API
+ * failure as a *warning* and then fails on the page, the page's error was the
+ * only one ever seen, which is why three routes appeared to fail identically.
  *
- * Web stays first because it is the fast path and it works for most links; the
- * app routes are what the ones it cannot serve now fall through to.
+ * ## Why `app_info` is supplied and not just `device_id`
+ *
+ * `_KNOWN_APP_INFO` defaults to `['']` when a device id is present — a pool of
+ * one empty entry — so the app API got exactly one attempt, with no install id
+ * (`filter_dict` drops the None) and with `aid` left at the "universal" `0`
+ * while claiming to be musical_ly. See device-id.ts for the full reasoning.
  */
-export function ytDlpStrategies(deviceId: string): readonly YtDlpStrategy[] {
+export function ytDlpStrategies(deviceId: string, installId?: string): readonly YtDlpStrategy[] {
+  // Falls back to the device id when no install id has been minted yet, which
+  // is still strictly better than sending none at all.
+  const pool = appInfoPool(installId && installId !== '' ? installId : deviceId).join(',');
+
   const app = (hostname: string): readonly string[] => [
     '--extractor-args',
-    `tiktok:device_id=${deviceId};api_hostname=${hostname}`,
+    `tiktok:device_id=${deviceId};app_info=${pool};api_hostname=${hostname}`,
   ];
 
   return [
-    { label: 'web', args: [] },
     // TikTok's own regional endpoints; availability differs by region, which is
     // the situation a user would otherwise be told to solve with a proxy.
     { label: 'mobile app api', args: app('api16-normal-c-useast1a.tiktokv.com') },
     { label: 'mobile app api (alt region)', args: app('api22-normal-c-useast2a.tiktokv.com') },
+    /**
+     * Last, and genuinely different: with no `device_id` and no `app_info`,
+     * `_KNOWN_APP_INFO` is empty, so this skips the app API entirely and goes
+     * straight to the page. Worth keeping precisely because it shares nothing
+     * with the two above — when TikTok's API is the thing refusing, this is
+     * what still works.
+     */
+    { label: 'web', args: [] },
   ];
 }
 
@@ -248,9 +258,28 @@ export class YtDlpExtractor implements Extractor {
        * left the UI asserting "Extractor out of date" about a failure nobody
        * had identified.
        */
+      /**
+       * The reason the app API gave up, which yt-dlp buries in a warning.
+       *
+       * `_real_extract` catches an app-API failure, calls `report_warning`,
+       * and falls through to the web page; when that fails too, the *page's*
+       * error is the only one on stderr as an ERROR line. So the failure that
+       * actually mattered — why the API route did not work — was invisible,
+       * and three routes appeared to fail for one reason when they had failed
+       * for two different ones.
+       */
+      const appApiReason = appApiFailure(result.stderr);
+      if (appApiReason) {
+        this.options.log?.warn(
+          { canonicalUrl, strategy: this.options.strategy?.label, reason: appApiReason },
+          'the app API route was refused before it fell back to the web page',
+        );
+      }
+
       this.options.log?.warn(
         {
           canonicalUrl,
+          ...(appApiReason ? { appApiReason } : {}),
           exitCode: result.exitCode,
           code: classified.code,
           why: classified.why,
@@ -463,6 +492,30 @@ function extractIdFromUrl(url: string): string {
  * update notices and warnings. The first line carrying the actual complaint is
  * what belongs in a one-line log entry.
  */
+/**
+ * The app-API failure yt-dlp reports as a warning before falling back.
+ *
+ * It writes `f'{e}; trying with webpage'` — see `TikTokIE._real_extract` — so
+ * the marker is that trailing phrase rather than any particular wording of the
+ * cause, which varies. Null when the app route was never attempted, which is
+ * itself worth being able to tell apart from it having been attempted and
+ * refused.
+ */
+export function appApiFailure(stderr: string): string | null {
+  const line = stderr
+    .split('\n')
+    .map((entry) => entry.trim())
+    .find((entry) => /trying with webpage|falling back to webpage/i.test(entry));
+
+  if (!line) return null;
+  return truncate(
+    line
+      .replace(/^WARNING:\s*/i, '')
+      .replace(/;?\s*(trying with|falling back to) webpage\.?$/i, ''),
+    300,
+  );
+}
+
 function firstMeaningfulLine(stderr: string): string {
   const lines = stderr
     .split('\n')
