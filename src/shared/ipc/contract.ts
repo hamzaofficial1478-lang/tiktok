@@ -37,6 +37,16 @@ export const VersionsSchema = z.object({
   /** null when the sidecar is missing — the UI shows "not installed", not "unknown". */
   ffmpeg: z.string().nullable(),
   ytDlp: z.string().nullable(),
+  /**
+   * The commit this build came from, and how old it is.
+   *
+   * `app` is the package.json version, which has never changed and answers
+   * nothing. This answers the question that actually comes up: is the app
+   * running the code I think it is?
+   */
+  commit: z.string(),
+  committedAt: z.string(),
+  builtAt: z.string(),
 });
 
 export const SidecarStatusSchema = z.object({

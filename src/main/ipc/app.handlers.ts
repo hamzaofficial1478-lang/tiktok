@@ -1,5 +1,6 @@
 import { AppError } from '@shared/errors';
 import type { AppServices } from '../services';
+import { buildInfo } from '../build-info';
 import type { EventBus, IpcRegistry } from './registry';
 
 /**
@@ -17,6 +18,7 @@ export function registerAppHandlers(registry: IpcRegistry, services: AppServices
       node: process.versions.node,
       ffmpeg: sidecars.find((s) => s.name === 'ffmpeg')?.version ?? null,
       ytDlp: sidecars.find((s) => s.name === 'yt-dlp')?.version ?? null,
+      ...buildInfo(),
     };
   });
 

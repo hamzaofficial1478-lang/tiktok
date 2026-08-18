@@ -1,7 +1,45 @@
+import { execSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+
+/**
+ * Which commit this build came from, stamped in at build time.
+ *
+ * The version in package.json is `0.1.0` and has never moved, so it answers
+ * nothing. What is actually needed is "which code is this?" — and needing it
+ * is not hypothetical: three separate features were reported missing that had
+ * already shipped, each time because the launcher's `git pull` had quietly
+ * failed and the app was running from weeks-old source. Nothing on screen
+ * could have revealed that.
+ *
+ * Read from git rather than written by hand so it cannot drift, and wrapped
+ * because a build from a downloaded ZIP has no git at all — which is itself
+ * one of the situations worth being able to see.
+ */
+function buildStamp(): { commit: string; committedAt: string; builtAt: string } {
+  const git = (args: string): string | null => {
+    try {
+      return execSync(`git ${args}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    } catch {
+      return null;
+    }
+  };
+
+  return {
+    commit: git('rev-parse --short HEAD') ?? 'unknown',
+    committedAt: git('log -1 --format=%cI') ?? 'unknown',
+    builtAt: new Date().toISOString(),
+  };
+}
+
+const BUILD = buildStamp();
+const define = {
+  __BUILD_COMMIT__: JSON.stringify(BUILD.commit),
+  __BUILD_COMMITTED_AT__: JSON.stringify(BUILD.committedAt),
+  __BUILD_AT__: JSON.stringify(BUILD.builtAt),
+};
 
 const alias = {
   '@shared': resolve('src/shared'),
@@ -15,6 +53,7 @@ export default defineConfig({
     // dynamic worker resolution that bundling would break.
     plugins: [externalizeDepsPlugin()],
     resolve: { alias },
+    define,
     build: {
       rollupOptions: {
         input: { index: resolve('src/main/index.ts') },

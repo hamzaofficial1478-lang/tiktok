@@ -51,17 +51,43 @@ rem  --ff-only on purpose: it takes updates cleanly or not at all, and never
 rem  invents a merge commit in someone's working folder. Any failure here is a
 rem  warning, not a stop — offline, or a folder with local edits, should start
 rem  the version already on disk rather than refusing to start at all.
-if exist ".git" (
+rem
+rem  A failed update used to be one quiet line among four steps, with git's own
+rem  output thrown away by >nul. The app then built and opened perfectly, from
+rem  weeks-old code, and the only symptom was features that were "missing".
+rem  That happened three times. Now the reason is printed, and the version
+rem  actually running is stated whether the update worked or not.
+if not exist ".git" (
+  echo   [!] This folder is not a git checkout, so it can NEVER update itself.
+  echo       It was probably downloaded as a ZIP. To get updates, delete this
+  echo       folder and clone it instead:
+  echo         git clone https://github.com/hamzaofficial1478-lang/tiktok.git
+  echo.
+) else (
   where git >nul 2>&1
-  if not errorlevel 1 (
+  if errorlevel 1 (
+    echo   [!] Git is not installed, so updates cannot be fetched.
+    echo.
+  ) else (
     echo   [*] Checking for updates...
-    git pull --ff-only >nul 2>&1
+    rem  Output shown, not swallowed: "no upstream branch", "local changes" and
+    rem  an auth failure need completely different fixes and look identical
+    rem  once the message is discarded.
+    git pull --ff-only
     if errorlevel 1 (
-      echo       Could not update ^(offline, or this folder has local changes^).
-      echo       Starting the version already here.
-    ) else (
-      echo       Up to date.
+      echo.
+      echo   [!] UPDATE FAILED - the app will start, but on OLD code.
+      echo       The git message above says why. The usual causes:
+      echo         * local changes here      ^-^> git stash
+      echo         * wrong branch            ^-^> git checkout claude/tiktok-downloader-desktop-0bsyo1
+      echo         * not signed in to GitHub ^-^> git config --global credential.helper manager
+      echo.
     )
+  )
+
+  rem  Stated every time, so "which version am I running" is never a guess.
+  for /f "delims=" %%v in ('git log -1 --format^="%%h  %%cd" --date^=short 2^>nul') do (
+    echo   [*] Running build: %%v
   )
 )
 

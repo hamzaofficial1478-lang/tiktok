@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { AppConfig } from '@shared/config-schema';
 import type { InvokeResponse } from '@shared/ipc/contract';
 import { previewTemplate } from '@shared/filename-template';
+import { buildAgeDays } from '../lib/build-age';
 import { useAppStore } from '../store/app-store';
 import { invoke } from '../lib/ipc';
 import { Button, PageHeader, Panel, formatBytes } from '../components/primitives';
@@ -384,6 +385,41 @@ export function Settings(): React.JSX.Element {
         <dl className="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-2 text-sm">
           <dt className="text-ink-500">App</dt>
           <dd className="font-mono text-ink-300">{versions?.app ?? '—'}</dd>
+          {/**
+           * Which code is actually running.
+           *
+           * The line above says 0.1.0 and always will. This one says which
+           * commit was built, and how long ago it was written — because
+           * "that feature is missing" has three times turned out to mean "the
+           * launcher's git pull failed weeks ago and nothing said so".
+           */}
+          <dt className="text-ink-500">Build</dt>
+          <dd className="font-mono text-ink-300">
+            {versions ? (
+              <>
+                {versions.commit}
+                {(() => {
+                  const days = buildAgeDays(versions.committedAt);
+                  if (days === null) {
+                    return (
+                      <span className="ml-2 font-sans text-warn-400">
+                        not a git checkout — this copy can never update itself
+                      </span>
+                    );
+                  }
+                  if (days < 2) return <span className="ml-2 font-sans text-mint-300">current</span>;
+                  return (
+                    <span className={`ml-2 font-sans ${days > 7 ? 'text-warn-400' : 'text-ink-500'}`}>
+                      built from code {days} days old
+                      {days > 7 && ' — run the launcher to update'}
+                    </span>
+                  );
+                })()}
+              </>
+            ) : (
+              '—'
+            )}
+          </dd>
           <dt className="text-ink-500">Extractor</dt>
           <dd className="flex items-center gap-3 font-mono text-ink-300">
             {versions?.ytDlp ?? 'not installed'}
