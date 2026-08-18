@@ -79,6 +79,36 @@ const RULES: readonly Rule[] = [
     why: 'throttled',
   },
 
+  /**
+   * TikTok served a page with the video data missing.
+   *
+   * This must be matched *before* the generic "unable to extract" rule below,
+   * and the distinction is the whole point. yt-dlp reads the video out of a
+   * `__UNIVERSAL_DATA_FOR_REHYDRATION__` blob in the page, and TikTok only puts
+   * that blob there for requests it accepts as a real browser. When it decides
+   * a request looks automated — which happens in bursts, to some links and not
+   * others, from the same machine, minutes apart — it returns the page without
+   * it. yt-dlp's message for that is "Unable to extract universal data for
+   * rehydration", which lands on the generic rule and reads as EXTRACTOR_FAILED:
+   * "Extractor out of date. Update the extractor, then retry."
+   *
+   * That message sent a user to press Update, be told they were already on the
+   * latest build, and have no next step — while the same links worked on the
+   * attempt after. It is also self-evidently not a stale extractor when nine of
+   * twelve videos in the same batch download fine.
+   *
+   * As RESOLVE_FAILED it says what is true — TikTok did not return usable
+   * details, this is usually temporary — and, because that code is
+   * auto-retryable, the queue's backoff now actually runs instead of failing
+   * the item on its first attempt.
+   */
+  {
+    pattern:
+      /universal data for rehydration|unable to extract (?:webpage video data|sigi state|initial state)|unable to extract video data/i,
+    code: 'RESOLVE_FAILED',
+    why: 'TikTok served a page without the video data — usually bot detection, not a stale extractor',
+  },
+
   // --- Extractor breakage ------------------------------------------------
   {
     pattern:

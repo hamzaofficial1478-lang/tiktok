@@ -139,7 +139,7 @@ export class DownloadPipeline implements MediaPipeline {
      * is not a plausible accident, but "the path came from a remote response
      * and was joined without checking" is exactly the shape of a real one.
      */
-    const directory = resolveOutputDirectory(root, input.item.output_subdir);
+    const directory = resolveOutputDirectory(root, subdirFor(input, config));
 
     // 2. Fail fast rather than part-way through (section 9 step 5).
     if (selection.stream.filesize) assertEnoughSpace(directory, selection.stream.filesize);
@@ -487,7 +487,7 @@ export class DownloadPipeline implements MediaPipeline {
     const root = this.options.outputDir?.() ?? config.outputDir;
     if (!root) throw new AppError('PERMISSION_DENIED', 'no output folder has been chosen yet');
 
-    const parent = resolveOutputDirectory(root, input.item.output_subdir);
+    const parent = resolveOutputDirectory(root, subdirFor(input, config));
 
     // The same template the videos use, so a slideshow sorts among them in the
     // order it was pasted instead of drifting to one end of the folder.
@@ -535,6 +535,29 @@ export class DownloadPipeline implements MediaPipeline {
       outroTrimmedMs: null,
     };
   }
+}
+
+/**
+ * Which folder under the output directory this download belongs in.
+ *
+ * A whole account queued from a profile link already carried its handle on the
+ * queue row, and its videos were filed together. A handful of links pasted by
+ * hand carried nothing, so three creators' videos landed loose in one folder —
+ * two paths to the same outcome producing different shapes on disk, with no
+ * reason for the difference other than where the link came from.
+ *
+ * The row's own value still wins when it has one, because "these came from
+ * @creator's profile" is a stronger statement than "this video says it is
+ * @creator's": a repost keeps the account it was queued under.
+ *
+ * Null when there is no handle to use — the extractor could not name the
+ * author — which files the video at the top level rather than inventing a
+ * folder called "unknown".
+ */
+export function subdirFor(input: PipelineInput, config: AppConfig): string | null {
+  if (input.item.output_subdir) return input.item.output_subdir;
+  if (!config.groupByCreator) return null;
+  return input.resolved.metadata.authorHandle ?? input.normalized.authorHandle ?? null;
 }
 
 function pickExtension(streamExt: string | null, audioOnly: boolean): string {

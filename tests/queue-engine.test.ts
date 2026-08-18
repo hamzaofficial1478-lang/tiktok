@@ -429,7 +429,10 @@ describe('watermark reporting on the queue row (section 9)', () => {
 
   it('does not claim a verdict for an item that failed', async () => {
     harness = createHarness();
-    harness.pipeline.failFor(awemeIdFor(1), ['DISK_FULL']);
+    // Twice: a full disk is worth a manual retry once cleared, so the
+    // end-of-run sweep gives it one more go. Failing that second attempt too
+    // is what leaves the row `failed`, which is what this is really about.
+    harness.pipeline.failFor(awemeIdFor(1), ['DISK_FULL', 'DISK_FULL']);
     harness.engine.addLinks([makeUrl(1)]);
     harness.engine.start();
     await harness.engine.whenIdle();

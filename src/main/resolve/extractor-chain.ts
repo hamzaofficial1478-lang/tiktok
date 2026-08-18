@@ -38,6 +38,8 @@ export class ExtractorChain implements Extractor {
 
     let lastError: AppError | null = null;
     let anyAvailable = false;
+    /** Route names actually attempted, for the error the user ends up reading. */
+    const tried: string[] = [];
 
     for (const extractor of this.extractors) {
       let available = false;
@@ -55,6 +57,7 @@ export class ExtractorChain implements Extractor {
         continue;
       }
       anyAvailable = true;
+      tried.push(extractor.name);
 
       try {
         const resolved = await extractor.resolve(canonicalUrl, options);
@@ -88,6 +91,21 @@ export class ExtractorChain implements Extractor {
       throw new AppError('EXTRACTOR_FAILED', 'no extractor is installed; update the extractor from Settings');
     }
 
-    throw lastError ?? new AppError('EXTRACTOR_FAILED', `every extractor failed for ${canonicalUrl}`);
+    if (!lastError) throw new AppError('EXTRACTOR_FAILED', `every extractor failed for ${canonicalUrl}`);
+
+    /**
+     * Say how hard it tried.
+     *
+     * The chain reported only the last route's message, so a user reading
+     * "Unable to extract universal data for rehydration" had no way to know
+     * that three different routes had already been attempted — and reasonably
+     * concluded the app had made one naive attempt. Naming them turns the
+     * error into evidence: three routes refused is a TikTok problem, and no
+     * amount of pressing Update Extractor will change it.
+     */
+    throw new AppError(
+      lastError.code,
+      tried.length > 1 ? `${lastError.detail ?? lastError.message} (tried ${tried.length} routes: ${tried.join(', ')})` : lastError.detail ?? lastError.message,
+    );
   }
 }

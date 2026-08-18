@@ -222,15 +222,19 @@ export function Queue({
     let remaining = 0;
     let watermarkRemoved = 0;
     let stillWatermarked = 0;
+    // What the Clear button will actually remove, so it can say so.
+    let finished = 0;
     for (const item of items) {
       if (item.status === 'completed') {
         done++;
+        finished++;
         if (item.watermarkRemoved) watermarkRemoved++;
         else if (item.sourceStrategy === 'raw') stillWatermarked++;
       } else if (item.status === 'failed') failed++;
-      else if (item.status !== 'skipped' && item.status !== 'cancelled') remaining++;
+      else if (item.status === 'skipped' || item.status === 'cancelled') finished++;
+      else remaining++;
     }
-    return { done, failed, remaining, watermarkRemoved, stillWatermarked };
+    return { done, failed, remaining, finished, watermarkRemoved, stillWatermarked };
   }, [items]);
 
   /**
@@ -325,12 +329,39 @@ export function Queue({
                 Retry failed
               </Button>
             )}
+            {/**
+             * Labelled, counted, and disabled when there is nothing to do.
+             *
+             * This was an icon with no label that cleared only completed
+             * items, so on a queue of failures it did nothing and said
+             * nothing — indistinguishable from a broken button. Now it names
+             * the number it will remove, and when that number is zero it says
+             * why it is greyed out instead of just sitting there.
+             */}
+            <Button
+              icon="trash"
+              disabled={totals.finished === 0}
+              title={
+                totals.finished === 0
+                  ? 'Nothing to clear yet — finished downloads are removed by this button, failures are kept'
+                  : 'Removes finished, skipped and cancelled rows. Failures are kept so you can retry them.'
+              }
+              onClick={() => void invoke('queue:removeCompleted')}
+            >
+              Clear {totals.finished} done
+            </Button>
             <Button
               variant="ghost"
               icon="trash"
-              title="Clear completed"
-              onClick={() => void invoke('queue:removeCompleted')}
-            />
+              title="Empties the queue completely, failures included. Files already downloaded are not touched."
+              onClick={() => {
+                if (window.confirm(`Remove all ${items.length} rows from the queue? Downloaded files are not deleted.`)) {
+                  void invoke('queue:clear');
+                }
+              }}
+            >
+              Clear all
+            </Button>
           </div>
         </div>
       </Panel>

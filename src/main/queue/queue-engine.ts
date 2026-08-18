@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import type { Logger } from 'pino';
-import { AppError, isAutoRetryable, toAppError, type ErrorCode } from '@shared/errors';
+import { AppError, describeError, toAppError, type ErrorCode } from '@shared/errors';
 import type { AppConfig } from '@shared/config-schema';
 import type { DuplicateAction, PhotoAction } from '@shared/types';
 import type { QueueItemRow, QueueItemsRepository } from '../db/repositories/queue-items';
@@ -1013,20 +1013,35 @@ export class QueueEngine {
   }
 
   /**
-   * Removes every finished item.
+   * Removes every item that is finished with.
+   *
+   * "Finished" is completed, skipped and cancelled — everything the user has
+   * no decision left to make about. `failed` is deliberately kept: those are
+   * the rows that still want attention, and a tidy-up button that silently
+   * discarded them would hide exactly the thing the user needs to see.
+   *
+   * It used to clear `completed` alone, which is the second half of why this
+   * button read as broken. A queue of eleven downloads and three failures had
+   * the eleven cleared on the first press and then did nothing at all on the
+   * second — with an icon-only button and no count, there was no way to tell
+   * "nothing happened" from "nothing left to happen".
    *
    * The ids are collected before the delete and announced one by one
-   * afterwards, and that is the whole fix for a real bug: this used to delete
-   * the rows and return a count, emitting nothing. The renderer learns about
-   * removals from `item-removed` events, so the rows stayed on screen until the
-   * next restart — the button looked broken because, from where the user was
-   * standing, it was.
+   * afterwards, which was the first half: this used to delete the rows and
+   * return a count, emitting nothing, so the renderer never heard about the
+   * removals and the rows stayed on screen until the next restart.
    */
-  removeCompleted(): number {
-    const ids = this.options.queueItems.idsByStatus(['completed']);
-    const removed = this.options.queueItems.removeByStatus(['completed']);
+  removeFinished(): number {
+    const statuses = ['completed', 'skipped', 'cancelled'] as const;
+    const ids = this.options.queueItems.idsByStatus(statuses);
+    const removed = this.options.queueItems.removeByStatus(statuses);
     for (const itemId of ids) this.emit({ type: 'item-removed', itemId });
     return removed;
+  }
+
+  /** @deprecated Kept as the old name; `removeFinished` is what it does. */
+  removeCompleted(): number {
+    return this.removeFinished();
   }
 
   clearQueue(): number {
@@ -1152,7 +1167,22 @@ export class QueueEngine {
      */
     if (!this.sweptBatches.has(batchId)) {
       this.sweptBatches.add(batchId);
-      const retryable = rows.filter((row) => row.status === 'failed' && row.error_code && isAutoRetryable(row.error_code));
+      /**
+       * Everything the user could retry by hand, not only the transient codes.
+       *
+       * This used to sweep `isAutoRetryable` only, which excluded the single
+       * most common real-world failure: TikTok serving a page without its
+       * video data. Those items sat `failed` at the end of a run with a Retry
+       * button nobody had asked to press. `userRetryable` is the broader flag
+       * and is exactly the right one here — it is defined as "worth a manual
+       * retry", and an automatic sweep at the end of the run is that retry.
+       *
+       * A deleted, private or region-blocked video is `userRetryable: false`
+       * and is still left alone, because no amount of retrying changes it.
+       */
+      const retryable = rows.filter(
+        (row) => row.status === 'failed' && row.error_code && describeError(row.error_code).userRetryable,
+      );
 
       if (retryable.length > 0) {
         this.log.info(

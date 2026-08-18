@@ -65,6 +65,21 @@ export const AppConfigSchema = z.object({
   photoSlideshows: z.enum(PHOTO_SLIDESHOW_MODES),
 
   /**
+   * File every download under a folder named after the account that posted it.
+   *
+   * Queueing a whole account already did this — its videos went into a folder
+   * of its own. Pasting a handful of links from three different creators did
+   * not, so they landed loose together in the output folder, and the only way
+   * to get the tidy version was to fetch each account separately. The two
+   * paths produce the same shape now.
+   *
+   * The handle is only known once the video resolves, which is why this is
+   * applied at download time rather than when the link is added: a short link
+   * gives away nothing about who posted it.
+   */
+  groupByCreator: z.boolean(),
+
+  /**
    * Dedup layer 4's repost badge. Off by default because computing a
    * perceptual hash means decoding the video with ffmpeg — a second full pass
    * over every file, for a badge most users never look at.
@@ -148,6 +163,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   // Ask, because neither answer is right for everyone and the question is
   // asked at most once per post.
   photoSlideshows: 'ask',
+  // On, because the alternative is a single folder that becomes unusable at a
+  // few hundred files, and every account already had this when queued whole.
+  groupByCreator: true,
   detectReposts: false,
   autoUpdateExtractor: true,
   browserCookies: 'none',

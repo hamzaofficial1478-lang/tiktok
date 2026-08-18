@@ -278,7 +278,9 @@ describe('failure diagnostics', () => {
 
     await expect(
       extractor.resolve('https://www.tiktok.com/@a/video/7123456789012345678'),
-    ).rejects.toMatchObject({ code: 'EXTRACTOR_FAILED' });
+      // A page served without its video data is TikTok refusing the request,
+      // not a stale extractor — so it is retryable rather than terminal.
+    ).rejects.toMatchObject({ code: 'RESOLVE_FAILED' });
 
     const entry = entries[0];
     // The ERROR line wins over the WARNING noise above it.

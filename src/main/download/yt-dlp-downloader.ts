@@ -217,9 +217,18 @@ export async function downloadWithYtDlp(options: YtDlpDownloadOptions): Promise<
     } catch (err) {
       lastError = err;
       const code = (err as { code?: string }).code;
-      // Only an extraction failure is worth another route. A full disk or a
-      // cancellation would fail identically every time.
-      if (code !== 'EXTRACTOR_FAILED' && code !== 'CDN_FORBIDDEN') throw err;
+      /**
+       * Which failures are worth another route.
+       *
+       * A full disk or a cancellation would fail identically every time, so
+       * those stop here. RESOLVE_FAILED is in the list because that is now
+       * where a page served without its video data lands — the exact failure
+       * the mobile-app routes exist to get around, since they ask a different
+       * endpoint that returns JSON rather than a scraped page. Leaving it out
+       * meant the download gave up on the web route without ever trying the
+       * two routes that were most likely to work.
+       */
+      if (code !== 'EXTRACTOR_FAILED' && code !== 'CDN_FORBIDDEN' && code !== 'RESOLVE_FAILED') throw err;
       if (index < routes.length - 1) {
         options.log?.warn(
           { formatId: options.formatId, code, route: index },

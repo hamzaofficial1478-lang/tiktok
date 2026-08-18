@@ -326,6 +326,11 @@ export function Settings(): React.JSX.Element {
                 'Force IPv4',
                 'TikTok answers some IPv6 clients with 403 while serving the same request over IPv4.',
               ],
+              [
+                'groupByCreator',
+                'A folder for each account',
+                'Files every download under the account that posted it, however the link was added.',
+              ],
               ['audioOnly', 'Extract audio only', 'Saves an M4A instead of the video.'],
               [
                 'detectReposts',
