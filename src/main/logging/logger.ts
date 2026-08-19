@@ -33,7 +33,27 @@ const PINO_LEVEL_NAMES: Readonly<Record<number, LogLevel>> = {
  * still needed for debugging, so they are censored only in the exported view,
  * never dropped — see `redact.censor`.
  */
-const REDACT_PATHS = ['proxyUrl', '*.proxyUrl', 'password', '*.password', 'token', '*.token', 'cookie', '*.cookie'];
+const REDACT_PATHS = [
+  'proxyUrl',
+  '*.proxyUrl',
+  'password',
+  '*.password',
+  'token',
+  '*.token',
+  'cookie',
+  '*.cookie',
+  /**
+   * The identity presented to TikTok. Nothing logs these today — the grep that
+   * checked is the reason they are listed rather than assumed — but the log is
+   * the one thing users are invited to export and paste into a bug report, and
+   * a device fingerprint is exactly the sort of value that should never make
+   * that trip by accident.
+   */
+  'deviceId',
+  '*.deviceId',
+  'installId',
+  '*.installId',
+];
 
 export interface LoggerHandle {
   /** Root logger; call `.child({ scope })` per subsystem. */

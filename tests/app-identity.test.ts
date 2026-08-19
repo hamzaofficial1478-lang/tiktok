@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { appInfoArg, appInfoPool, generateInstallId, isValidDeviceId } from '@main/resolve/device-id';
 import { appApiFailure, ytDlpStrategies } from '@main/resolve/yt-dlp-extractor';
+import { maskIdentity } from '@main/ipc/app.handlers';
 
 /**
  * The identity the app route presents to TikTok.
@@ -174,5 +175,33 @@ describe('the app-API failure yt-dlp hides in a warning', () => {
     expect(appApiFailure('WARNING: [TikTok] No working app info is available; falling back to webpage')).toBe(
       '[TikTok] No working app info is available',
     );
+  });
+});
+
+describe('what the app is willing to show about its identity', () => {
+  it('masks to the last four digits, so a screenshot cannot carry the fingerprint', () => {
+    const masked = maskIdentity({ deviceId: '7300000000000008421', installId: '7300000000000003907' });
+
+    expect(masked.deviceId).toBe('…8421');
+    expect(masked.installId).toBe('…3907');
+    expect(masked.configured).toBe(true);
+    // The full value must not survive the trip.
+    expect(masked.deviceId).not.toContain('7300000000000');
+  });
+
+  it('reports the app routes as inactive when either half is missing', () => {
+    // A device with no install is the exact shape that was silently failing,
+    // so "half configured" has to read as not configured.
+    expect(maskIdentity({ deviceId: '7300000000000008421', installId: '' }).configured).toBe(false);
+    expect(maskIdentity({ deviceId: '', installId: '7300000000000003907' }).configured).toBe(false);
+    expect(maskIdentity({ deviceId: '', installId: '' }).configured).toBe(false);
+  });
+
+  it('shows a dash rather than a misleading fragment for a missing value', () => {
+    expect(maskIdentity({ deviceId: '', installId: '' })).toMatchObject({ deviceId: '—', installId: '—' });
+  });
+
+  it('treats a malformed id as missing rather than showing its tail', () => {
+    expect(maskIdentity({ deviceId: 'not-a-number', installId: '12' }).configured).toBe(false);
   });
 });

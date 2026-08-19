@@ -47,6 +47,24 @@ export const VersionsSchema = z.object({
   commit: z.string(),
   committedAt: z.string(),
   builtAt: z.string(),
+  /**
+   * The identity the app-API routes present to TikTok, masked.
+   *
+   * Not a setting and not editable — there is no reason for anyone to type
+   * one. It is reported because "did that fix actually take effect?" had no
+   * answer inside the app, and the alternative was reading a config file.
+   *
+   * Masked to its last four digits on the main side, so the full fingerprint
+   * never crosses IPC and cannot end up in a screenshot. Four digits is plenty
+   * to confirm it exists and has not changed since last launch, which is the
+   * only question worth asking of it.
+   */
+  routeIdentity: z.object({
+    deviceId: z.string(),
+    installId: z.string(),
+    /** False when either is missing, which means the app routes are inert. */
+    configured: z.boolean(),
+  }),
 });
 
 export const SidecarStatusSchema = z.object({

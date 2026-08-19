@@ -1,7 +1,29 @@
 import { AppError } from '@shared/errors';
 import type { AppServices } from '../services';
 import { buildInfo } from '../build-info';
+import { isValidDeviceId } from '../resolve/device-id';
 import type { EventBus, IpcRegistry } from './registry';
+
+/**
+ * The last four digits, or a dash when there is nothing there.
+ *
+ * Masking happens here rather than in the renderer so the full value never
+ * leaves the main process. The point of showing it at all is to confirm the
+ * identity exists and is stable between launches; the digits themselves are
+ * of no use to the person reading them.
+ */
+export function maskIdentity(config: { deviceId: string; installId: string }): {
+  deviceId: string;
+  installId: string;
+  configured: boolean;
+} {
+  const mask = (value: string): string => (isValidDeviceId(value) ? `…${value.slice(-4)}` : '—');
+  return {
+    deviceId: mask(config.deviceId),
+    installId: mask(config.installId),
+    configured: isValidDeviceId(config.deviceId) && isValidDeviceId(config.installId),
+  };
+}
 
 /**
  * Phase-1 handlers. Each one is a thin adapter over a service — no business
@@ -19,6 +41,7 @@ export function registerAppHandlers(registry: IpcRegistry, services: AppServices
       ffmpeg: sidecars.find((s) => s.name === 'ffmpeg')?.version ?? null,
       ytDlp: sidecars.find((s) => s.name === 'yt-dlp')?.version ?? null,
       ...buildInfo(),
+      routeIdentity: maskIdentity(services.config.get()),
     };
   });
 

@@ -440,6 +440,28 @@ export function Settings(): React.JSX.Element {
               {updating ? 'Updating…' : 'Update extractor'}
             </Button>
           </dd>
+          {/**
+           * Not a setting — there is nothing here to change, and no reason
+           * anyone would want to type one. It is shown because "did that
+           * actually take effect?" previously had no answer short of opening
+           * a config file, and because an app route with no identity behind it
+           * is silently inert rather than visibly broken.
+           */}
+          <dt className="text-ink-500">Route identity</dt>
+          <dd className="text-ink-300">
+            {versions?.routeIdentity.configured ? (
+              <>
+                <span className="text-mint-300">app API ready</span>
+                <span className="ml-2 font-mono text-ink-500">
+                  device {versions.routeIdentity.deviceId} · install {versions.routeIdentity.installId}
+                </span>
+              </>
+            ) : (
+              <span className="text-warn-400">
+                not set — the app-API routes are inactive; restart the app to generate one
+              </span>
+            )}
+          </dd>
           <dt className="text-ink-500">ffmpeg</dt>
           <dd className="font-mono text-ink-300">{versions?.ffmpeg ?? 'not installed'}</dd>
           <dt className="text-ink-500">ffmpeg licence</dt>
