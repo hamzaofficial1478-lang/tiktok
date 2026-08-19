@@ -124,6 +124,10 @@ export class DownloadPipeline implements MediaPipeline {
     const selection = selectStream(input.resolved.streams, {
       audioOnly: config.audioOnly,
       watermarkMode: config.watermarkMode,
+      // Joining a video-only stream to its audio is ffmpeg's job, so without
+      // ffmpeg the selector must not choose one it cannot assemble.
+      canMerge: this.options.ffmpegPath() !== null,
+      forceH264: config.forceH264,
     });
     log.info({ stream: selection.stream.id, strategy: selection.strategy }, selection.reason);
 
@@ -249,6 +253,29 @@ export class DownloadPipeline implements MediaPipeline {
 
     if (verified.degraded) {
       log.warn('ffprobe is unavailable; the file was saved with only a size check');
+    }
+
+    /**
+     * The file arrived silent when it was supposed to have sound.
+     *
+     * This is the check that would have caught the silent downloads on the day
+     * they started rather than several batches later: the selector believed the
+     * chosen stream carried audio, and ffprobe — looking at the actual bytes —
+     * disagrees. Not fatal, because the video is watchable and re-downloading
+     * would not fix a stream TikTok served without sound, but it belongs in the
+     * log where a pattern of it is visible.
+     */
+    if (!config.audioOnly && verified.hasAudio === false) {
+      log.warn(
+        {
+          stream: selection.stream.id,
+          codec: selection.stream.codec,
+          expectedAudio: selection.stream.hasAudio || selection.audioStream !== undefined,
+        },
+        selection.stream.hasAudio || selection.audioStream
+          ? 'the finished file has no audio track, although the chosen stream was expected to carry one'
+          : 'the finished file has no audio track, as expected for this post',
+      );
     }
 
     // 6. Only now does the final filename come into existence.

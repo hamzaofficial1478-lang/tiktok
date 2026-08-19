@@ -60,6 +60,16 @@ export interface VerifyResult {
   readonly probe: ProbeResult | null;
   /** True when ffprobe was unavailable and only the size check ran. */
   readonly degraded: boolean;
+  /**
+   * What the finished file actually contains, or null when nothing probed it.
+   *
+   * Reported rather than only asserted, because "the download succeeded and
+   * the file is silent" is not a failure — plenty of TikTok posts genuinely
+   * have no sound — but it is the exact symptom of a selection bug, and it
+   * needs to be visible in the log to tell the two apart.
+   */
+  readonly hasAudio: boolean | null;
+  readonly hasVideo: boolean | null;
 }
 
 export async function verifyDownload(input: VerifyInput): Promise<VerifyResult> {
@@ -79,7 +89,7 @@ export async function verifyDownload(input: VerifyInput): Promise<VerifyResult> 
    * surfaced so the row can say the file was not fully verified.
    */
   if (!input.ffprobe.isAvailable) {
-    return { sizeBytes, probe: null, degraded: true };
+    return { sizeBytes, probe: null, degraded: true, hasAudio: null, hasVideo: null };
   }
 
   const probe = await input.ffprobe.probe(input.filePath, input.signal);
@@ -111,5 +121,5 @@ export async function verifyDownload(input: VerifyInput): Promise<VerifyResult> 
     }
   }
 
-  return { sizeBytes, probe, degraded: false };
+  return { sizeBytes, probe, degraded: false, hasAudio, hasVideo };
 }

@@ -333,6 +333,11 @@ export function Settings(): React.JSX.Element {
                 'Comes up minimised and picks the queue straight back up, so an interrupted batch finishes itself after a restart.',
               ],
               [
+                'forceH264',
+                'Always download H.264',
+                'Guarantees the file plays in Windows Media Player. H.265 is sometimes the higher resolution, so this can cost a quality step.',
+              ],
+              [
                 'groupByCreator',
                 'A folder for each account',
                 'Files every download under the account that posted it, however the link was added.',

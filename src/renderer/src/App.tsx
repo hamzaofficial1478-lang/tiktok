@@ -18,6 +18,7 @@ import { Button } from './components/primitives';
 import { Sidebar, type NavItem } from './components/Sidebar';
 import { Icon } from './components/icons';
 import { transition, usePrefersReducedMotion } from './lib/motion-prefs';
+import { useTaskbarProgress } from './lib/use-taskbar-progress';
 
 /**
  * three.js is ~2MB and the scene is pure atmosphere, so it is split into its
@@ -105,6 +106,10 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+
+  // Puts the outstanding count on the taskbar button, so a batch can be
+  // watched from whatever you are actually doing.
+  useTaskbarProgress();
 
   /** Keyboard shortcuts (section 10). */
   useEffect(() => {

@@ -55,6 +55,7 @@ export const INVOKE_CHANNELS = [
   'library:clearRecords',
   'library:deleteFile',
 
+  'system:setTaskbarProgress',
   'system:getResources',
   'system:chooseFolder',
   'system:showInFolder',

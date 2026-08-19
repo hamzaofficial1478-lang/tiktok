@@ -440,6 +440,28 @@ export const invokeContract = {
    * afterwards. That is a consequence worth stating rather than discovering.
    */
   'library:clearRecords': { request: z.void(), response: z.object({ removed: z.number() }) },
+  /**
+   * How much is left, shown on the taskbar button.
+   *
+   * The count is drawn in the renderer and sent as an image because the main
+   * process has no canvas: Windows wants a `NativeImage` overlay rather than a
+   * number, and the only place in an Electron app that can render text to
+   * pixels without another dependency is the window itself.
+   */
+  'system:setTaskbarProgress': {
+    request: z.object({
+      /** Videos still to download; 0 clears the badge. */
+      remaining: z.number().int().min(0).max(99_999),
+      /** 0..1 for the taskbar bar, or null to clear it. */
+      fraction: z.number().min(0).max(1).nullable(),
+      /** True when something failed, so the bar can turn red. */
+      hasFailures: z.boolean(),
+      /** A PNG data URL of the badge, or null when there is nothing to show. */
+      badge: z.string().max(200_000).nullable(),
+    }),
+    response: Ok,
+  },
+
   'library:deleteFile': {
     request: z.object({ downloadId: z.number().int().positive() }),
     response: Ok,

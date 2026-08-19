@@ -1,5 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
+import { useAppStore } from '../store/app-store';
 import * as THREE from 'three';
 import { usePrefersReducedMotion } from '../lib/motion-prefs';
 
@@ -68,8 +69,15 @@ function ParticleField(): React.JSX.Element {
     state.camera.position.x += (targetX - state.camera.position.x) * 0.03;
     state.camera.position.y += (targetY - state.camera.position.y) * 0.03;
     state.camera.lookAt(0, 0, 0);
-
-    invalidate();
+    /**
+     * Deliberately does NOT call `invalidate()` here.
+     *
+     * It used to, which quietly turned `frameloop="demand"` into a continuous
+     * loop: each rendered frame asked for the next one, so a focused window
+     * rendered at the display's full rate — 60, 120 or 144 times a second — for
+     * a drift slow enough to be read as stillness. FrameGovernor is the only
+     * clock now, and it runs far slower.
+     */
   });
 
   return (
@@ -109,6 +117,8 @@ function DriftingForm(): React.JSX.Element {
 /** Throttles rendering by window state, as section 10 requires. */
 function FrameGovernor(): null {
   const { invalidate } = useThree();
+  // True while anything is actually transferring or being processed.
+  const busy = useAppStore((state) => state.queueState.running && !state.queueState.paused && state.queueState.active > 0);
   const [focused, setFocused] = useState(() => (typeof document === 'undefined' ? true : document.hasFocus()));
   const [visible, setVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
 
@@ -132,15 +142,31 @@ function FrameGovernor(): null {
     // GPU whatsoever.
     if (!visible) return;
 
-    const intervalMs = focused ? 0 : 1_000 / 30;
-    if (intervalMs === 0) {
-      invalidate();
-      return;
-    }
+    /**
+     * Downloading wins over decoration.
+     *
+     * While the queue is working, the machine's cycles belong to the transfer,
+     * to ffmpeg and — when captions are on — to Whisper, all of which the user
+     * is actually waiting for. Nobody has ever wanted a smoother background at
+     * the cost of a slower batch, so the scene simply holds still until the
+     * queue is idle again.
+     */
+    if (busy) return;
 
+    /**
+     * Twelve frames a second, and that is a considered number rather than a
+     * cautious one.
+     *
+     * The particle field turns 0.035 radians a second and the form 0.05. At
+     * that speed the difference between 12 fps and 60 is invisible, while the
+     * work is a fifth. Unfocused it halves again, because a window you are not
+     * looking at has no motion to sell.
+     */
+    const intervalMs = focused ? 1_000 / 12 : 1_000 / 6;
+    invalidate();
     const timer = setInterval(() => invalidate(), intervalMs);
     return () => clearInterval(timer);
-  }, [focused, visible, invalidate]);
+  }, [focused, visible, busy, invalidate]);
 
   return null;
 }

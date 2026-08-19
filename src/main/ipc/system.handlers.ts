@@ -1,6 +1,6 @@
 import { cpus } from 'node:os';
 import { resolve, sep } from 'node:path';
-import { app, dialog, session, shell, type BrowserWindow } from 'electron';
+import { app, dialog, nativeImage, session, shell, type BrowserWindow } from 'electron';
 import { cpuBusyPercent, gpuNameFrom, summarise, totalCpuTimes, type CpuTimes } from '../system/resource-monitor';
 import { AppError } from '@shared/errors';
 import type { AppServices } from '../services';
@@ -94,6 +94,47 @@ export function registerSystemHandlers(
     services.log.warn({ path: resolved }, 'refused to open a path outside the download folder');
     throw new AppError('PERMISSION_DENIED', 'that file is not one this app downloaded');
   };
+
+  /**
+   * The remaining count, on the taskbar button.
+   *
+   * Two mechanisms, because Windows has no single one. `setProgressBar` tints
+   * the taskbar button itself — green while working, red when something failed
+   * — and `setOverlayIcon` puts the number in its corner. `setBadgeCount` is
+   * the macOS and Linux equivalent and is a no-op on Windows, so all three are
+   * set and each platform uses what it has.
+   *
+   * The image arrives already drawn: the main process has no canvas, and the
+   * window does.
+   */
+  registry.handle('system:setTaskbarProgress', ({ remaining, fraction, hasFailures, badge }) => {
+    const window = getWindow();
+    if (!window || window.isDestroyed()) return { ok: true as const };
+
+    /**
+     * -1 removes the bar. `paused` is Windows' amber and `error` its red; both
+     * are far more legible at a glance than a number nobody is looking at,
+     * which is the entire point of putting it here.
+     */
+    window.setProgressBar(fraction ?? -1, { mode: hasFailures ? 'error' : 'normal' });
+
+    try {
+      if (badge && remaining > 0) {
+        window.setOverlayIcon(nativeImage.createFromDataURL(badge), `${remaining} videos left to download`);
+      } else {
+        window.setOverlayIcon(null, '');
+      }
+    } catch (err) {
+      // Overlay icons are unavailable on some Windows configurations and on
+      // other platforms entirely; a decorative badge must never fail a call.
+      services.log.debug({ err: String(err) }, 'could not set the taskbar overlay icon');
+    }
+
+    // macOS and Linux: the dock/launcher badge. A no-op on Windows.
+    if (typeof app.setBadgeCount === 'function') app.setBadgeCount(remaining);
+
+    return { ok: true as const };
+  });
 
   registry.handle('system:showInFolder', ({ path }) => {
     shell.showItemInFolder(assertOurFile(path));

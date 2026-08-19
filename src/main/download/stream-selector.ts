@@ -54,6 +54,30 @@ export interface SelectOptions {
    * last resort.
    */
   readonly watermarkMode: AppConfig['watermarkMode'];
+  /**
+   * Whether a merge is actually possible, i.e. ffmpeg is installed.
+   *
+   * Merging a video-only stream with its audio track is ffmpeg's job. Choosing
+   * a video-only stream on a machine without ffmpeg does not produce a silent
+   * file — it produces a failed download, because yt-dlp cannot join the two
+   * halves it was asked for. Since ffmpeg is optional in this app, the selector
+   * has to know, and fall back to a muxed stream rather than pick something it
+   * cannot assemble.
+   *
+   * Defaults to true so existing callers and tests are unaffected.
+   */
+  readonly canMerge?: boolean;
+  /**
+   * Refuse H.265 outright, rather than only breaking ties against it.
+   *
+   * The tie-break handles the common case, where TikTok offers both codecs at
+   * the same resolution and the H.264 one costs nothing to prefer. It cannot
+   * help when H.265 is the only encode at the top resolution — and that is
+   * precisely when a black picture appears on a Windows machine without the
+   * HEVC extensions. This is the escape hatch for that, and it is the user's
+   * to choose because it can cost a resolution step.
+   */
+  readonly forceH264?: boolean;
 }
 
 export function selectStream(streams: readonly StreamCandidate[], options: SelectOptions): SelectionResult {
@@ -113,8 +137,18 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
     return [...byQuality.filter((s) => s.hasAudio), ...byQuality.filter((s) => !s.hasAudio)];
   };
 
-  const clean = rank(video.filter((s) => !s.watermarked));
-  const watermarked = rank(video.filter((s) => s.watermarked));
+  /**
+   * Applied before ranking, and only when something would survive it.
+   *
+   * Filtering to nothing would turn "this might not play" into "this did not
+   * download", which is a strictly worse outcome — so a video TikTok offers
+   * only as H.265 is still taken, with the warning attached.
+   */
+  const playable = options.forceH264 ? video.filter((s) => !isHevc(s)) : video;
+  const usable = playable.length > 0 ? playable : video;
+
+  const clean = rank(usable.filter((s) => !s.watermarked));
+  const watermarked = rank(usable.filter((s) => s.watermarked));
 
   // "Keep watermark" makes the watermarked variant a first-class choice; it is
   // usually the higher-quality encode TikTok offers for download.
@@ -123,6 +157,29 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
 
   const isClean = !preferred.watermarked;
   const audioStream = preferred.hasAudio ? undefined : audioTracks[0];
+
+  /**
+   * No ffmpeg, no merge — so take the best stream that already has its sound.
+   *
+   * Without this the download is simply asked for as `video+audio`, yt-dlp
+   * reports it cannot merge, and the item fails. Dropping to the best muxed
+   * stream costs at most a resolution step and keeps the video usable, which
+   * is the right trade when the alternative is nothing at all.
+   */
+  if (options.canMerge === false && audioStream) {
+    const muxed = [...clean, ...watermarked].find((stream) => stream.hasAudio);
+    if (muxed) {
+      return {
+        stream: muxed,
+        formatId: muxed.id,
+        strategy: muxed.watermarked ? 'raw' : 'clean_source',
+        reason:
+          `${describe(muxed)} with its own audio — the higher ${describe(preferred)} stream is video-only and ` +
+          'joining it to the sound needs ffmpeg, which is not installed. Install ffmpeg in Settings to get the ' +
+          'larger picture as well as the sound.',
+      };
+    }
+  }
 
   const base = isClean
     ? `clean source at ${describe(preferred)}, exactly as TikTok serves it`
@@ -136,11 +193,24 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
    * out loud, because "the file has no sound" needs an explanation that is not
    * "the downloader lost it".
    */
-  const reason = preferred.hasAudio
+  let reason = preferred.hasAudio
     ? base
     : audioStream
       ? `${base}; the best picture TikTok offers has no audio in it, so its separate audio track is merged in — no quality is lost`
       : `${base}; TikTok offers no audio for this post, so the file is silent`;
+
+  /**
+   * Said out loud when H.265 wins on resolution anyway.
+   *
+   * Windows will not play it without the HEVC extensions, and a black picture
+   * with no explanation sends people looking for a bug in the downloader. It is
+   * only reachable when the H.265 stream is genuinely higher resolution than
+   * any H.264 one, since equal resolutions are already broken the other way.
+   */
+  if (isHevc(preferred)) {
+    reason += '; this is an H.265 encode — Windows needs the HEVC Video Extensions to play it, ' +
+      'and shows a black picture without them';
+  }
 
   return {
     stream: preferred,
@@ -164,9 +234,42 @@ function shortSide(stream: StreamCandidate): number {
   return height ?? width ?? 0;
 }
 
+/**
+ * H.265 by any of the names TikTok and yt-dlp use for it.
+ *
+ * TikTok labels its HEVC formats `play_addr_bytevc1`; yt-dlp reports the codec
+ * as `h265`, `hevc`, `hev1` or `hvc1` depending on the route the metadata came
+ * through, so matching on one of them would catch some videos and miss others.
+ */
+export function isHevc(stream: StreamCandidate): boolean {
+  const codec = (stream.codec ?? '').toLowerCase();
+  return /^(h\.?265|hevc|hev1|hvc1)/.test(codec) || /bytevc1/i.test(stream.id);
+}
+
+/**
+ * Ranks quality first, then playability.
+ *
+ * The playability tie-break is the fix for downloads that opened to a black
+ * screen. TikTok offers the same video as both H.264 and H.265, and H.265 is
+ * the smaller file — so a rank on resolution then bitrate happily chose it.
+ * Windows cannot decode H.265 out of the box: Films & TV and Media Player both
+ * need the HEVC Video Extensions from the Store, which is a paid add-on, and
+ * without it they show a black picture rather than an error. The file was
+ * perfect; nothing could play it.
+ *
+ * Applied strictly as a tie-break at equal resolution, never across it, so no
+ * picture quality is traded for it: at the same resolution the two encodes look
+ * the same, and only the container differs in what will open it. A genuinely
+ * higher-resolution H.265 stream still wins, and says so in its reason.
+ */
 function byQualityDesc(a: StreamCandidate, b: StreamCandidate): number {
   const sizeDiff = shortSide(b) - shortSide(a);
   if (sizeDiff !== 0) return sizeDiff;
+
+  // Same resolution: prefer the encode that plays everywhere.
+  const hevcDiff = Number(isHevc(a)) - Number(isHevc(b));
+  if (hevcDiff !== 0) return hevcDiff;
+
   const bitrateDiff = (b.bitrate ?? 0) - (a.bitrate ?? 0);
   if (bitrateDiff !== 0) return bitrateDiff;
   return b.preference - a.preference;

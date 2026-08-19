@@ -377,7 +377,7 @@ function toStream(format: YtDlpFormat): StreamCandidate {
 
   const watermarked = WATERMARKED_FORMAT_IDS.has(formatId) || /watermark/i.test(note);
   const hasVideo = format.vcodec !== 'none';
-  const hasAudio = format.acodec !== 'none' && format.acodec !== undefined ? format.acodec !== 'none' : true;
+  const hasAudio = detectAudio(format);
   const kind: 'video' | 'audio' = hasVideo && formatId !== 'audio' ? 'video' : 'audio';
 
   return {
@@ -398,6 +398,36 @@ function toStream(format: YtDlpFormat): StreamCandidate {
     preference: (watermarked ? 0 : 1_000_000) + (format.height ?? 0) * 10 + (format.preference ?? 0),
     headers: sanitiseHeaders(format.http_headers),
   };
+}
+
+/**
+ * Whether a format actually carries sound.
+ *
+ * This is the whole of the silent-download bug, and it was one expression:
+ *
+ *     const hasAudio = format.acodec !== 'none' && format.acodec !== undefined
+ *       ? format.acodec !== 'none'
+ *       : true;
+ *
+ * Work the branches and it returns `true` for every input there is — including
+ * `acodec: 'none'`, which is precisely how yt-dlp labels a video-only stream.
+ * The guard was written to handle the unknown case and ended up swallowing the
+ * known one. Downstream, `hasAudio: true` meant the selector never asked for
+ * the separate audio track to be merged, so the highest-quality stream — which
+ * on TikTok is very often video-only — was downloaded exactly as it came: a
+ * perfect picture with no sound. Some videos in a batch had audio and some did
+ * not, which is exactly what a per-format flag would produce.
+ *
+ * Unknown now resolves to `false` rather than `true`, and the asymmetry is
+ * deliberate. Guessing "no audio" when there is some costs a remux that
+ * changes nothing about the picture. Guessing "audio" when there is none costs
+ * the sound, silently, with no way to tell from the finished file that
+ * anything was lost.
+ */
+function detectAudio(format: YtDlpFormat): boolean {
+  if (format.acodec === 'none') return false;
+  if (typeof format.acodec === 'string' && format.acodec.trim() !== '') return true;
+  return false;
 }
 
 /**

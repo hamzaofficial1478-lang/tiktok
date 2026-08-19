@@ -80,6 +80,21 @@ export const AppConfigSchema = z.object({
   groupByCreator: z.boolean(),
 
   /**
+   * Never download H.265, even when it is the higher resolution on offer.
+   *
+   * TikTok serves the same video as H.264 and H.265, and sometimes offers H.265
+   * at a resolution it has no H.264 for. Windows cannot decode H.265 without
+   * the HEVC Video Extensions from the Store — a paid add-on — and Films & TV
+   * and Media Player both show a black picture rather than saying so. A file
+   * that will not play is worth less than a slightly smaller one that will.
+   *
+   * Off by default because it can cost a resolution step and the app's standing
+   * rule is not to trade picture quality. On, it guarantees every download
+   * opens in anything.
+   */
+  forceH264: z.boolean(),
+
+  /**
    * Start the app when you sign in to the machine.
    *
    * An interrupted queue already resumes exactly where it stopped — but only
@@ -191,6 +206,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   // On, because the alternative is a single folder that becomes unusable at a
   // few hundred files, and every account already had this when queued whole.
   groupByCreator: true,
+  forceH264: false,
   startOnLogin: false,
   detectReposts: false,
   autoUpdateExtractor: true,
