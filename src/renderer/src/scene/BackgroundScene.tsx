@@ -1,198 +1,80 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { useAppStore } from '../store/app-store';
-import * as THREE from 'three';
 import { usePrefersReducedMotion } from '../lib/motion-prefs';
 
 /**
- * The 3D background — spec section 10.
+ * The backdrop, drawn once and then left alone.
  *
- * "The 3D is atmosphere; the queue list is the product." Everything here is
- * subordinate to that:
+ * ## Why this is no longer three.js
  *
- *  - It is a fixed, pointer-events-none layer behind everything. It never
- *    renders a list row, a progress indicator or anything else that needs to
- *    be readable or accessible.
- *  - It is capped at 30fps when the window is unfocused and stops entirely
- *    when the window is hidden, so a batch running in the background costs no
- *    GPU at all.
- *  - It does not mount when reduce-effects or prefers-reduced-motion is set,
- *    so the WebGL context is never even created.
+ * It was a WebGL particle field and a turning wireframe form, and it cost more
+ * than it was worth in three separate ways:
  *
- * The particle field is one BufferGeometry drawn as a single Points object:
- * one draw call, no per-particle React state, nothing that grows with the
- * queue. If this ever costs more than a few ms a frame, the particle count is
- * the dial to turn.
+ *  - It rendered continuously. `useFrame` called `invalidate()`, which turned
+ *    `frameloop="demand"` into a loop running at the display's full rate — 60,
+ *    120 or 144 times a second — to animate a drift slow enough to read as
+ *    stillness.
+ *  - It was 2 MB of JavaScript to parse before anything appeared, plus a WebGL
+ *    context and geometry buffers held for the life of the window.
+ *  - The GPU it used is the same GPU ffmpeg wants for hardware encoding, on the
+ *    machine of someone who is downloading videos.
+ *
+ * What replaced it is CSS gradients and one small repeating SVG, both of which
+ * the compositor draws once and never touches again. No frame loop, no WebGL
+ * context, no measurable processor cost, and the same layered sci-fi feel the
+ * design called for. Nothing here animates, deliberately.
  */
 
-const PARTICLE_COUNT = 900;
-const FIELD_RADIUS = 9;
-
-function ParticleField(): React.JSX.Element {
-  const points = useRef<THREE.Points>(null);
-  const { invalidate } = useThree();
-
-  const geometry = useMemo(() => {
-    const positions = new Float32Array(PARTICLE_COUNT * 3);
-    const scales = new Float32Array(PARTICLE_COUNT);
-
-    for (let i = 0; i < PARTICLE_COUNT; i++) {
-      // Spherical distribution, biased outward so the centre stays clear of
-      // the content that sits in front of it.
-      const theta = Math.random() * Math.PI * 2;
-      const phi = Math.acos(2 * Math.random() - 1);
-      const radius = FIELD_RADIUS * (0.45 + Math.random() * 0.55);
-
-      positions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
-      positions[i * 3 + 1] = radius * Math.sin(phi) * Math.sin(theta);
-      positions[i * 3 + 2] = radius * Math.cos(phi);
-      scales[i] = 0.4 + Math.random() * 0.6;
-    }
-
-    const buffer = new THREE.BufferGeometry();
-    buffer.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    buffer.setAttribute('aScale', new THREE.BufferAttribute(scales, 1));
-    return buffer;
-  }, []);
-
-  useEffect(() => () => geometry.dispose(), [geometry]);
-
-  useFrame((state, delta) => {
-    if (!points.current) return;
-    // Slow enough to read as drift rather than motion.
-    points.current.rotation.y += delta * 0.035;
-    points.current.rotation.x = Math.sin(state.clock.elapsedTime * 0.08) * 0.12;
-
-    // Subtle cursor parallax (section 10), damped so it never feels twitchy.
-    const targetX = state.pointer.x * 0.35;
-    const targetY = state.pointer.y * 0.25;
-    state.camera.position.x += (targetX - state.camera.position.x) * 0.03;
-    state.camera.position.y += (targetY - state.camera.position.y) * 0.03;
-    state.camera.lookAt(0, 0, 0);
-    /**
-     * Deliberately does NOT call `invalidate()` here.
-     *
-     * It used to, which quietly turned `frameloop="demand"` into a continuous
-     * loop: each rendered frame asked for the next one, so a focused window
-     * rendered at the display's full rate — 60, 120 or 144 times a second — for
-     * a drift slow enough to be read as stillness. FrameGovernor is the only
-     * clock now, and it runs far slower.
-     */
-  });
-
-  return (
-    <points ref={points} geometry={geometry}>
-      <pointsMaterial
-        size={0.045}
-        sizeAttenuation
-        transparent
-        opacity={0.5}
-        depthWrite={false}
-        blending={THREE.AdditiveBlending}
-        color="#8b5cf6"
-      />
-    </points>
-  );
-}
-
-/** A slow-turning low-poly form, the second half of section 10's suggestion. */
-function DriftingForm(): React.JSX.Element {
-  const mesh = useRef<THREE.Mesh>(null);
-
-  useFrame((state, delta) => {
-    if (!mesh.current) return;
-    mesh.current.rotation.x += delta * 0.05;
-    mesh.current.rotation.y += delta * 0.07;
-    mesh.current.position.y = Math.sin(state.clock.elapsedTime * 0.2) * 0.3;
-  });
-
-  return (
-    <mesh ref={mesh} position={[2.6, 0, -3]}>
-      <icosahedronGeometry args={[1.7, 0]} />
-      <meshBasicMaterial color="#40e0b8" wireframe transparent opacity={0.12} />
-    </mesh>
-  );
-}
-
-/** Throttles rendering by window state, as section 10 requires. */
-function FrameGovernor(): null {
-  const { invalidate } = useThree();
-  // True while anything is actually transferring or being processed.
-  const busy = useAppStore((state) => state.queueState.running && !state.queueState.paused && state.queueState.active > 0);
-  const [focused, setFocused] = useState(() => (typeof document === 'undefined' ? true : document.hasFocus()));
-  const [visible, setVisible] = useState(() => (typeof document === 'undefined' ? true : !document.hidden));
-
-  useEffect(() => {
-    const onFocus = (): void => setFocused(true);
-    const onBlur = (): void => setFocused(false);
-    const onVisibility = (): void => setVisible(!document.hidden);
-
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('blur', onBlur);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('blur', onBlur);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, []);
-
-  useEffect(() => {
-    // Minimised or hidden: stop completely. A background batch should cost no
-    // GPU whatsoever.
-    if (!visible) return;
-
-    /**
-     * Downloading wins over decoration.
-     *
-     * While the queue is working, the machine's cycles belong to the transfer,
-     * to ffmpeg and — when captions are on — to Whisper, all of which the user
-     * is actually waiting for. Nobody has ever wanted a smoother background at
-     * the cost of a slower batch, so the scene simply holds still until the
-     * queue is idle again.
-     */
-    if (busy) return;
-
-    /**
-     * Twelve frames a second, and that is a considered number rather than a
-     * cautious one.
-     *
-     * The particle field turns 0.035 radians a second and the form 0.05. At
-     * that speed the difference between 12 fps and 60 is invisible, while the
-     * work is a fifth. Unfocused it halves again, because a window you are not
-     * looking at has no motion to sell.
-     */
-    const intervalMs = focused ? 1_000 / 12 : 1_000 / 6;
-    invalidate();
-    const timer = setInterval(() => invalidate(), intervalMs);
-    return () => clearInterval(timer);
-  }, [focused, visible, busy, invalidate]);
-
-  return null;
-}
+/**
+ * A faint grid, as a data URI.
+ *
+ * Inline rather than a file because the CSP for this app allows `data:` images
+ * and nothing else external — and at this size the whole pattern is smaller
+ * than the request that would fetch it.
+ */
+const GRID =
+  "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64'%3E%3Cpath d='M64 0H0v64' fill='none' stroke='%23ffffff' stroke-opacity='0.028' stroke-width='1'/%3E%3C/svg%3E\")";
 
 export function BackgroundScene(): React.JSX.Element | null {
   const reduced = usePrefersReducedMotion();
 
-  // Not merely paused — never mounted, so no WebGL context is created at all.
+  /**
+   * "Reduce visual effects" still removes it entirely.
+   *
+   * It used to mean "do not download 2 MB of three.js", which mattered a great
+   * deal. Now it means a plain flat ground, which is a smaller difference — but
+   * it is still a preference someone expressed, and honouring it costs nothing.
+   */
   if (reduced) return null;
 
   return (
-    <div className="pointer-events-none fixed inset-0 -z-10" aria-hidden="true">
-      <Canvas
-        // frameloop="demand" means nothing renders unless something asks it to,
-        // which is what lets FrameGovernor cap the rate.
-        frameloop="demand"
-        camera={{ position: [0, 0, 6], fov: 60 }}
-        gl={{ antialias: false, powerPreference: 'low-power', alpha: true }}
-        dpr={[1, 1.5]}
-      >
-        <Suspense fallback={null}>
-          <FrameGovernor />
-          <ParticleField />
-          <DriftingForm />
-        </Suspense>
-      </Canvas>
+    <div aria-hidden="true" className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+      {/* The ground, so the page never shows the host's colour through. */}
+      <div className="absolute inset-0 bg-base-950" />
+
+      {/* Two wide, soft pools of colour: the depth the scene used to imply. */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            'radial-gradient(60rem 40rem at 18% 8%, rgba(91,110,245,0.16), transparent 62%),' +
+            'radial-gradient(48rem 36rem at 88% 78%, rgba(64,224,184,0.10), transparent 60%)',
+        }}
+      />
+
+      {/* The grid, faded out towards the edges so it never reads as a table. */}
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage: GRID,
+          maskImage: 'radial-gradient(80% 70% at 50% 40%, #000 35%, transparent 100%)',
+          WebkitMaskImage: 'radial-gradient(80% 70% at 50% 40%, #000 35%, transparent 100%)',
+        }}
+      />
+
+      {/* A single vignette, which is what stops the flat areas looking flat. */}
+      <div
+        className="absolute inset-0"
+        style={{ background: 'radial-gradient(120% 100% at 50% 0%, transparent 45%, rgba(0,0,0,0.55) 100%)' }}
+      />
     </div>
   );
 }

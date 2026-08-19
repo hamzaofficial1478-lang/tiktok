@@ -1,6 +1,7 @@
-import { Suspense, lazy, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { useAppStore } from './store/app-store';
+import { BackgroundScene } from './scene/BackgroundScene';
 import { invoke } from './lib/ipc';
 import { AddLinks } from './screens/AddLinks';
 import { Queue } from './screens/Queue';
@@ -21,13 +22,12 @@ import { transition, usePrefersReducedMotion } from './lib/motion-prefs';
 import { useTaskbarProgress } from './lib/use-taskbar-progress';
 
 /**
- * three.js is ~2MB and the scene is pure atmosphere, so it is split into its
- * own chunk and only fetched when it is actually going to be shown. A user
- * with reduce-effects on never downloads or parses it at all.
+ * Imported directly now.
+ *
+ * This was lazy because the scene was 2 MB of three.js and worth deferring. It
+ * is a few gradients and one inline SVG today, so a separate chunk and a
+ * Suspense boundary would cost more than they save.
  */
-const BackgroundScene = lazy(() =>
-  import('./scene/BackgroundScene').then((module) => ({ default: module.BackgroundScene })),
-);
 
 type Screen = 'add' | 'captions' | 'queue' | 'activity' | 'library' | 'history' | 'settings' | 'logs';
 
@@ -96,7 +96,6 @@ export default function App(): React.JSX.Element {
   const queueCount = useAppStore((s) => s.queueItems.size);
   const proxyUrl = useAppStore((s) => s.config?.proxyUrl ?? '');
   const [screen, setScreen] = useState<Screen>('add');
-  const reducedMotion = usePrefersReducedMotion();
   const setDuplicatePromptDismissed = useAppStore((s) => s.setDuplicatePromptDismissed);
   const setPhotoPromptDismissed = useAppStore((s) => s.setPhotoPromptDismissed);
   // Both kinds of parked question are the same thing from the navigation's
@@ -163,11 +162,7 @@ export default function App(): React.JSX.Element {
 
   return (
     <div className="flex h-full">
-      {!reducedMotion && (
-        <Suspense fallback={null}>
-          <BackgroundScene />
-        </Suspense>
-      )}
+      <BackgroundScene />
 
       <Sidebar
         items={navItems}

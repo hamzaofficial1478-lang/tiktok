@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { app, BrowserWindow, ipcMain, powerMonitor, powerSaveBlocker, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, Menu, powerMonitor, powerSaveBlocker, shell } from 'electron';
 import { buildPaths } from './paths';
 import { createServices, type AppServices } from './services';
 import { EventBus, IpcRegistry } from './ipc/registry';
@@ -121,6 +121,40 @@ function createWindow(): BrowserWindow {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
     void shell.openExternal(url);
   };
+
+  /**
+   * Right-click gives you Cut / Copy / Paste, as every other program does.
+   *
+   * Electron ships no context menu at all — a right-click in a text box does
+   * nothing — so pasting was keyboard-only, which is a strange thing to
+   * discover in a box whose entire purpose is receiving pasted links.
+   *
+   * Built from Electron's own roles rather than hand-written handlers, so each
+   * item performs the real editing command against the focused field and the
+   * labels arrive already translated.
+   */
+  window.webContents.on('context-menu', (_event, params) => {
+    const canEdit = params.isEditable;
+    const hasSelection = params.selectionText.trim() !== '';
+    if (!canEdit && !hasSelection) return;
+
+    const items: Electron.MenuItemConstructorOptions[] = canEdit
+      ? [
+          { role: 'undo' },
+          { role: 'redo' },
+          { type: 'separator' },
+          { role: 'cut', enabled: hasSelection },
+          { role: 'copy', enabled: hasSelection },
+          // Deliberately always enabled: asking the clipboard what it holds on
+          // every right-click is a permission-shaped question for a menu item,
+          // and pasting nothing is harmless.
+          { role: 'paste' },
+          { role: 'selectAll' },
+        ]
+      : [{ role: 'copy' }];
+
+    Menu.buildFromTemplate(items).popup({ window });
+  });
 
   // The renderer must never navigate itself or open windows; any external link
   // goes to the system browser instead.

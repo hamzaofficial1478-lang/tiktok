@@ -180,14 +180,27 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
-export const CONFIG_SCHEMA_VERSION = 4;
+export const CONFIG_SCHEMA_VERSION = 5;
 
 export const DEFAULT_CONFIG: AppConfig = {
   outputDir: '',
   // Numbered by paste order first, so the output folder reads in the same
   // order the links were pasted, then identified so a file is still
   // recognisable once it is out of that folder.
-  filenameTemplate: '{n:3} - {author} - {id}',
+  /**
+   * `{index}`, not `{n}`, and the difference is the whole of a real bug.
+   *
+   * `{n}` numbers a link within its own paste, so it restarts at 001 for every
+   * new paste and for every account a creator run visits. Five videos added in
+   * two goes came out 001, 002, 003, 001, 002 — the same numbers twice, in a
+   * folder meant to read in the order things were added.
+   *
+   * `{index}` is the counter that never restarts: it is allocated from a value
+   * kept in the database, so it survives clearing the queue, closing the app
+   * and starting a new batch. Existing configs holding the old default are
+   * migrated to this one; a template someone edited themselves is left alone.
+   */
+  filenameTemplate: '{index:3} - {author} - {id}',
 
   concurrency: 1,
   rateLimitMs: 1_500,

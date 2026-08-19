@@ -58,6 +58,40 @@ function overlay(base: Record<string, unknown>, patch: Record<string, unknown>):
  * chance first, merged over its default, which is what rescues a captions
  * block that is merely missing a newly added key rather than wrong.
  */
+/**
+ * Templates that shipped as a default and have since been superseded.
+ *
+ * Only exact matches are rewritten. A template someone typed themselves is
+ * theirs, even if it has the same flaw — silently editing a user's setting is
+ * a worse failure than the numbering it would fix.
+ */
+const SUPERSEDED_TEMPLATES = new Map<string, string>([
+  // `{n}` restarts at 1 for every paste and every account a run visits, so a
+  // second batch reused the numbers of the first: 001, 002, 003, 001, 002.
+  // `{index}` is allocated from a counter in the database and never restarts.
+  ['{n:3} - {author} - {id}', '{index:3} - {author} - {id}'],
+]);
+
+/**
+ * Brings a stored config forward when a default has changed under it.
+ *
+ * Changing `DEFAULT_CONFIG` only helps a fresh install: everyone else has the
+ * old value written to disk, and would keep it forever. This is the step that
+ * makes a corrected default reach the people who already have the old one.
+ */
+export function migrateConfig(config: AppConfig): { config: AppConfig; changed: string[] } {
+  const changed: string[] = [];
+  let next = config;
+
+  const upgraded = SUPERSEDED_TEMPLATES.get(config.filenameTemplate);
+  if (upgraded) {
+    next = { ...next, filenameTemplate: upgraded };
+    changed.push('filenameTemplate');
+  }
+
+  return { config: next, changed };
+}
+
 export function recoverConfig(raw: Record<string, unknown>): { config: AppConfig; reset: string[] } {
   const shape = AppConfigSchema.shape as Record<string, { safeParse(value: unknown): { success: boolean; data?: unknown } }>;
   const merged: Record<string, unknown> = { ...DEFAULT_CONFIG };
@@ -144,8 +178,20 @@ export class ConfigStore {
       }
     }
 
-    const store = new ConfigStore(filePath, config, log);
-    if (!existsSync(filePath)) store.persist();
+    /**
+     * Applied after loading and before anything reads it, so the corrected
+     * value is what the first download uses rather than the one after a
+     * restart.
+     */
+    const migrated = migrateConfig(config);
+    const store = new ConfigStore(filePath, migrated.config, log);
+
+    if (migrated.changed.length > 0) {
+      log.info({ changed: migrated.changed }, 'brought stored settings forward to the current defaults');
+      store.persist();
+    } else if (!existsSync(filePath)) {
+      store.persist();
+    }
     return store;
   }
 

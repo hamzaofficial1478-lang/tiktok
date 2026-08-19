@@ -176,3 +176,39 @@ describe('ConfigStore', () => {
     expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toHaveLength(0);
   });
 });
+
+describe('bringing a stored config forward when a default changes', () => {
+  it('replaces the old filename template that reused numbers across pastes', () => {
+    // `{n}` restarts at 1 for every paste and for every account a creator run
+    // visits, so five videos added in two goes came out 001, 002, 003, 001,
+    // 002 — the same numbers twice in a folder meant to read in order.
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, filenameTemplate: '{n:3} - {author} - {id}' }));
+
+    const store = ConfigStore.load(file, silent);
+    expect(store.get().filenameTemplate).toBe('{index:3} - {author} - {id}');
+  });
+
+  it('writes the change to disk, so it is not redone on every launch', () => {
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, filenameTemplate: '{n:3} - {author} - {id}' }));
+    ConfigStore.load(file, silent);
+
+    expect(JSON.parse(readFileSync(file, 'utf8')).filenameTemplate).toBe('{index:3} - {author} - {id}');
+  });
+
+  it('leaves a template the user wrote themselves completely alone', () => {
+    // Even though it has the same flaw. Silently editing someone's own setting
+    // is a worse failure than the numbering it would fix.
+    const mine = '{n:2}_{caption:20}_{id}';
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, filenameTemplate: mine }));
+
+    expect(ConfigStore.load(file, silent).get().filenameTemplate).toBe(mine);
+  });
+
+  it('does not touch a config already on the new default', () => {
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, outputDir: 'D:/TikTok' }));
+    const store = ConfigStore.load(file, silent);
+
+    expect(store.get().filenameTemplate).toBe(DEFAULT_CONFIG.filenameTemplate);
+    expect(store.get().outputDir).toBe('D:/TikTok');
+  });
+});
