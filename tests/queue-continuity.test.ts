@@ -88,6 +88,82 @@ describe('surviving system sleep', () => {
 });
 
 /**
+ * Closing the app is the same interruption as the machine sleeping, and used
+ * not to be treated as one.
+ *
+ * `stop({ keepRunState: true })` is what runs when the app quits. It aborts
+ * whatever is downloading, and an abort arrives in the worker looking exactly
+ * like a cancel — so the item was written down as `cancelled`, which is a
+ * finished state. The next launch resumed the queue, saw a finished row, and
+ * carried on from the item after it: the video that was actually in flight was
+ * never downloaded, and its half-written `.part` stayed on disk forever. The
+ * user saw a stray "yt-dlp cancelled" against a video they never cancelled.
+ */
+describe('quitting the app mid-download', () => {
+  it('puts the in-flight download back in the queue rather than cancelling it', async () => {
+    harness = createHarness({ config: { concurrency: 1 } });
+    harness.pipeline.hangFor(awemeIdFor(2));
+    harness.engine.addLinks(Array.from({ length: 5 }, (_, i) => makeUrl(i)));
+
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[2]?.status).toBe('downloading'));
+
+    await harness.engine.stop({ keepRunState: true });
+
+    const parked = harness.engine.getSnapshot()[2];
+    expect(parked?.status).toBe('queued');
+    expect(parked?.errorCode).toBeNull();
+    // Being quit is not a failed attempt either.
+    expect(parked?.attemptCount).toBe(0);
+  });
+
+  it('picks that same item up again on the next start', async () => {
+    harness = createHarness({ config: { concurrency: 1 } });
+    harness.pipeline.hangFor(awemeIdFor(2));
+    harness.engine.addLinks(Array.from({ length: 5 }, (_, i) => makeUrl(i)));
+
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.pipeline.processed).toHaveLength(2));
+    await harness.engine.stop({ keepRunState: true });
+
+    harness.pipeline.clearHangs();
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    expect(harness.pipeline.processed).toEqual([0, 1, 2, 3, 4].map(awemeIdFor));
+    expect(harness.engine.getSnapshot().every((i) => i.status === 'completed')).toBe(true);
+  });
+
+  it('still honours a cancel the user asked for, even as the app is closing', async () => {
+    harness = createHarness({ config: { concurrency: 1 } });
+    harness.pipeline.hangFor(awemeIdFor(0));
+    harness.engine.addLinks([makeUrl(0), makeUrl(1)]);
+
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.status).toBe('downloading'));
+
+    harness.engine.cancelItem(harness.engine.getSnapshot()[0]!.id);
+    await harness.engine.stop({ keepRunState: true });
+
+    // Parking exists for aborts nobody asked for. This one was asked for.
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('cancelled');
+  });
+
+  it('a user stop — not a quit — still cancels what was in flight', async () => {
+    harness = createHarness({ config: { concurrency: 1 } });
+    harness.pipeline.hangFor(awemeIdFor(0));
+    harness.engine.addLinks([makeUrl(0), makeUrl(1)]);
+
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.status).toBe('downloading'));
+
+    await harness.engine.stop();
+
+    expect(harness.engine.getSnapshot()[0]?.status).toBe('cancelled');
+  });
+});
+
+/**
  * Requirement: if the PC shuts down or the program is closed mid-batch, it
  * restarts from exactly where it left off and no link is lost.
  */

@@ -300,7 +300,36 @@ async function attemptDownload(
      * fallback see to that — but it would arrive as an .mkv the rest of the
      * app named .mp4.
      */
-    ...(options.formatId.includes('+') ? ['--merge-output-format', 'mp4'] : []),
+    /**
+     * Only when a merge is actually happening.
+     *
+     * `-o` ends in `.download`, which is not a container yt-dlp recognises, so
+     * with two formats to join it would pick one itself and rename the result.
+     *
+     * `-movflags +faststart` is the part that matters to anything downstream.
+     * ffmpeg writes an MP4's index — the `moov` atom — at the *end* of the file
+     * by default, and only moves it to the front when asked. TikTok's own
+     * single-stream files already have it at the front, so a video downloaded
+     * whole was fine and a video this app merged was not, which is why the
+     * failures clustered on longer videos: those are the ones TikTok serves as
+     * a separate video and audio track, so those are the ones that get merged.
+     *
+     * A player reading locally does not care. An uploader that parses the
+     * beginning of the file to learn its duration and dimensions very much
+     * does, and reports something unhelpfully generic when it cannot. The flag
+     * costs one extra pass over a file ffmpeg has already written and no
+     * quality whatsoever.
+     */
+    ...(options.formatId.includes('+')
+      ? [
+          '--merge-output-format',
+          'mp4',
+          '--postprocessor-args',
+          // `Merger+ffmpeg_o` = the arguments ffmpeg receives before its output
+          // file, and only when the Merger is what invoked it.
+          'Merger+ffmpeg_o:-movflags +faststart',
+        ]
+      : []),
     '-o',
     toOutputTemplate(paths.workPath),
   ];

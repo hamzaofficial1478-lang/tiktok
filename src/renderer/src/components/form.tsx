@@ -195,6 +195,54 @@ export function Select<T extends string>({
  * `role="switch"` rather than a styled checkbox because that is what it is: a
  * setting that takes effect immediately, with no form to submit.
  */
+/**
+ * The switch on its own, with no label beside it.
+ *
+ * Split out of `Toggle` for the places where the thing being switched is
+ * already named by the row it sits in — a creator's handle, say. Those need the
+ * control without a second copy of the name, and they need a title and an
+ * accessible name that a screen reader can still read out.
+ */
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+  title,
+  id,
+  className = '',
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  /** Accessible name. Required, because a bare switch has nothing else to read. */
+  label: string;
+  title?: string;
+  id?: string;
+  className?: string;
+}): React.JSX.Element {
+  return (
+    <button
+      id={id}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      title={title ?? label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors
+        disabled:cursor-not-allowed disabled:opacity-40 ${checked ? 'bg-accent-500' : 'bg-base-600'} ${className}`}
+    >
+      <span
+        className={`size-4 rounded-full bg-white shadow-sm transition-transform ${
+          checked ? 'translate-x-4' : 'translate-x-0'
+        }`}
+      />
+    </button>
+  );
+}
+
 export function Toggle({
   checked,
   onChange,
@@ -212,22 +260,7 @@ export function Toggle({
 
   return (
     <div className="flex items-start gap-3">
-      <button
-        id={id}
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={`mt-0.5 flex h-5 w-9 shrink-0 items-center rounded-full p-0.5 transition-colors
-          disabled:cursor-not-allowed disabled:opacity-40 ${checked ? 'bg-accent-500' : 'bg-base-600'}`}
-      >
-        <span
-          className={`size-4 rounded-full bg-white shadow-sm transition-transform ${
-            checked ? 'translate-x-4' : 'translate-x-0'
-          }`}
-        />
-      </button>
+      <Switch id={id} checked={checked} onChange={onChange} disabled={disabled} label={label} className="mt-0.5" />
       <div className="min-w-0">
         <label htmlFor={id} className="cursor-pointer text-sm font-medium text-ink-100">
           {label}

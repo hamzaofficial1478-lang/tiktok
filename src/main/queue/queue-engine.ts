@@ -86,10 +86,28 @@ export class QueueEngine {
   private running = false;
   private paused = false;
   private suspending = false;
+  /**
+   * True while in-flight work is being aborted for a reason that is not the
+   * user abandoning it — a system suspend, or the app being quit mid-batch.
+   *
+   * The distinction matters because both look identical from a worker's catch
+   * block: an aborted download throws CANCELLED either way. Without this, a
+   * download interrupted by closing the app was recorded as "cancelled", which
+   * is a finished state — so the next launch resumed the queue and skipped
+   * straight past the item that had been running, and its half-finished `.part`
+   * sat there forever. Parking puts it back to `queued` instead, keeping its
+   * position and its `.part`, so the next launch carries on from where it was.
+   */
+  private parking = false;
   private activeWorkers = 0;
 
   private readonly controllers = new Map<number, AbortController>();
   private readonly retryTimers = new Map<number, AbortController>();
+  /**
+   * Items the user actually asked to cancel, so parking can tell them apart
+   * from the ones it aborted itself. Consumed by the worker's failure path.
+   */
+  private readonly cancelledByUser = new Set<number>();
   private readonly pendingDuplicates = new Map<number, PendingDuplicate>();
   /** Slideshow questions waiting on an answer, and the answers already given. */
   private readonly pendingPhotos = new Map<number, PendingPhotoPost>();
@@ -251,15 +269,23 @@ export class QueueEngine {
    *
    * `keepRunState` is set when the process is going down rather than the user
    * stopping: quitting mid-batch must not be recorded as "the user paused", or
-   * the next launch would sit idle instead of carrying on.
+   * the next launch would sit idle instead of carrying on. It also parks
+   * whatever was downloading back into the queue rather than cancelling it —
+   * closing the app is not a decision to abandon the video that happened to be
+   * in flight at the time.
    */
   async stop(options: { keepRunState?: boolean } = {}): Promise<void> {
     if (!options.keepRunState) this.options.onRunStateChanged?.(false);
+    if (options.keepRunState) this.parking = true;
     this.running = false;
     for (const controller of this.controllers.values()) controller.abort();
     for (const controller of this.retryTimers.values()) controller.abort();
     this.retryTimers.clear();
-    await this.whenIdle();
+    try {
+      await this.whenIdle();
+    } finally {
+      this.parking = false;
+    }
     this.emitState();
   }
 
@@ -285,6 +311,7 @@ export class QueueEngine {
     if (!this.running) return;
     this.log.info({ active: this.activeWorkers }, 'system suspending; parking in-flight downloads');
     this.suspending = true;
+    this.parking = true;
     this.paused = true;
     for (const controller of this.controllers.values()) controller.abort();
     for (const controller of this.retryTimers.values()) controller.abort();
@@ -297,6 +324,7 @@ export class QueueEngine {
   resumeFromSuspend(): void {
     if (!this.suspending) return;
     this.suspending = false;
+    this.parking = false;
     this.paused = false;
     this.options.rateLimiter.reset();
     this.log.info('system resumed; continuing the queue');
@@ -383,6 +411,9 @@ export class QueueEngine {
       this.handleFailure(row, err);
     } finally {
       this.controllers.delete(row.id);
+      // Whether or not the failure path consumed it — an item that finished
+      // just as the cancel arrived never reaches that branch.
+      this.cancelledByUser.delete(row.id);
       this.lastProgressEmit.delete(row.id);
       this.lastProgressWrite.delete(row.id);
       this.checkBatchComplete(row.batch_id);
@@ -824,10 +855,14 @@ export class QueueEngine {
     const attemptCount = row.attempt_count + 1;
 
     if (appError.code === 'CANCELLED') {
-      // A suspend aborts in-flight work the same way a cancel does, but it is
-      // not the user abandoning the item: put it back in the queue, keeping
-      // its position and its .part, so waking up continues rather than loses it.
-      if (this.suspending) {
+      // Every abort arrives here looking the same, so the only thing that
+      // separates "the user pressed Cancel" from "the machine went to sleep" or
+      // "the app was quit" is which of them asked for the abort. A cancel the
+      // user asked for is honoured; the other two put the item back in the
+      // queue, keeping its position and its .part, so the next launch continues
+      // it rather than skipping past it with a half-finished file left behind.
+      const byUser = this.cancelledByUser.delete(row.id);
+      if (!byUser && this.parking) {
         this.update(row.id, { status: 'queued', progress: row.progress, startedAt: null });
         this.emitItem(this.options.queueItems.findById(row.id));
         return;
@@ -975,6 +1010,9 @@ export class QueueEngine {
     if (controller) {
       // The worker's catch turns the abort into a `cancelled` transition and
       // is responsible for killing any child process and deleting the .part.
+      // Recorded first so that catch knows this abort was asked for, and does
+      // not park the item back into the queue the way a suspend or a quit does.
+      this.cancelledByUser.add(itemId);
       controller.abort();
       return;
     }
@@ -1053,7 +1091,13 @@ export class QueueEngine {
   }
 
   clearQueue(): number {
-    for (const controller of this.controllers.values()) controller.abort();
+    // Emptying the queue is a cancel of everything in it, so in-flight items
+    // are marked as user-asked-for before the abort lands — otherwise a clear
+    // during a suspend would park the very rows it is removing.
+    for (const [itemId, controller] of this.controllers) {
+      this.cancelledByUser.add(itemId);
+      controller.abort();
+    }
     for (const controller of this.retryTimers.values()) controller.abort();
     this.retryTimers.clear();
     this.pendingDuplicates.clear();

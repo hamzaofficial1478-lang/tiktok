@@ -190,6 +190,48 @@ describe('invoking yt-dlp', () => {
     expect(existsSync(join(dir, 'v.mp4.download'))).toBe(false);
   });
 
+  /**
+   * The Facebook upload failure, and why it only hit the longer videos.
+   *
+   * ffmpeg writes an MP4's index — the `moov` atom — at the end of the file
+   * unless told otherwise. TikTok's own single-file streams already have it at
+   * the front, so a video downloaded whole uploaded fine; a video this app
+   * merged from a separate video and audio track did not, and the uploader
+   * reported nothing more useful than a technical error. Longer videos are the
+   * ones TikTok serves as separate tracks, so they were the ones that failed,
+   * and the same video from another downloader worked.
+   */
+  it('moves the MP4 index to the front of any file it merges', async () => {
+    const { runner, args } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(4_096));
+    });
+
+    await downloadWithYtDlp({
+      ...base,
+      formatId: 'h264_540p_842000-0+mp3-64000-1',
+      binaryPath: '/fake/yt-dlp',
+      runner,
+      targetPath: join(dir, 'v.mp4'),
+    });
+
+    const call = args[0] ?? [];
+    expect(call).toContain('--merge-output-format');
+    expect(call[call.indexOf('--postprocessor-args') + 1]).toBe('Merger+ffmpeg_o:-movflags +faststart');
+  });
+
+  it('does not run a merge postprocessor when there is nothing to merge', async () => {
+    const { runner, args } = runnerThat((a) => {
+      writeFileSync(outputOf(a), Buffer.alloc(4_096));
+    });
+
+    // One muxed stream: TikTok already wrote it faststart, and asking for a
+    // merger that will not run would only add an argument nothing reads.
+    await downloadWithYtDlp({ ...base, binaryPath: '/fake/yt-dlp', runner, targetPath: join(dir, 'v.mp4') });
+
+    expect(args[0] ?? []).not.toContain('--postprocessor-args');
+    expect(args[0] ?? []).not.toContain('--merge-output-format');
+  });
+
   it('asks yt-dlp to name the file it wrote, without silencing progress', async () => {
     const { runner, args } = runnerThat((a) => {
       writeFileSync(outputOf(a), Buffer.alloc(1_024));

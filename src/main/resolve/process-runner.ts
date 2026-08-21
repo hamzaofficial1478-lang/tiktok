@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { basename } from 'node:path';
 import { AppError } from '@shared/errors';
 
 export interface ProcessResult {
@@ -89,7 +90,15 @@ export class ChildProcessRunner implements ProcessRunner {
 
       const onAbort = (): void => {
         child.kill('SIGKILL');
-        fail(new AppError('CANCELLED', `${command} cancelled`));
+        /**
+         * The program's name, not the path it was installed to.
+         *
+         * This read as `C:\Users\...\resources\bin\win32-x64\yt-dlp.exe
+         * cancelled`, which looks like a message about a file rather than about
+         * a download that was stopped — and sent at least one person looking
+         * for a problem with the folder it named.
+         */
+        fail(new AppError('CANCELLED', `${basename(command)} was stopped before it finished`));
       };
       options.signal?.addEventListener('abort', onAbort, { once: true });
 

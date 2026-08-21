@@ -208,3 +208,70 @@ describe('several accounts', () => {
     await vi.waitFor(() => expect(runner.isRunning).toBe(false));
   });
 });
+
+/**
+ * Running only part of a saved list.
+ *
+ * The list used to be all-or-nothing: every account was fetched every time, so
+ * wanting one account's videos meant deleting the other four and adding them
+ * back afterwards — which threw away their counts and their caption settings
+ * too. A switch per account keeps the list standing and runs only part of it.
+ */
+describe('accounts switched off', () => {
+  beforeEach(() => {
+    creators.addMany([
+      { handle: 'alpha', profileUrl: 'https://www.tiktok.com/@alpha', videoLimit: 3 },
+      { handle: 'beta', profileUrl: 'https://www.tiktok.com/@beta', videoLimit: 2 },
+    ]);
+  });
+
+  it('is not listed, not queued, and not counted as visited', async () => {
+    const beta = creators.list().find((c) => c.handle === 'beta')!;
+    creators.update(beta.id, { enabled: false });
+
+    const made = makeRunner();
+    const result = await made.runner.run();
+
+    // One listing, for @alpha. A switched-off account costs no request at all.
+    expect(made.listings).toBe(1);
+    expect(result.creators).toBe(1);
+    expect(result.visited).toBe(1);
+    expect(queued.flat()).toEqual(catalogue.slice(0, 3));
+  });
+
+  it('is left completely alone — its count and settings are still there', async () => {
+    const beta = creators.list().find((c) => c.handle === 'beta')!;
+    creators.update(beta.id, { enabled: false, captionMode: 'burn' });
+    await makeRunner().runner.run();
+
+    const after = creators.list().find((c) => c.handle === 'beta')!;
+    expect(after.enabled).toBe(0);
+    expect(after.video_limit).toBe(2);
+    expect(after.caption_mode).toBe('burn');
+  });
+
+  it('runs again the moment it is switched back on', async () => {
+    const beta = creators.list().find((c) => c.handle === 'beta')!;
+    creators.update(beta.id, { enabled: false });
+    await makeRunner().runner.run();
+    queued = [];
+
+    creators.update(beta.id, { enabled: true });
+    const result = await makeRunner().runner.run();
+
+    // @alpha owes nothing now, so only @beta is visited.
+    expect(result.visited).toBe(1);
+    expect(queued.flat()).toHaveLength(2);
+  });
+
+  it('does nothing at all when every account is switched off', async () => {
+    for (const row of creators.list()) creators.update(row.id, { enabled: false });
+
+    const made = makeRunner();
+    const result = await made.runner.run();
+
+    expect(made.listings).toBe(0);
+    expect(result.visited).toBe(0);
+    expect(queued).toEqual([]);
+  });
+});

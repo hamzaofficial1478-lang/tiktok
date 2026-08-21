@@ -6,7 +6,7 @@ import { invoke, subscribe } from '../lib/ipc';
 import { useAppStore } from '../store/app-store';
 import { Button, Panel, Stat } from './primitives';
 import { Icon } from './icons';
-import { NumberInput, Select } from './form';
+import { NumberInput, Select, Switch } from './form';
 
 /**
  * The saved creator list.
@@ -139,11 +139,41 @@ export function Creators(): React.JSX.Element {
     }
   }
 
-  async function patch(id: number, changes: { videoLimit?: number; captionMode?: CaptionMode | null }): Promise<void> {
+  async function patch(
+    id: number,
+    changes: { videoLimit?: number; captionMode?: CaptionMode | null; enabled?: boolean },
+  ): Promise<void> {
     const result = await invoke('creators:update', { id, ...changes });
     if (result.creator) setCreators((list) => list.map((c) => (c.id === id ? result.creator! : c)));
-    // Raising or lowering a count changes what the run owes.
+    // Raising or lowering a count changes what the run owes, and so does
+    // switching an account off — the plan only counts the ones that are on.
     void invoke('creators:plan').then(setPlan).catch(() => undefined);
+  }
+
+  /**
+   * Switch an account on or off for the next run.
+   *
+   * The row is updated before the round trip, because a switch that waits for
+   * a database write before it moves reads as a switch that did not work. The
+   * server's answer replaces it either way, so a rejected change corrects
+   * itself rather than sticking.
+   */
+  function setEnabled(id: number, enabled: boolean): void {
+    setCreators((list) => list.map((c) => (c.id === id ? { ...c, enabled } : c)));
+    void patch(id, { enabled }).catch((err: unknown) => {
+      void reload();
+      pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+    });
+  }
+
+  /** All on, or all off — the fast way back from "I only wanted one of these". */
+  function setAllEnabled(enabled: boolean): void {
+    const changing = creators.filter((c) => c.enabled !== enabled);
+    if (changing.length === 0) return;
+    setCreators((list) => list.map((c) => ({ ...c, enabled })));
+    void Promise.all(changing.map((c) => invoke('creators:update', { id: c.id, enabled })))
+      .then(() => reload())
+      .catch(() => reload());
   }
 
   async function remove(id: number): Promise<void> {
@@ -249,18 +279,22 @@ export function Creators(): React.JSX.Element {
                 icon="play"
                 disabled={enabled === 0}
                 title={
-                  caughtUp
-                    ? 'Every account has given you the number of videos you asked for. Running again asks first.'
-                    : 'Lists each account in turn and downloads what it has not taken yet'
+                  enabled === 0
+                    ? 'Every saved account is switched off, so a run would have nothing to visit. Switch at least one on.'
+                    : caughtUp
+                      ? 'Every account that is switched on has given you the number of videos you asked for. Running again asks first.'
+                      : 'Lists each account that is switched on, in turn, and downloads what it has not taken yet'
                 }
                 // Caught up, Run asks rather than starting: taking another
                 // round is a reasonable thing to want and a terrible thing to
                 // do without saying so.
                 onClick={() => (caughtUp ? setConfirmingTopUp(true) : startRun(false))}
               >
-                {caughtUp
-                  ? `Run again — take ${nextRoundSize} more`
-                  : `Run — download ${totalRemaining} video${totalRemaining === 1 ? '' : 's'}`}
+                {enabled === 0
+                  ? 'Run — every account is switched off'
+                  : caughtUp
+                    ? `Run again — take ${nextRoundSize} more`
+                    : `Run — download ${totalRemaining} video${totalRemaining === 1 ? '' : 's'}`}
               </Button>
             )}
           </>
@@ -339,12 +373,16 @@ export function Creators(): React.JSX.Element {
         {creators.length > 0 && (
           <>
             <div className="flex flex-wrap items-center gap-x-8 gap-y-3 border-t border-white/5 pt-4">
-              <Stat label="Accounts" value={creators.length} />
+              <Stat
+                label="Accounts"
+                value={enabled === creators.length ? creators.length : `${enabled} of ${creators.length}`}
+                title="Switched on, out of saved. Only the ones switched on are visited by a run."
+              />
               <Stat
                 label="Left to download"
                 value={totalRemaining}
                 tone={totalRemaining === 0 ? 'good' : 'neutral'}
-                title="What every enabled account still owes: its count minus the videos already taken from it."
+                title="What every account that is switched on still owes: its count minus the videos already taken from it."
               />
               <Stat label="Taken so far" value={plan?.taken ?? 0} />
               {progress && (
@@ -360,19 +398,61 @@ export function Creators(): React.JSX.Element {
               )}
             </div>
 
+            {/**
+             * Which accounts a run will visit, and the fast way to change it.
+             *
+             * The list used to be all-or-nothing: every saved account was
+             * fetched every time, so wanting one account's videos meant
+             * deleting the other four and adding them back afterwards — which
+             * also threw away their counts and their caption settings. The
+             * switches are per account and are remembered, so a list can be
+             * left standing and only part of it run.
+             */}
+            {creators.length > 1 && (
+              <div className="flex flex-wrap items-center gap-2 text-xs text-ink-500">
+                <span>
+                  A run visits the {enabled} account{enabled === 1 ? '' : 's'} switched on
+                  {enabled < creators.length && `, and skips the other ${creators.length - enabled}`}.
+                </span>
+                <Button variant="ghost" size="sm" disabled={enabled === creators.length} onClick={() => setAllEnabled(true)}>
+                  Turn all on
+                </Button>
+                <Button variant="ghost" size="sm" disabled={enabled === 0} onClick={() => setAllEnabled(false)}>
+                  Turn all off
+                </Button>
+              </div>
+            )}
+
             <ul className="grid gap-1.5">
               {creators.map((creator, index) => {
                 const active = progress?.creatorId === creator.id && running;
+                const off = !creator.enabled;
                 return (
                   <li
                     key={creator.id}
                     className={`rounded-lg border px-3 py-2.5 transition-colors ${
-                      active ? 'border-accent-500/40 bg-accent-500/8' : 'border-white/6 bg-base-900/30'
+                      active
+                        ? 'border-accent-500/40 bg-accent-500/8'
+                        : off
+                          ? 'border-white/6 border-dashed bg-base-900/15'
+                          : 'border-white/6 bg-base-900/30'
                     }`}
                   >
                     <div className="flex flex-wrap items-center gap-3">
+                      <Switch
+                        checked={creator.enabled}
+                        onChange={(next) => setEnabled(creator.id, next)}
+                        label={`Include @${creator.handle} in a run`}
+                        title={
+                          creator.enabled
+                            ? `On — a run downloads from @${creator.handle}. Switch off to skip it without removing it.`
+                            : `Off — a run skips @${creator.handle}. Its count and settings are kept.`
+                        }
+                      />
                       <span className="w-6 shrink-0 text-xs tabular-nums text-ink-500">{index + 1}</span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink-100">
+                      <span
+                        className={`min-w-0 flex-1 truncate text-sm font-medium ${off ? 'text-ink-500' : 'text-ink-100'}`}
+                      >
                         @{creator.handle}
                       </span>
 
@@ -381,7 +461,12 @@ export function Creators(): React.JSX.Element {
                           for. "5 videos" alone said nothing about whether any
                           of them were still to come. */}
                       <span className="shrink-0 text-xs text-ink-500">
-                        {remainingFor(creator.id) === 0 ? (
+                        {off ? (
+                          // Said outright rather than shown only by a dimmed
+                          // row: "why did this account download nothing" has to
+                          // be answerable from the row itself.
+                          <span>skipped — switched off</span>
+                        ) : remainingFor(creator.id) === 0 ? (
                           // The real number downloaded, not the count that was
                           // asked for. They can differ on accounts that were
                           // run more than once before runs were capped.
@@ -453,7 +538,7 @@ export function Creators(): React.JSX.Element {
               <Icon name="check" size={13} className="mt-0.5 text-mint-400" />
               Saved on this machine — these accounts and their settings are still here after you close the app. A
               video already downloaded from an account is never taken again, so a second run picks up where the first
-              left off.
+              left off. Switching an account off keeps everything about it and simply leaves it out of the next run.
             </p>
           </>
         )}
