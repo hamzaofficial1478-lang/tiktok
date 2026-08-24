@@ -61,7 +61,54 @@ export interface QueueEngineOptions {
    * does not turn into a queue that quietly sits idle on next launch.
    */
   readonly onRunStateChanged?: (running: boolean) => void;
+  /**
+   * How long one item may hold a worker before it is failed and requeued.
+   *
+   * Injectable so tests can assert the behaviour in milliseconds rather than
+   * sitting through it. Defaults to `ITEM_DEADLINE_MS`.
+   */
+  readonly itemDeadlineMs?: number;
+  /**
+   * Several links in a row failed in a way that points at the extractor rather
+   * than at the links.
+   *
+   * yt-dlp is a moving target against a site that changes without notice, and
+   * a build that worked last week can fail on everything this week. The
+   * start-up check only looks when the installed build is over a week old,
+   * which is exactly the case this misses: a build four days old that TikTok
+   * has already broken. Failing links are the best available evidence that the
+   * extractor needs replacing *now*, so the queue reports them and lets
+   * whoever owns updating decide.
+   */
+  readonly onExtractorSuspect?: (info: { failures: number; lastCode: ErrorCode }) => void;
 }
+
+/**
+ * The ceiling on a single item, chosen from what the steps under it can
+ * legitimately need.
+ *
+ * Resolution is seconds. A TikTok video is rarely over 100 MB, so even a slow
+ * connection has it inside a couple of minutes. Post-processing is the long
+ * pole — removing a watermark re-encodes the video, and burning in captions
+ * transcribes it first — which is why this is generous rather than tight.
+ *
+ * What it is not is a performance setting. It is the promise that one bad
+ * link cannot take the afternoon: past this point the item has stopped being
+ * a download and started being a blockage.
+ */
+export const ITEM_DEADLINE_MS = 15 * 60_000;
+
+/**
+ * Failures in a row that mean "the extractor is broken", not "those links were
+ * bad".
+ *
+ * Three, because one is a link and two is a coincidence. These codes are the
+ * ones TikTok changing its site produces — a page that no longer parses, an
+ * endpoint that no longer answers — as opposed to a deleted or private video,
+ * which is about that video and says nothing about the extractor.
+ */
+export const EXTRACTOR_SUSPECT_THRESHOLD = 3;
+const EXTRACTOR_SUSPECT_CODES: readonly ErrorCode[] = ['EXTRACTOR_FAILED', 'RESOLVE_FAILED', 'CDN_FORBIDDEN'];
 
 /**
  * The queue engine — spec section 8.
@@ -108,6 +155,15 @@ export class QueueEngine {
    * from the ones it aborted itself. Consumed by the worker's failure path.
    */
   private readonly cancelledByUser = new Set<number>();
+  /**
+   * Items aborted by the watchdog rather than by a person, so the failure path
+   * can record a timeout it should retry instead of a cancel it must not.
+   */
+  private readonly timedOut = new Set<number>();
+  /** Consecutive failures that look like the extractor rather than the link. */
+  private extractorFailures = 0;
+  /** Cancels the per-item time limit, by item id. See `armWatchdog`. */
+  private readonly watchdogs = new Map<number, () => void>();
   private readonly pendingDuplicates = new Map<number, PendingDuplicate>();
   /** Slideshow questions waiting on an answer, and the answers already given. */
   private readonly pendingPhotos = new Map<number, PendingPhotoPost>();
@@ -278,7 +334,14 @@ export class QueueEngine {
     if (!options.keepRunState) this.options.onRunStateChanged?.(false);
     if (options.keepRunState) this.parking = true;
     this.running = false;
-    for (const controller of this.controllers.values()) controller.abort();
+    for (const [itemId, controller] of this.controllers) {
+      // A stop the user asked for really does cancel what is in flight; only
+      // the shutdown variant above parks. Saying so explicitly is what lets an
+      // abort with no recorded reason be treated as a fault rather than as an
+      // intention — see handleFailure.
+      if (!options.keepRunState) this.cancelledByUser.add(itemId);
+      controller.abort();
+    }
     for (const controller of this.retryTimers.values()) controller.abort();
     this.retryTimers.clear();
     try {
@@ -404,20 +467,111 @@ export class QueueEngine {
 
     const controller = new AbortController();
     this.controllers.set(row.id, controller);
+    this.watchdogs.set(row.id, this.armWatchdog(row.id, controller));
 
     try {
       await this.processItem(row, controller.signal);
     } catch (err) {
       this.handleFailure(row, err);
     } finally {
+      this.disarmWatchdog(row.id);
       this.controllers.delete(row.id);
       // Whether or not the failure path consumed it — an item that finished
       // just as the cancel arrived never reaches that branch.
       this.cancelledByUser.delete(row.id);
+      this.timedOut.delete(row.id);
       this.lastProgressEmit.delete(row.id);
       this.lastProgressWrite.delete(row.id);
       this.checkBatchComplete(row.batch_id);
     }
+  }
+
+  /**
+   * A ceiling on how long an item may spend talking to TikTok.
+   *
+   * Nothing above this enforced one. Resolution tries three routes, the
+   * download then tries the same three, and each of those was allowed twenty
+   * minutes on its own — so a link that hung rather than failed could occupy
+   * the single default worker for over an hour per attempt, and for hours
+   * across its four attempts, while the rest of the batch waited behind it
+   * with nothing wrong. The user watched the same row sit there all afternoon.
+   *
+   * The individual timeouts are shorter now, but a ceiling has to exist
+   * regardless: this is the guarantee that the queue keeps moving no matter
+   * which step misbehaves, including steps added later. Expiry is deliberately
+   * not a cancel — the item is failed as a timeout, which is retryable, so it
+   * is tried again after the links that are working.
+   *
+   * It is disarmed once the download is done and post-processing begins, and
+   * that boundary is the important part of the design. Removing a watermark
+   * re-encodes the video and burning in captions transcribes it first; both
+   * can legitimately run for many minutes on a long video, and cutting one
+   * short would fail a download that was working perfectly and then fail it
+   * again on every retry. Those steps are local ffmpeg work with their own
+   * timeouts, and they do not hang the way a socket does. What this watches is
+   * the part that talks to the network.
+   *
+   * Timed with a real timer rather than the injected clock, deliberately. The
+   * clock exists so tests can skip a 30-second retry backoff instantly, and a
+   * deadline that also elapses instantly would abort every item the moment it
+   * started. Tests set a short `itemDeadlineMs` and wait for it instead.
+   */
+  private armWatchdog(itemId: number, controller: AbortController): () => void {
+    const timer = setTimeout(() => {
+      if (controller.signal.aborted) return;
+      this.log.warn(
+        { itemId, afterMs: this.itemDeadlineMs },
+        'item exceeded its time limit; failing it so the queue can move on',
+      );
+      this.timedOut.add(itemId);
+      controller.abort();
+    }, this.itemDeadlineMs);
+
+    // Never a reason to keep the process alive on its own.
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  }
+
+  private disarmWatchdog(itemId: number): void {
+    this.watchdogs.get(itemId)?.();
+    this.watchdogs.delete(itemId);
+  }
+
+  private get itemDeadlineMs(): number {
+    return this.options.itemDeadlineMs ?? ITEM_DEADLINE_MS;
+  }
+
+  /**
+   * Keeps a running count of failures that look like the extractor's fault.
+   *
+   * The signal is a *streak*: any download that succeeds proves the extractor
+   * works, so the count goes back to zero. A private video or a deleted one
+   * neither raises nor clears it — those say nothing either way, and treating
+   * them as evidence in either direction would make the count noise.
+   *
+   * Raised once per streak. Reporting it on every subsequent failure would
+   * fire an update check per item for the rest of a broken batch.
+   */
+  private noteExtractorEvidence(code: ErrorCode): void {
+    if (!EXTRACTOR_SUSPECT_CODES.includes(code)) return;
+
+    this.extractorFailures++;
+    if (this.extractorFailures !== EXTRACTOR_SUSPECT_THRESHOLD) return;
+
+    this.log.warn(
+      { failures: this.extractorFailures, lastCode: code },
+      'several links in a row failed the same way; the extractor is the likely cause',
+    );
+    try {
+      this.options.onExtractorSuspect?.({ failures: this.extractorFailures, lastCode: code });
+    } catch (err) {
+      this.log.warn({ err: String(err) }, 'the extractor-suspect handler threw');
+    }
+  }
+
+  /** A download that worked is proof the extractor is fine. */
+  private clearExtractorEvidence(): void {
+    this.extractorFailures = 0;
   }
 
   /* ---------------------------------------------------------------- *
@@ -835,6 +989,8 @@ export class QueueEngine {
       );
     }
 
+    this.clearExtractorEvidence();
+
     // Carried onto the queue row as well as the download record, so the Queue
     // screen can say what happened to the watermark without a library lookup.
     this.finish(row.id, 'completed', {
@@ -851,25 +1007,64 @@ export class QueueEngine {
    * ---------------------------------------------------------------- */
 
   private handleFailure(row: QueueItemRow, err: unknown): void {
-    const appError = toAppError(err, 'RESOLVE_FAILED');
+    let appError = toAppError(err, 'RESOLVE_FAILED');
     const attemptCount = row.attempt_count + 1;
 
+    /**
+     * The watchdog's abort is a timeout wearing a cancel's clothes.
+     *
+     * Everything downstream reports an aborted signal as CANCELLED, and
+     * CANCELLED is terminal — so without this the item the watchdog rescued
+     * the queue from would be quietly written off, which is worse than the
+     * stall it was rescued from. Reclassified here, at the one place that
+     * knows why the abort happened, it takes the ordinary retry path.
+     */
+    if (appError.code === 'CANCELLED' && this.timedOut.delete(row.id)) {
+      appError = new AppError(
+        'NETWORK_ERROR',
+        `Gave up after ${Math.round(this.itemDeadlineMs / 60_000)} minutes without finishing. Moved to the back of the queue to try again later.`,
+      );
+    }
+
     if (appError.code === 'CANCELLED') {
-      // Every abort arrives here looking the same, so the only thing that
-      // separates "the user pressed Cancel" from "the machine went to sleep" or
-      // "the app was quit" is which of them asked for the abort. A cancel the
-      // user asked for is honoured; the other two put the item back in the
-      // queue, keeping its position and its .part, so the next launch continues
-      // it rather than skipping past it with a half-finished file left behind.
+      /**
+       * Every abort arrives here looking the same, so the only thing that can
+       * separate them is which part of the app asked for one.
+       *
+       * Cancelling an item, stopping the queue and emptying it all record the
+       * intent before they abort. A suspend or a quit sets `parking`. Anything
+       * else is an abort nobody claims, and the honest thing to do with it is
+       * to treat it as a fault: the item goes back for another attempt rather
+       * than being written off as a cancel the user never asked for.
+       *
+       * That last branch is deliberately a catch-all rather than a list of
+       * known causes. The failure it guards against — a video disappearing
+       * from a run, marked "cancelled", with a `.part` file left on disk and
+       * nothing said — is silent, and the next such cause has not been written
+       * yet.
+       */
       const byUser = this.cancelledByUser.delete(row.id);
-      if (!byUser && this.parking) {
+      if (byUser) {
+        this.finish(row.id, 'cancelled', { errorCode: 'CANCELLED', errorDetail: appError.detail ?? null });
+        return;
+      }
+
+      if (this.parking) {
+        // Keeps its position and its .part, so the next launch continues it
+        // rather than skipping past a half-finished file.
         this.update(row.id, { status: 'queued', progress: row.progress, startedAt: null });
         this.emitItem(this.options.queueItems.findById(row.id));
         return;
       }
-      this.finish(row.id, 'cancelled', { errorCode: 'CANCELLED', errorDetail: appError.detail ?? null });
-      return;
+
+      this.log.warn(
+        { itemId: row.id, detail: appError.detail },
+        'a download was aborted with no recorded reason; treating it as a fault and trying again',
+      );
+      appError = new AppError('NETWORK_ERROR', 'The download was interrupted. It will be tried again.');
     }
+
+    this.noteExtractorEvidence(appError.code);
 
     const decision = decideRetry(appError.code, attemptCount, this.random);
 
@@ -907,12 +1102,17 @@ export class QueueEngine {
   }
 
   /**
-   * Backoff without holding a worker slot.
+   * Backoff without holding a worker slot, and without holding the queue.
    *
    * Sleeping inside the worker would idle one of at most four slots for up to
    * 30 seconds while other items wait. The item is instead left `failed` with
    * its error recorded — which is also what makes the wait crash-safe, since a
    * restart finds a retryable failure under the attempt limit and requeues it.
+   *
+   * Where the retry lands in the running order is decided by `claimNext`,
+   * which takes untried links before tried ones. That is the other half of the
+   * fix for a batch that stalled on one link — see WORK_ORDER in the queue
+   * items repository.
    */
   private scheduleRetry(itemId: number, delayMs: number): void {
     const controller = new AbortController();
@@ -1157,6 +1357,15 @@ export class QueueEngine {
    * a 300-row list is not asked to re-render on every socket chunk.
    */
   private onProgress(itemId: number, progress: PipelineProgress): void {
+    /**
+     * The bytes are in; from here on it is local ffmpeg work.
+     *
+     * Checked before the throttle below, because it is a state change rather
+     * than a progress tick and dropping it would leave the time limit running
+     * over a re-encode it has no business interrupting.
+     */
+    if (progress.processing === true) this.disarmWatchdog(itemId);
+
     const throttleMs = this.options.progressThrottleMs ?? 250;
     const now = this.options.clock.now();
     const last = this.lastProgressEmit.get(itemId) ?? 0;

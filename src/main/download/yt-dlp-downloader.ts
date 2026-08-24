@@ -299,12 +299,6 @@ async function attemptDownload(
      * The output would still be found — the printed path and the adopt
      * fallback see to that — but it would arrive as an .mkv the rest of the
      * app named .mp4.
-     */
-    /**
-     * Only when a merge is actually happening.
-     *
-     * `-o` ends in `.download`, which is not a container yt-dlp recognises, so
-     * with two formats to join it would pick one itself and rename the result.
      *
      * `-movflags +faststart` is the part that matters to anything downstream.
      * ffmpeg writes an MP4's index — the `moov` atom — at the *end* of the file
@@ -358,7 +352,22 @@ async function attemptDownload(
   let buffer = '';
   let printedPath: string | null = null;
   const result = await options.runner.run(binary, args, {
-    timeoutMs: options.timeoutMs ?? 20 * 60_000,
+    /**
+     * Six minutes, not twenty.
+     *
+     * This is one attempt at one route, and there are three routes, so the old
+     * ceiling let a single download attempt run for an hour before anything
+     * gave up on it — and the queue's default is one worker, so the whole
+     * batch waited that hour out. A TikTok video is rarely over 100 MB; one
+     * that has not arrived in six minutes is not arriving, and the time is
+     * better spent on the next route or the next video.
+     *
+     * yt-dlp's own `--socket-timeout` and `--retries` handle a connection that
+     * merely stutters, so reaching this ceiling means genuinely stuck rather
+     * than merely slow. It is classified as a network timeout, which is
+     * retryable, so nothing is lost by cutting it short.
+     */
+    timeoutMs: options.timeoutMs ?? 6 * 60_000,
     signal: options.signal,
     onStdout: (chunk) => {
       // Chunks split anywhere, so hold the tail until a newline completes it.

@@ -165,15 +165,40 @@ export class QueueItemsRepository {
       .all(batchId);
   }
 
-  /** The next item to work on: lowest position still queued. */
+  /**
+   * The order work is taken in: untried links first, then retries.
+   *
+   * `attempt_count` before `position`, and that ordering is a bug fix rather
+   * than a preference. A failed item is requeued for its next attempt keeping
+   * the position it already had, so with plain position ordering the engine
+   * claimed it again immediately — ahead of every link behind it, at the front
+   * of the queue, for every one of its attempts. At the default concurrency of
+   * one, a link that took minutes to fail therefore held up the entire batch
+   * for all four of its tries, and the user watched an hour pass with nothing
+   * downloaded and eleven perfectly good links waiting behind the broken one.
+   *
+   * Sorting tried links behind untried ones costs nothing when everything
+   * works — every item is on attempt zero, so this is plain position order —
+   * and when something does fail, the rest of the batch runs to completion
+   * first and the failure gets its remaining attempts at the end.
+   *
+   * Position is deliberately *not* rewritten to achieve this: `{index}` in the
+   * filename template is the row's position, so moving rows around would
+   * renumber files and leave gaps in a folder meant to read in order.
+   */
+  private static readonly WORK_ORDER = 'ORDER BY attempt_count ASC, position ASC';
+
+  /** The next item to work on. */
   nextQueued(): QueueItemRow | undefined {
     return this.db
-      .prepare<[], QueueItemRow>("SELECT * FROM queue_items WHERE status = 'queued' ORDER BY position ASC LIMIT 1")
+      .prepare<[], QueueItemRow>(
+        `SELECT * FROM queue_items WHERE status = 'queued' ${QueueItemsRepository.WORK_ORDER} LIMIT 1`,
+      )
       .get();
   }
 
   /**
-   * Atomically takes the lowest-position queued item and marks it in flight.
+   * Atomically takes the next queued item and marks it in flight.
    *
    * The SELECT and UPDATE are one statement on purpose: with concurrency up to
    * 4, a read-then-write would let two workers claim the same row and download
@@ -188,7 +213,9 @@ export class QueueItemsRepository {
       .prepare<[number], QueueItemRow>(
         `UPDATE queue_items
             SET status = 'resolving', started_at = ?, source_strategy = NULL, watermark_removed = NULL
-          WHERE id = (SELECT id FROM queue_items WHERE status = 'queued' ORDER BY position ASC LIMIT 1)
+          WHERE id = (
+            SELECT id FROM queue_items WHERE status = 'queued' ${QueueItemsRepository.WORK_ORDER} LIMIT 1
+          )
       RETURNING *`,
       )
       .get(now);
@@ -208,6 +235,7 @@ export class QueueItemsRepository {
       for (const id of orderedIds) update.run(this.nextPosition(), id);
     })();
   }
+
 
   /** Dedup layer 2: is this video already pending or in flight? */
   findActiveByAwemeId(awemeId: string): QueueItemRow | undefined {

@@ -98,8 +98,18 @@ export function resolvedVideo(awemeId: string, handle = 'user'): ResolvedVideo {
 /** Records which items it processed, in order, and can be told to fail. */
 export class FakePipeline implements MediaPipeline {
   readonly processed: string[] = [];
+  /**
+   * Every call, including the ones that go on to fail.
+   *
+   * `processed` records successes only, which makes it the wrong instrument
+   * for a question about running order: a retry that was tried and failed
+   * leaves no trace in it, so a queue stuck hammering one link looks identical
+   * to a queue working through the batch in order.
+   */
+  readonly attempts: string[] = [];
   private failures = new Map<string, ErrorCode[]>();
   private hangs = new Set<string>();
+  private slowPostProcess = new Map<string, number>();
   private strategies = new Map<string, { sourceStrategy: SourceStrategy; watermarkRemoved: boolean }>();
 
   /**
@@ -119,6 +129,17 @@ export class FakePipeline implements MediaPipeline {
   }
 
   /**
+   * Downloads, reports that post-processing has begun, and then takes its time.
+   *
+   * Stands in for the slow half of a real item: removing a watermark re-encodes
+   * the video and burning in captions transcribes it first, either of which can
+   * legitimately run for minutes on a long video.
+   */
+  slowPostProcessFor(awemeId: string, ms: number): void {
+    this.slowPostProcess.set(awemeId, ms);
+  }
+
+  /**
    * A real crash loses whatever was making a download hang. The fake outlives
    * `restart()`, so a test simulating recovery must clear it explicitly or the
    * recovered item hangs a second time.
@@ -134,6 +155,7 @@ export class FakePipeline implements MediaPipeline {
 
   async process(input: PipelineInput): Promise<PipelineResult> {
     const awemeId = input.normalized.awemeId;
+    this.attempts.push(awemeId);
 
     if (this.hangs.has(awemeId)) {
       // Waits until cancelled, standing in for a long download.
@@ -146,6 +168,12 @@ export class FakePipeline implements MediaPipeline {
     if (queued && queued.length > 0) {
       const code = queued.shift() as ErrorCode;
       throw new AppError(code, `fake pipeline failure for ${awemeId}`);
+    }
+
+    const slow = this.slowPostProcess.get(awemeId);
+    if (slow !== undefined) {
+      input.onProgress({ bytesDone: 1_000_000, bytesTotal: 1_000_000, speed: null, etaMs: 0, processing: true });
+      await new Promise<void>((resolve) => setTimeout(resolve, slow));
     }
 
     this.processed.push(awemeId);

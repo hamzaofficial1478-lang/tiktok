@@ -213,16 +213,31 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
    * launch. The extractor path is read fresh on every resolve, so a mid-session
    * replacement is picked up by the next item without a restart.
    */
-  const maybeUpdateExtractor = (): void => {
+  /** True while a check is in flight, so evidence arriving in a burst asks once. */
+  let extractorCheckInFlight = false;
+
+  /**
+   * @param reason `'scheduled'` obeys the age and interval rules; `'failing'`
+   *   ignores both. The rules exist to avoid pestering the release server on
+   *   every launch, and they are exactly wrong in the case that matters most:
+   *   a build four days old that TikTok has already broken is "recent" by the
+   *   calendar and useless in practice. Downloads failing is better evidence
+   *   than a release date, so it overrides it.
+   */
+  const maybeUpdateExtractor = (reason: 'scheduled' | 'failing' = 'scheduled'): void => {
     if (!config.get().autoUpdateExtractor) return;
+    if (extractorCheckInFlight) return;
 
     const current = snapshot.sidecars.find((s) => s.name === 'yt-dlp')?.version ?? null;
-    const decision = shouldCheckExtractor({
-      autoUpdate: true,
-      version: current,
-      lastCheckedAt: appMeta.getNumber(EXTRACTOR_CHECKED_AT_KEY, 0),
-      now: Date.now(),
-    });
+    const decision =
+      reason === 'failing'
+        ? ({ check: true, reason: 'downloads failing' } as const)
+        : shouldCheckExtractor({
+            autoUpdate: true,
+            version: current,
+            lastCheckedAt: appMeta.getNumber(EXTRACTOR_CHECKED_AT_KEY, 0),
+            now: Date.now(),
+          });
 
     if (!decision.check) {
       // Record the decision for a build that is simply recent, so a fresh
@@ -232,6 +247,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       return;
     }
 
+    extractorCheckInFlight = true;
     log.info({ version: current, reason: decision.reason }, 'checking for a newer extractor in the background');
     void extractorUpdater
       .update(current)
@@ -249,6 +265,9 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
         // Never fatal: a stale extractor still works for anything TikTok has
         // not changed yet, and the user can retry from Settings.
         log.warn({ err: err instanceof Error ? err.message : String(err) }, 'background extractor update failed');
+      })
+      .finally(() => {
+        extractorCheckInFlight = false;
       });
   };
 
@@ -406,6 +425,19 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     extractor,
     pipeline: downloadPipeline,
     onRunStateChanged: (running) => appMeta.setBoolean(QUEUE_RUNNING_KEY, running),
+    /**
+     * Links failing the same way, one after another, is the app noticing that
+     * its extractor has stopped working before the user has to.
+     *
+     * Only the real app acts on it — `allowBackgroundUpdates` keeps tests and
+     * harnesses off the network — and the replacement is picked up by the next
+     * item without a restart, because the binary path is read fresh on every
+     * resolve. Which means a batch can heal itself part-way through.
+     */
+    onExtractorSuspect: ({ failures, lastCode }) => {
+      log.warn({ failures, lastCode }, 'downloads are failing in a way that points at yt-dlp; checking for a newer one');
+      if (options.allowBackgroundUpdates) maybeUpdateExtractor('failing');
+    },
     rateLimiter: new RateLimiter({
       minIntervalMs: () => config.get().rateLimitMs,
       jitterMs: () => config.get().rateLimitJitterMs,
