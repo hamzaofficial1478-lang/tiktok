@@ -34,6 +34,11 @@ export interface QueueItemRow {
   output_subdir: string | null;
   /** Per-batch caption override; null means follow the app setting. */
   caption_mode: string | null;
+  /**
+   * Milliseconds this video has already spent talking to TikTok, added up over
+   * every attempt. The budget the engine spends; see `addBusyMs`.
+   */
+  busy_ms: number;
 }
 
 export interface EnqueueInput {
@@ -62,6 +67,7 @@ export interface QueueItemPatch {
   finishedAt?: number | null;
   sourceStrategy?: SourceStrategy | null;
   watermarkRemoved?: number | null;
+  busyMs?: number;
 }
 
 const POSITION_SEQ_KEY = 'queue_position_seq';
@@ -247,6 +253,24 @@ export class QueueItemsRepository {
       .get(awemeId, ...ACTIVE_FOR_DEDUP_STATUSES);
   }
 
+  /**
+   * Adds to the time this video has cost the queue, and reports the new total.
+   *
+   * Added rather than set, in one statement, because two things write it: the
+   * worker at the end of an attempt, and a restart that has no idea what the
+   * previous process managed to spend. A read-then-write would lose one of
+   * them and hand the item a budget it has already used.
+   */
+  addBusyMs(id: number, ms: number): number {
+    if (ms <= 0) return this.findById(id)?.busy_ms ?? 0;
+    const row = this.db
+      .prepare<[number, number], { busy_ms: number }>(
+        'UPDATE queue_items SET busy_ms = busy_ms + ? WHERE id = ? RETURNING busy_ms',
+      )
+      .get(Math.round(ms), id);
+    return row?.busy_ms ?? 0;
+  }
+
   update(id: number, patch: QueueItemPatch): QueueItemRow | undefined {
     const columns: Record<keyof QueueItemPatch, string> = {
       status: 'status',
@@ -263,6 +287,7 @@ export class QueueItemsRepository {
       finishedAt: 'finished_at',
       sourceStrategy: 'source_strategy',
       watermarkRemoved: 'watermark_removed',
+      busyMs: 'busy_ms',
     };
 
     const sets: string[] = [];

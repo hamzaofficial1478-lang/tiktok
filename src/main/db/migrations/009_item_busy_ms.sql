@@ -1,0 +1,24 @@
+-- 009_item_busy_ms — how long this video has cost the queue, across all attempts.
+--
+-- The per-attempt time limit added earlier stops one download running forever,
+-- and on its own it does not stop one *video* running forever: an item gets
+-- four automatic attempts plus an end-of-run sweep, so five attempts at the
+-- per-attempt limit still add up to over an hour on a single link. Moving
+-- retries behind the untried links bought the batch its healthy downloads
+-- first, and then the queue arrived at the failures and sat on them exactly as
+-- before — which is the question this column answers.
+--
+-- Counting attempts is not the same as counting time. A link that fails in two
+-- seconds should have every retry it is entitled to; a link that hangs for
+-- minutes should not get the same number. So the budget is measured in
+-- milliseconds and spent by whichever attempts happen to use it.
+--
+-- Only the part that talks to TikTok is counted. Re-encoding to strip a
+-- watermark and transcribing for burned-in captions are legitimately slow and
+-- are work the user asked for, not a video misbehaving.
+--
+-- Persisted rather than held in memory so a crash loop cannot reset it and
+-- start the whole hour over. Reset to 0 when a person retries the item by
+-- hand: asking again is asking for a fresh budget.
+
+ALTER TABLE queue_items ADD COLUMN busy_ms INTEGER NOT NULL DEFAULT 0;

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { awemeIdFor, createHarness, makeUrl, type Harness } from './helpers/queue-fixtures';
 import { EXTRACTOR_SUSPECT_THRESHOLD } from '@main/queue/queue-engine';
+import { MAX_RETRIES } from '@main/queue/retry-policy';
 import type { ErrorCode } from '@shared/errors';
 
 let harness: Harness;
@@ -157,6 +158,132 @@ describe('an item that never finishes', () => {
     await harness.engine.whenIdle();
 
     expect(harness.engine.getSnapshot().every((i) => i.status === 'completed')).toBe(true);
+  });
+});
+
+/**
+ * And then what happens when the queue reaches the failures?
+ *
+ * Moving retries behind the untried links answers half the question — the
+ * healthy videos all download first. It does not answer the other half. An
+ * item gets four automatic attempts plus the end-of-run sweep, so five
+ * attempts at the per-attempt limit still add up to most of an hour on one
+ * link, and the queue would arrive at its failures and settle down on them
+ * exactly as it used to at the start. Several bad links, and that is the
+ * afternoon.
+ *
+ * So the real limit is a total across every attempt. A video that has spent it
+ * is set aside and the queue moves on for good. Measured in time rather than
+ * attempts on purpose: a link that fails in two seconds costs nothing and
+ * keeps every retry it is entitled to — those are the ones a retry fixes — and
+ * only the ones that hang run out.
+ */
+describe('the total time one video may cost', () => {
+  it('stops retrying a video that has spent its whole budget', async () => {
+    harness = createHarness({
+      config: { concurrency: 1 },
+      engineOverrides: { itemDeadlineMs: 40, itemTotalBudgetMs: 60 },
+    });
+    harness.pipeline.hangFor(awemeIdFor(0));
+
+    harness.engine.addLinks([makeUrl(0)]);
+    harness.engine.start();
+
+    await vi.waitFor(
+      () => {
+        const item = harness.engine.getSnapshot()[0];
+        expect(item?.status).toBe('failed');
+        expect(item?.finishedAt).not.toBeNull();
+      },
+      { timeout: 5_000 },
+    );
+
+    // Two attempts of 40ms exceed a 60ms budget; a fifth is never reached.
+    expect(harness.engine.getSnapshot()[0]?.attemptCount).toBeLessThan(4);
+    expect(harness.engine.getSnapshot()[0]?.errorDetail ?? '').toMatch(/set aside/i);
+  });
+
+  it('does not sweep it back in at the end of the run', async () => {
+    harness = createHarness({
+      config: { concurrency: 1 },
+      engineOverrides: { itemDeadlineMs: 40, itemTotalBudgetMs: 60 },
+    });
+    harness.pipeline.hangFor(awemeIdFor(0));
+
+    harness.engine.addLinks([makeUrl(0), makeUrl(1)]);
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[1]?.status).toBe('completed'), { timeout: 5_000 });
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.finishedAt).not.toBeNull(), { timeout: 5_000 });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    /**
+     * Two attempts, and no third.
+     *
+     * Each hang costs the 40ms deadline, so the second one takes the total past
+     * the 60ms budget and the item is set aside. The sweep runs after that —
+     * the batch is finished by then — and its whole job is to give failures one
+     * more go. Handing it this item would be the queue undoing its own
+     * decision and settling back down on it, which is the behaviour the budget
+     * exists to end, so the sweep skips anything that ran out of time.
+     */
+    const item = harness.engine.getSnapshot()[0];
+    expect(item?.status).toBe('failed');
+    expect(item?.attemptCount).toBeLessThanOrEqual(2);
+  });
+
+  it('leaves the whole retry ladder to a link that fails quickly', async () => {
+    harness = createHarness({
+      config: { concurrency: 1 },
+      engineOverrides: { itemDeadlineMs: 5_000, itemTotalBudgetMs: 10_000 },
+    });
+    harness.pipeline.failFor(awemeIdFor(0), Array.from({ length: 10 }, () => 'NETWORK_ERROR' as const));
+
+    harness.engine.addLinks([makeUrl(0), makeUrl(1)]);
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.finishedAt).not.toBeNull(), { timeout: 5_000 });
+
+    // A failure that costs nothing is exactly the kind a retry fixes, so the
+    // budget must not take its attempts away: the full ladder plus the sweep.
+    expect(harness.engine.getSnapshot()[0]?.attemptCount).toBe(MAX_RETRIES + 2);
+  });
+
+  it('charges the time to the row, so a restart cannot start the hour over', async () => {
+    harness = createHarness({
+      config: { concurrency: 1 },
+      engineOverrides: { itemDeadlineMs: 40, itemTotalBudgetMs: 10_000 },
+    });
+    harness.pipeline.hangFor(awemeIdFor(0));
+
+    harness.engine.addLinks([makeUrl(0)]);
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.attemptCount).toBeGreaterThan(1), {
+      timeout: 5_000,
+    });
+
+    const row = harness.queueItems.findById(harness.engine.getSnapshot()[0]!.id);
+    expect(row?.busy_ms ?? 0).toBeGreaterThan(0);
+  });
+
+  it('gives a fresh budget when a person presses Retry', async () => {
+    harness = createHarness({
+      config: { concurrency: 1 },
+      engineOverrides: { itemDeadlineMs: 40, itemTotalBudgetMs: 60 },
+    });
+    harness.pipeline.hangFor(awemeIdFor(0));
+
+    harness.engine.addLinks([makeUrl(0)]);
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.finishedAt).not.toBeNull(), { timeout: 5_000 });
+
+    const id = harness.engine.getSnapshot()[0]!.id;
+    await harness.engine.stop();
+    harness.pipeline.clearHangs();
+    harness.engine.retryItem(id);
+
+    // Someone pressing Retry has usually changed something. Holding the time
+    // spent before the fix against the attempt after it makes the button
+    // useless on exactly the items that need it.
+    expect(harness.queueItems.findById(id)?.busy_ms).toBe(0);
   });
 });
 

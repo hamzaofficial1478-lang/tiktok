@@ -132,6 +132,9 @@ describe('migration runner', () => {
       'output_subdir',
       // The batch's own caption choice; null follows the app setting.
       'caption_mode',
+      // Time this video has already cost the queue, across every attempt. The
+      // budget that stops one bad link occupying a run for hours.
+      'busy_ms',
     ]);
     expect(columns('creators')).toContain('video_limit');
     expect(columns('downloads')).toContain('source_strategy');

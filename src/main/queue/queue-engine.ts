@@ -69,6 +69,11 @@ export interface QueueEngineOptions {
    */
   readonly itemDeadlineMs?: number;
   /**
+   * The total across every attempt. Injectable for the same reason.
+   * Defaults to `ITEM_TOTAL_BUDGET_MS`.
+   */
+  readonly itemTotalBudgetMs?: number;
+  /**
    * Several links in a row failed in a way that points at the extractor rather
    * than at the links.
    *
@@ -96,7 +101,23 @@ export interface QueueEngineOptions {
  * link cannot take the afternoon: past this point the item has stopped being
  * a download and started being a blockage.
  */
-export const ITEM_DEADLINE_MS = 15 * 60_000;
+export const ITEM_DEADLINE_MS = 8 * 60_000;
+
+/**
+ * The total one video may cost the queue, across every attempt it gets.
+ *
+ * This is the number that answers "and then what happens when the queue
+ * reaches the failures?". Attempts are capped individually by
+ * `ITEM_DEADLINE_MS`, but four automatic attempts plus the end-of-run sweep is
+ * five of them, and five capped attempts still add up to most of an hour on a
+ * single link. This makes the guarantee whole: a video that has spent this
+ * long is set aside, and the queue moves on to the next one for good.
+ *
+ * Set aside, not thrown away. The row stays, with what happened on it, and
+ * pressing Retry gives it a fresh budget — because a person asking again is
+ * usually a person who has changed something.
+ */
+export const ITEM_TOTAL_BUDGET_MS = 15 * 60_000;
 
 /**
  * Failures in a row that mean "the extractor is broken", not "those links were
@@ -467,11 +488,15 @@ export class QueueEngine {
 
     const controller = new AbortController();
     this.controllers.set(row.id, controller);
-    this.watchdogs.set(row.id, this.armWatchdog(row.id, controller));
+    this.watchdogs.set(row.id, this.armWatchdog(row, controller));
 
     try {
       await this.processItem(row, controller.signal);
     } catch (err) {
+      // Charged before the decision, not after it, so "has this video used its
+      // budget?" is asked with this attempt included. Disarming twice is a
+      // no-op; the finally below covers the path that succeeded.
+      this.disarmWatchdog(row.id);
       this.handleFailure(row, err);
     } finally {
       this.disarmWatchdog(row.id);
@@ -487,7 +512,8 @@ export class QueueEngine {
   }
 
   /**
-   * A ceiling on how long an item may spend talking to TikTok.
+   * A ceiling on how long an item may spend talking to TikTok — this attempt,
+   * and across every attempt it will ever get.
    *
    * Nothing above this enforced one. Resolution tries three routes, the
    * download then tries the same three, and each of those was allowed twenty
@@ -496,45 +522,79 @@ export class QueueEngine {
    * across its four attempts, while the rest of the batch waited behind it
    * with nothing wrong. The user watched the same row sit there all afternoon.
    *
-   * The individual timeouts are shorter now, but a ceiling has to exist
-   * regardless: this is the guarantee that the queue keeps moving no matter
-   * which step misbehaves, including steps added later. Expiry is deliberately
-   * not a cancel — the item is failed as a timeout, which is retryable, so it
-   * is tried again after the links that are working.
+   * ## Why a per-attempt limit is not enough on its own
    *
-   * It is disarmed once the download is done and post-processing begins, and
-   * that boundary is the important part of the design. Removing a watermark
-   * re-encodes the video and burning in captions transcribes it first; both
-   * can legitimately run for many minutes on a long video, and cutting one
-   * short would fail a download that was working perfectly and then fail it
-   * again on every retry. Those steps are local ffmpeg work with their own
-   * timeouts, and they do not hang the way a socket does. What this watches is
-   * the part that talks to the network.
+   * Moving retries behind the untried links bought the batch its healthy
+   * downloads first, and then the queue arrived at the failures and sat on them
+   * exactly as before. Four automatic attempts plus the end-of-run sweep is
+   * five, and five attempts at a per-attempt limit still add up to most of an
+   * hour on one link — with several bad links, most of an afternoon. Capping
+   * the attempt only decides how the hour is divided.
+   *
+   * So the real limit is a total: `busy_ms` on the row records what this video
+   * has already cost, this attempt gets whatever is left of the budget, and
+   * when the budget is gone the item stops being retried automatically. That
+   * is a promise about the queue rather than about one download — no single
+   * video can take more than `ITEM_TOTAL_BUDGET_MS` of it, however many
+   * attempts that turns out to be.
+   *
+   * Measuring time rather than counting attempts is the point. A link that
+   * fails in two seconds costs almost nothing and keeps every retry it is
+   * entitled to, which is exactly right — those are the ones a retry fixes. A
+   * link that hangs burns its budget in one or two goes and is set aside.
+   *
+   * ## What is counted
+   *
+   * Only the part that talks to the network. The watchdog is disarmed once the
+   * download is done and post-processing begins, and that boundary matters:
+   * removing a watermark re-encodes the video and burning in captions
+   * transcribes it first, both legitimately slow on a long video and both work
+   * the user asked for. Cutting one short would fail a download that was
+   * working perfectly, and fail it again on every retry.
+   *
+   * Expiry is deliberately not a cancel — while budget remains, the item is
+   * failed as a timeout, which is retryable, so it is tried again after the
+   * links that are working.
    *
    * Timed with a real timer rather than the injected clock, deliberately. The
    * clock exists so tests can skip a 30-second retry backoff instantly, and a
    * deadline that also elapses instantly would abort every item the moment it
    * started. Tests set a short `itemDeadlineMs` and wait for it instead.
    */
-  private armWatchdog(itemId: number, controller: AbortController): () => void {
+  private armWatchdog(row: QueueItemRow, controller: AbortController): () => void {
+    const spent = row.busy_ms ?? 0;
+    const allowed = Math.max(1, Math.min(this.itemDeadlineMs, this.itemTotalBudgetMs - spent));
+    const startedAt = Date.now();
+
     const timer = setTimeout(() => {
       if (controller.signal.aborted) return;
       this.log.warn(
-        { itemId, afterMs: this.itemDeadlineMs },
+        { itemId: row.id, afterMs: allowed, alreadySpentMs: spent },
         'item exceeded its time limit; failing it so the queue can move on',
       );
-      this.timedOut.add(itemId);
+      this.timedOut.add(row.id);
       controller.abort();
-    }, this.itemDeadlineMs);
+    }, allowed);
 
     // Never a reason to keep the process alive on its own.
     timer.unref?.();
-    return () => clearTimeout(timer);
+
+    return () => {
+      clearTimeout(timer);
+      // Wall-clock, not the injected clock: this is a real duration being
+      // charged against a real budget, and a test clock that never advances
+      // would hand every item an unlimited one.
+      this.options.queueItems.addBusyMs(row.id, Date.now() - startedAt);
+    };
   }
 
   private disarmWatchdog(itemId: number): void {
     this.watchdogs.get(itemId)?.();
     this.watchdogs.delete(itemId);
+  }
+
+  private get itemTotalBudgetMs(): number {
+    return this.options.itemTotalBudgetMs ?? ITEM_TOTAL_BUDGET_MS;
   }
 
   private get itemDeadlineMs(): number {
@@ -1066,7 +1126,38 @@ export class QueueEngine {
 
     this.noteExtractorEvidence(appError.code);
 
-    const decision = decideRetry(appError.code, attemptCount, this.random);
+    /**
+     * Out of budget: retried enough, and stopping is the point.
+     *
+     * The attempt ladder alone cannot make this promise. Four automatic
+     * attempts plus the end-of-run sweep is five, and five of them at the
+     * per-attempt limit still add up to most of an hour on one link — so a
+     * batch that had correctly downloaded everything healthy would reach its
+     * failures and sit on them for the rest of the afternoon, which is the
+     * whole complaint reappearing at the end of the queue instead of the
+     * start.
+     *
+     * A time budget stops that without punishing the failures a retry actually
+     * fixes: a link that fails in two seconds has spent almost nothing and
+     * keeps every attempt it is entitled to. Only the ones that hang run out.
+     */
+    const spent = this.options.queueItems.findById(row.id)?.busy_ms ?? row.busy_ms ?? 0;
+    const outOfTime = spent >= this.itemTotalBudgetMs;
+
+    if (outOfTime) {
+      const minutes = Math.max(1, Math.round(spent / 60_000));
+      appError = new AppError(
+        appError.code,
+        `${appError.detail ?? 'It could not be downloaded.'} Set aside after ${minutes} minute${
+          minutes === 1 ? '' : 's'
+        } of trying, so the rest of the queue could carry on. Press Retry to give it another go.`,
+      );
+      this.log.warn({ itemId: row.id, spentMs: spent, attemptCount }, 'item used its whole time budget; not retrying it');
+    }
+
+    const decision = outOfTime
+      ? { retry: false, delayMs: 0, reason: 'used its whole time budget' }
+      : decideRetry(appError.code, attemptCount, this.random);
 
     /**
      * A post with nothing downloadable in it is settled, not failed-for-now.
@@ -1229,8 +1320,11 @@ export class QueueEngine {
     const row = this.options.queueItems.findById(itemId);
     if (!row) return;
     if (row.status !== 'failed' && row.status !== 'cancelled' && row.status !== 'skipped') return;
-    // A manual retry starts the attempt budget over; the user has decided the
-    // condition changed.
+    // A manual retry starts both budgets over — the attempt count and the time
+    // the item is allowed to spend. Someone pressing Retry has usually changed
+    // something, and holding a quarter of an hour spent before the fix against
+    // the attempt after it would make the button useless on the items that
+    // most need it.
     this.update(itemId, {
       status: 'queued',
       attemptCount: 0,
@@ -1238,6 +1332,7 @@ export class QueueEngine {
       errorDetail: null,
       progress: 0,
       finishedAt: null,
+      busyMs: 0,
     });
     this.emitItem(this.options.queueItems.findById(itemId));
     this.pump();
@@ -1480,7 +1575,15 @@ export class QueueEngine {
        * and is still left alone, because no amount of retrying changes it.
        */
       const retryable = rows.filter(
-        (row) => row.status === 'failed' && row.error_code && describeError(row.error_code).userRetryable,
+        (row) =>
+          row.status === 'failed' &&
+          row.error_code &&
+          describeError(row.error_code).userRetryable &&
+          // A video that used its whole time budget has been set aside on
+          // purpose. Sweeping it back in is the queue undoing its own decision
+          // and settling down on it again for another quarter of an hour,
+          // which is the exact behaviour the budget exists to end.
+          (row.busy_ms ?? 0) < this.itemTotalBudgetMs,
       );
 
       if (retryable.length > 0) {
