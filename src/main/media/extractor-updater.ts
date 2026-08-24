@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { AppError } from '@shared/errors';
 import type { Logger } from 'pino';
 import { binaryFilename, platformDir, sha256File, type SidecarManifest } from './sidecars';
+import { replaceFile, sweepSuperseded } from './replace-file';
 import type { ProcessRunner } from '../resolve/process-runner';
 
 /**
@@ -85,6 +86,36 @@ export class ExtractorUpdater {
   }
 
   /**
+   * Asks which version is current, without downloading it.
+   *
+   * `/releases/latest` redirects to `/releases/tag/YYYY.MM.DD`, so the version
+   * is in the Location header of a request that transfers nothing. That matters
+   * because the alternative — which is what this used to do — was to download
+   * the whole ~30 MB binary, run it, and compare version strings, discovering
+   * only at the end that it was the same build already installed. A check that
+   * costs 30 MB is a check that has to be rationed, and rationing it is what
+   * made "keep the extractor up to date" quietly do nothing for days at a time.
+   *
+   * Null means "could not tell", never "no update": a rate limit or an offline
+   * moment must not be read as being up to date, so the caller falls through to
+   * downloading rather than skipping.
+   */
+  async latestVersion(signal?: AbortSignal): Promise<string | null> {
+    const fetchImpl = this.options.fetchImpl ?? globalThis.fetch;
+    try {
+      const response = await fetchImpl(`${RELEASE_BASE.replace('/download', '')}`, {
+        redirect: 'manual',
+        ...(signal ? { signal } : {}),
+      });
+      const location = response.headers.get('location') ?? '';
+      const tag = /\/releases\/tag\/([^/?#]+)/.exec(location)?.[1];
+      return tag ? decodeURIComponent(tag) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Downloads the current release and installs it if it works.
    *
    * The new binary is proven before it replaces anything: it is written beside
@@ -97,7 +128,27 @@ export class ExtractorUpdater {
     const target = this.installedPath;
     const staging = `${target}.new`;
 
+    /**
+     * Nothing to do, discovered for the price of one redirect.
+     *
+     * Only ever skips on a definite answer that matches. Anything ambiguous —
+     * offline, rate-limited, an unrecognisable tag — falls through and does the
+     * full download, because being wrong in that direction costs bandwidth and
+     * being wrong in the other costs every download the update would have
+     * fixed.
+     */
+    if (currentVersion !== null) {
+      const latest = await this.latestVersion(signal);
+      if (latest !== null && latest === currentVersion) {
+        this.options.log?.info({ version: currentVersion }, 'the extractor is already the latest release');
+        return { version: currentVersion, updated: false, message: `Already on the latest extractor (${latest}).` };
+      }
+    }
+
     mkdirSync(dirname(target), { recursive: true });
+    // Anything a previous update had to leave behind, now that whatever was
+    // holding it has almost certainly let go.
+    sweepSuperseded(target, this.options.log);
 
     // Resolved before the try, so "no build for this platform" is not caught
     // and rewritten as "could not reach the release server".
@@ -138,10 +189,36 @@ export class ExtractorUpdater {
         throw new AppError('EXTRACTOR_FAILED', 'the downloaded file did not run; the previous extractor was kept');
       }
 
-      renameSync(staging, target);
+      /**
+       * Not a plain rename, and the difference is a real failure on Windows.
+       *
+       * `probeVersion` above just ran this exact file, and Windows keeps an
+       * executable's image mapped for a moment after the process exits — while
+       * Defender opens any newly written `.exe` to scan it. Either is enough
+       * for `rename` to fail with EPERM, which reached the user as "the app hit
+       * an internal problem" on a manual update, and would have silently lost
+       * every automatic one too. See replace-file.ts.
+       */
+      const replaced = await replaceFile(staging, target, { log: this.options.log }).catch((err: unknown) => {
+        /**
+         * A raw fs error reached the user as "the app hit an internal problem
+         * and stopped this action safely", which says nothing they can act on
+         * and blames the app for something the app did not do.
+         */
+        throw new AppError(
+          'EXTRACTOR_FAILED',
+          'Windows would not let the new extractor take the place of the old one — usually security software ' +
+            'holding the file. The previous extractor is untouched and still works. Try again in a moment, or ' +
+            'close the app and reopen it.',
+          { cause: err },
+        );
+      });
       await this.recordInManifest(target, version);
 
-      this.options.log?.info({ from: currentVersion, to: version, path: target }, 'extractor updated');
+      this.options.log?.info(
+        { from: currentVersion, to: version, path: target, how: replaced.how, attempts: replaced.attempts },
+        'extractor updated',
+      );
 
       return {
         version,
@@ -204,8 +281,19 @@ export class ExtractorUpdater {
  * of weeks is a likely cause of "Unexpected response from webpage request",
  * because that is how quickly TikTok's changes outrun a pinned build.
  */
-/** How old an installed build may be before a check is worth making. */
-export const EXTRACTOR_STALE_DAYS = 7;
+/**
+ * How old an installed build may be before a check is worth making.
+ *
+ * Three days, not seven, and the reduction is what a check costing one redirect
+ * rather than a 30 MB download buys. Seven was a sensible ration when every
+ * check meant downloading the whole binary to find out; it also meant a build
+ * five days old — current by the calendar, already broken by TikTok — was never
+ * looked at, so someone who had turned on "keep the extractor up to date"
+ * watched it sit there doing exactly nothing.
+ *
+ * `EXTRACTOR_CHECK_INTERVAL_MS` still caps this at two checks a day.
+ */
+export const EXTRACTOR_STALE_DAYS = 3;
 
 /**
  * Minimum gap between checks, whatever the installed version says.

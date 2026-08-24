@@ -73,6 +73,79 @@ describe('installing an update', () => {
 
 });
 
+/**
+ * Finding out whether there is anything to do, before doing it.
+ *
+ * The check used to be the update: download the whole ~30 MB binary, run it,
+ * compare version strings, and discover at the end that it was the build
+ * already installed. A check that costs 30 MB has to be rationed, and the
+ * rationing is what made "keep the extractor up to date" sit there doing
+ * nothing for days while a broken build stayed in place.
+ */
+describe('asking which version is current', () => {
+  /** What `/releases/latest` really does: redirect to the tag. */
+  const redirectTo = (tag: string, body: Buffer = GOOD_BINARY): typeof fetch =>
+    (async (url: string | URL) =>
+      String(url).endsWith('/releases/latest')
+        ? new Response(null, { status: 302, headers: { location: `https://github.com/yt-dlp/yt-dlp/releases/tag/${tag}` } })
+        : new Response(new Uint8Array(body), { status: 200 })) as unknown as typeof fetch;
+
+  it('reads the version out of the redirect', async () => {
+    expect(await updaterWith(redirectTo('2026.08.19')).latestVersion()).toBe('2026.08.19');
+  });
+
+  it('downloads nothing when the installed build is already the latest', async () => {
+    let downloads = 0;
+    const counting = (async (url: string | URL) => {
+      if (String(url).endsWith('/releases/latest')) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19' },
+        });
+      }
+      downloads++;
+      return new Response(new Uint8Array(GOOD_BINARY), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const result = await updaterWith(counting).update('2026.08.19');
+
+    expect(downloads).toBe(0);
+    expect(result.updated).toBe(false);
+    expect(result.message).toMatch(/already on the latest/i);
+  });
+
+  it('goes ahead and downloads when the latest is a different build', async () => {
+    const result = await updaterWith(redirectTo('2026.08.19')).update('2026.07.04');
+    expect(result.updated).toBe(true);
+  });
+
+  it('downloads rather than assuming, when it cannot tell', async () => {
+    // Rate-limited, offline, or an unrecognisable tag. Reading any of those as
+    // "up to date" would skip the update that fixes every broken download.
+    const unhelpful = (async (url: string | URL) =>
+      String(url).endsWith('/releases/latest')
+        ? new Response(null, { status: 403 })
+        : new Response(new Uint8Array(GOOD_BINARY), { status: 200 })) as unknown as typeof fetch;
+
+    const result = await updaterWith(unhelpful).update('2026.08.12');
+    expect(result.version).toBe('2026.08.12');
+  });
+
+  it('reports not knowing, rather than throwing, when the server is unreachable', async () => {
+    const offline = (async () => {
+      throw new Error('getaddrinfo ENOTFOUND github.com');
+    }) as unknown as typeof fetch;
+
+    expect(await updaterWith(offline).latestVersion()).toBeNull();
+  });
+
+  it('still checks when nothing is installed yet', async () => {
+    // No current version to compare against, so there is nothing to skip on.
+    const result = await updaterWith(redirectTo('2026.08.19')).update(null);
+    expect(result.version).toBe('2026.08.12');
+  });
+});
+
 describe('refusing a bad update', () => {
   it('rejects a response that is too small to be the binary', async () => {
     // A captive portal or proxy error page is the realistic case here.
@@ -115,6 +188,30 @@ describe('refusing a bad update', () => {
     // The whole point: the old one survived, and no staging file was left.
     expect(readFileSync(updater.installedPath, 'utf8')).toBe('previous');
     expect(existsSync(`${updater.installedPath}.new`)).toBe(false);
+  });
+
+  /**
+   * The message the user actually saw, and what it should say instead.
+   *
+   * A raw fs error reached them as "The app hit an internal problem and
+   * stopped this action safely" — which says nothing they can act on, and
+   * blames the app for something Windows did. Behind it the update had already
+   * downloaded and verified a working binary and failed at the last step.
+   */
+  it('explains a locked file instead of reporting an internal problem', async () => {
+    const updater = updaterWith(okFetch());
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(dir, 'bin', 'linux-x64'), { recursive: true });
+    writeFileSync(updater.installedPath, 'previous');
+    // A directory cannot be replaced by a file, so every rename onto it fails
+    // for good — standing in for a lock that never clears.
+    rmSync(updater.installedPath);
+    mkdirSync(updater.installedPath);
+
+    await expect(updater.update('2026.07.04')).rejects.toMatchObject({
+      code: 'EXTRACTOR_FAILED',
+      detail: expect.stringMatching(/would not let the new extractor/i),
+    });
   });
 
   it('names the platform when no build is published for it', async () => {
