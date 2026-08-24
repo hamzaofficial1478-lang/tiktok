@@ -11,6 +11,7 @@ import { downloadWithYtDlp } from './yt-dlp-downloader';
 import { downloadPhotoPost } from './photo-post';
 import type { YtDlpStrategy } from '../resolve/yt-dlp-extractor';
 import { verifyDownload } from './verify';
+import { makeUploadable } from './mp4-compat';
 import { renderTemplate, resolveOutputPath, resolveOutputDirectory } from './filename';
 import { computePerceptualHash, sha256File } from './hashing';
 import { assertEnoughSpace } from './disk-space';
@@ -424,6 +425,38 @@ export class DownloadPipeline implements MediaPipeline {
       }
     }
 
+
+    /**
+     * 9. Make the container acceptable to something other than a local player.
+     *
+     * Last, because it has to describe the file as it finally is: watermark
+     * removal and burned-in captions both rewrite it, and a check run before
+     * them would be answering about bytes that no longer exist.
+     *
+     * Nothing here re-encodes and nothing here can fail the item — see
+     * mp4-compat.ts for what it looks at and why. It usually does nothing at
+     * all: a video ffmpeg has already rewritten comes out correct, and this is
+     * for the common case where nothing needed processing and the file is
+     * exactly as TikTok served it.
+     */
+    if (!config.audioOnly) {
+      try {
+        const compat = await makeUploadable({
+          filePath: targetPath,
+          probe: verified.probe,
+          ffmpegPath: this.options.ffmpegPath(),
+          runner: this.options.runner,
+          signal: input.signal,
+          log,
+        });
+        if (compat.rewritten) log.info({ reason: compat.reason }, 'container rewritten for compatibility');
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'the compatibility pass failed; the download is kept as it is',
+        );
+      }
+    }
 
     /**
      * Nothing else touches the file.

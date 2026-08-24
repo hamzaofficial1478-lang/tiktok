@@ -241,7 +241,20 @@ async function pipeToFile(
     sink.destroy();
     throw err;
   } finally {
-    sink.off('error', captureError);
+    /**
+     * The listener stays on for the life of the stream, deliberately.
+     *
+     * It used to be removed here, which reopened the very hole the capture
+     * exists to close: destroying the sink does not cancel a write already
+     * handed to the filesystem, so its ERR_STREAM_DESTROYED lands a tick or two
+     * after this function has returned — by which point the stream had no error
+     * listener again and the throw escaped as an uncaught exception. In the
+     * main process that is a dead application, and it reproduced often enough
+     * to show up as an intermittent failure in the test suite.
+     *
+     * Nothing leaks by leaving it: the sink is created for this one call and
+     * has no other user, so it becomes unreachable the moment this returns.
+     */
     try {
       await reader.cancel();
     } catch {

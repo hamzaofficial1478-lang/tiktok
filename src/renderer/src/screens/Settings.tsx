@@ -335,7 +335,7 @@ export function Settings(): React.JSX.Element {
               [
                 'forceH264',
                 'Always download H.264',
-                'Guarantees the file plays in Windows Media Player. H.265 is sometimes the higher resolution, so this can cost a quality step.',
+                'On by default. H.265 plays as a black picture on Windows without a paid add-on, and upload sites refuse it or play it back black. It is occasionally the higher resolution, so turning this off buys a quality step at the cost of a file that may not open anywhere.',
               ],
               [
                 'groupByCreator',

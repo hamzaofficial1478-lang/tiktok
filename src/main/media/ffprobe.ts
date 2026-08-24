@@ -12,6 +12,19 @@ import type { ProcessRunner } from '../resolve/process-runner';
 export interface ProbedStream {
   readonly codecType: 'video' | 'audio' | string;
   readonly codecName: string | null;
+  /**
+   * The four-character code the container labels this stream with, e.g. `avc1`
+   * for H.264 or `hev1`/`hvc1` for H.265.
+   *
+   * Distinct from the codec name and worth having separately, because for HEVC
+   * the two tags describe identical video and are not treated identically:
+   * `hvc1` carries its parameter sets in the sample description where players
+   * and uploaders look for them, `hev1` carries them inline in the stream.
+   * TikTok writes `hev1`, and plenty of software — Apple's, and the transcoder
+   * behind at least one large upload form — either refuses the file or shows a
+   * black picture rather than saying what is wrong.
+   */
+  readonly codecTag: string | null;
   readonly width: number | null;
   readonly height: number | null;
   readonly frameRate: number | null;
@@ -36,6 +49,7 @@ interface RawProbe {
   streams?: {
     codec_type?: string;
     codec_name?: string;
+    codec_tag_string?: string;
     width?: number;
     height?: number;
     r_frame_rate?: string;
@@ -74,6 +88,9 @@ export class Ffprobe {
     const streams: ProbedStream[] = (raw.streams ?? []).map((stream) => ({
       codecType: stream.codec_type ?? 'unknown',
       codecName: stream.codec_name ?? null,
+      // ffprobe prints `[0][0][0][0]` for a stream with no tag at all, which is
+      // a placeholder rather than a value and must not be read as one.
+      codecTag: stream.codec_tag_string && !/^\[/.test(stream.codec_tag_string) ? stream.codec_tag_string : null,
       width: stream.width ?? null,
       height: stream.height ?? null,
       frameRate: parseFrameRate(stream.r_frame_rate),

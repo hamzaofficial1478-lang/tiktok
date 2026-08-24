@@ -276,6 +276,44 @@ describe('verification (section 9 step 7)', () => {
     expect(result.probe?.streams).toHaveLength(2);
   });
 
+  /**
+   * The container's label for the stream, kept apart from the codec name.
+   *
+   * For HEVC the two tags describe identical video and are not treated
+   * identically — `hvc1` is what players and upload sites expect, `hev1` is
+   * what TikTok writes, and the difference is a refused upload or a black
+   * picture. The compatibility pass cannot tell them apart without this.
+   */
+  it('reports the container tag alongside the codec name', async () => {
+    const result = await verifyDownload({
+      filePath,
+      expectedDurationMs: 12_000,
+      audioOnly: false,
+      ffprobe: ffprobeReturning({
+        format: { duration: '12.0', size: '2048' },
+        streams: [{ codec_type: 'video', codec_name: 'hevc', codec_tag_string: 'hev1', width: 1080, height: 1920 }],
+      }),
+    });
+
+    expect(result.probe?.streams[0]?.codecTag).toBe('hev1');
+  });
+
+  it('reads ffprobe\'s placeholder for an untagged stream as no tag at all', async () => {
+    const result = await verifyDownload({
+      filePath,
+      expectedDurationMs: 12_000,
+      audioOnly: false,
+      ffprobe: ffprobeReturning({
+        format: { duration: '12.0', size: '2048' },
+        // What ffprobe prints when a stream carries no tag. Reading it as a
+        // value would have the compatibility pass relabelling on a guess.
+        streams: [{ codec_type: 'video', codec_name: 'h264', codec_tag_string: '[0][0][0][0]' }],
+      }),
+    });
+
+    expect(result.probe?.streams[0]?.codecTag).toBeNull();
+  });
+
   it('rejects an empty file', async () => {
     writeFileSync(filePath, '');
     await expect(

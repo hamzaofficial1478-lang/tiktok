@@ -204,6 +204,44 @@ describe('bringing a stored config forward when a default changes', () => {
     expect(ConfigStore.load(file, silent).get().filenameTemplate).toBe(mine);
   });
 
+  it('turns on H.264 for a config written before it became the default', () => {
+    // The setting decided three separate failures, none of which name a codec
+    // anywhere a user can see: a black picture on Windows, an upload Facebook
+    // refuses outright, and a black rectangle where the video should play.
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, forceH264: false, schemaVersion: 5 }));
+
+    const store = ConfigStore.load(file, silent);
+    expect(store.get().forceH264).toBe(true);
+    expect(store.get().schemaVersion).toBe(DEFAULT_CONFIG.schemaVersion);
+  });
+
+  it('writes that change to disk, so it is not redone on every launch', () => {
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, forceH264: false, schemaVersion: 5 }));
+    ConfigStore.load(file, silent);
+
+    const written = JSON.parse(readFileSync(file, 'utf8')) as { forceH264: boolean; schemaVersion: number };
+    expect(written.forceH264).toBe(true);
+    expect(written.schemaVersion).toBe(DEFAULT_CONFIG.schemaVersion);
+  });
+
+  it('never turns H.264 back on once someone has turned it off', () => {
+    // Turned off at the current schema is an answer, not an old default.
+    writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, forceH264: false }));
+
+    expect(ConfigStore.load(file, silent).get().forceH264).toBe(false);
+  });
+
+  it('leaves the rest of an older config alone while bringing it forward', () => {
+    writeFileSync(
+      file,
+      JSON.stringify({ ...DEFAULT_CONFIG, outputDir: 'D:/TikTok', concurrency: 3, forceH264: false, schemaVersion: 5 }),
+    );
+
+    const store = ConfigStore.load(file, silent);
+    expect(store.get().outputDir).toBe('D:/TikTok');
+    expect(store.get().concurrency).toBe(3);
+  });
+
   it('does not touch a config already on the new default', () => {
     writeFileSync(file, JSON.stringify({ ...DEFAULT_CONFIG, outputDir: 'D:/TikTok' }));
     const store = ConfigStore.load(file, silent);

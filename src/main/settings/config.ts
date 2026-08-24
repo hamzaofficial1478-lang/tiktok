@@ -1,7 +1,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Logger } from 'pino';
-import { AppConfigSchema, DEFAULT_CONFIG, type AppConfig } from '@shared/config-schema';
+import { AppConfigSchema, CONFIG_SCHEMA_VERSION, DEFAULT_CONFIG, type AppConfig } from '@shared/config-schema';
 
 /**
  * The single settings module (spec section 13).
@@ -87,6 +87,29 @@ export function migrateConfig(config: AppConfig): { config: AppConfig; changed: 
   if (upgraded) {
     next = { ...next, filenameTemplate: upgraded };
     changed.push('filenameTemplate');
+  }
+
+  /**
+   * H.264 became the default in schema 6, and a changed default only reaches a
+   * fresh install — everyone else has the old value on disk and would keep it.
+   *
+   * `schemaVersion` is what makes this safe to apply to a boolean, where a
+   * stored `false` cannot otherwise be told apart from a chosen one: a config
+   * written before 6 predates the switch existing as anything but off, so the
+   * `false` in it is the old default rather than an answer. Anyone who wants
+   * the largest encode regardless of what plays it turns it off again, and
+   * that choice is written back at schema 6 and never touched again.
+   */
+  if (next.schemaVersion < 6 && !next.forceH264) {
+    next = { ...next, forceH264: true };
+    changed.push('forceH264');
+  }
+
+  if (next.schemaVersion !== CONFIG_SCHEMA_VERSION) {
+    next = { ...next, schemaVersion: CONFIG_SCHEMA_VERSION };
+    // Not reported as a change on its own — a version stamp is bookkeeping, not
+    // a setting anyone chose — but it is persisted alongside anything that was.
+    if (changed.length > 0) changed.push('schemaVersion');
   }
 
   return { config: next, changed };

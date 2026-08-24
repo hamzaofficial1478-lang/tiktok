@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { selectStream, isHevc } from '@main/download/stream-selector';
 import type { StreamCandidate } from '@main/resolve/types';
+import { DEFAULT_CONFIG } from '@shared/config-schema';
 import { YtDlpExtractor } from '@main/resolve/yt-dlp-extractor';
 
 /** The real extractor over a canned yt-dlp response. */
@@ -162,6 +163,55 @@ describe('H.265, and the black picture it produces on Windows', () => {
       watermarkMode: 'auto',
     });
     expect(result.reason).not.toMatch(/HEVC/i);
+  });
+
+  /**
+   * The default reversed, and the reason it reversed.
+   *
+   * Refusing H.265 can cost a resolution step, and the standing rule is not to
+   * trade picture quality — a fair argument for a file that will be watched
+   * where it lands. It is the wrong trade here. The same codec turned out to
+   * decide three separate failures, none of which name it anywhere the user
+   * can see: a black picture on Windows without a paid add-on, an upload
+   * Facebook refuses outright, and a black rectangle where the video plays
+   * back. A resolution step is a difference nobody notices side by side; a
+   * file that will not open is worthless.
+   */
+  it('skips H.265 at a higher resolution when compatibility is asked for', () => {
+    const result = selectStream(
+      [
+        stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 1080, height: 1920, hasAudio: true }),
+        stream({ id: 'play_addr', codec: 'h264', width: 720, height: 1280, hasAudio: true }),
+      ],
+      { audioOnly: false, watermarkMode: 'auto', forceH264: true },
+    );
+
+    expect(result.stream.id).toBe('play_addr');
+    expect(result.reason).not.toMatch(/HEVC/i);
+  });
+
+  it('still takes H.265 when TikTok offers nothing else', () => {
+    // Filtering to nothing would turn "this might not play" into "this did not
+    // download", which is strictly worse. The warning carries instead.
+    const result = selectStream(
+      [stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 1080, height: 1920, hasAudio: true })],
+      { audioOnly: false, watermarkMode: 'auto', forceH264: true },
+    );
+
+    expect(result.stream.id).toBe('play_addr_bytevc1');
+    expect(result.reason).toMatch(/HEVC Video Extensions/i);
+  });
+
+  it('is what a stock install now does, without anyone changing a setting', () => {
+    const result = selectStream(
+      [
+        stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 1080, height: 1920, hasAudio: true }),
+        stream({ id: 'play_addr', codec: 'h264', width: 720, height: 1280, hasAudio: true }),
+      ],
+      { audioOnly: false, watermarkMode: 'auto', forceH264: DEFAULT_CONFIG.forceH264 },
+    );
+
+    expect(result.stream.id).toBe('play_addr');
   });
 });
 

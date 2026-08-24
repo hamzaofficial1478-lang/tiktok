@@ -83,14 +83,24 @@ export const AppConfigSchema = z.object({
    * Never download H.265, even when it is the higher resolution on offer.
    *
    * TikTok serves the same video as H.264 and H.265, and sometimes offers H.265
-   * at a resolution it has no H.264 for. Windows cannot decode H.265 without
-   * the HEVC Video Extensions from the Store — a paid add-on — and Films & TV
-   * and Media Player both show a black picture rather than saying so. A file
-   * that will not play is worth less than a slightly smaller one that will.
+   * at a resolution it has no H.264 for.
    *
-   * Off by default because it can cost a resolution step and the app's standing
-   * rule is not to trade picture quality. On, it guarantees every download
-   * opens in anything.
+   * On by default, which is a reversal, and the reversal is the point. It was
+   * off because refusing H.265 can cost a resolution step and the standing rule
+   * is not to trade picture quality — a fair argument for a file that is going
+   * to be watched where it lands. It is the wrong trade for these files. The
+   * same setting turned out to decide three separate failures, none of which
+   * name a codec anywhere the user can see:
+   *
+   *   - Windows cannot decode H.265 without the HEVC Video Extensions from the
+   *     Store, a paid add-on. Films & TV and Media Player show a black picture
+   *     rather than saying so.
+   *   - Facebook refuses the upload outright, with a generic technical error.
+   *   - Uploaded some other way, it plays back as a black rectangle.
+   *
+   * A resolution step is a difference nobody would notice side by side. A file
+   * that will not play, or will not upload, is worthless. Turn this off to take
+   * the largest encode TikTok offers regardless of what will open it.
    */
   forceH264: z.boolean(),
 
@@ -180,7 +190,7 @@ export const AppConfigSchema = z.object({
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;
 
-export const CONFIG_SCHEMA_VERSION = 5;
+export const CONFIG_SCHEMA_VERSION = 6;
 
 export const DEFAULT_CONFIG: AppConfig = {
   outputDir: '',
@@ -219,7 +229,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   // On, because the alternative is a single folder that becomes unusable at a
   // few hundred files, and every account already had this when queued whole.
   groupByCreator: true,
-  forceH264: false,
+  // On: see the schema note above. Compatibility beats a resolution step for a
+  // file that is going to be uploaded somewhere else.
+  forceH264: true,
   startOnLogin: false,
   detectReposts: false,
   autoUpdateExtractor: true,
