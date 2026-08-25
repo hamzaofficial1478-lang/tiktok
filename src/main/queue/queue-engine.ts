@@ -172,6 +172,14 @@ export class QueueEngine {
   private readonly controllers = new Map<number, AbortController>();
   private readonly retryTimers = new Map<number, AbortController>();
   /**
+   * When each waiting item's next attempt is due, so the row can say so.
+   *
+   * In memory only, and correctly so: a restart requeues retryable failures
+   * outright rather than resuming a countdown, so a persisted time would
+   * describe an attempt that is never going to happen at it.
+   */
+  private readonly nextAttempts = new Map<number, number>();
+  /**
    * Items the user actually asked to cancel, so parking can tell them apart
    * from the ones it aborted itself. Consumed by the worker's failure path.
    */
@@ -244,7 +252,7 @@ export class QueueEngine {
   }
 
   private emitItem(row: QueueItemRow | undefined): void {
-    if (row) this.emit({ type: 'item-updated', item: toSnapshot(row) });
+    if (row) this.emit({ type: 'item-updated', item: toSnapshot(row, this.nextAttempts.get(row.id) ?? null) });
   }
 
   /* ---------------------------------------------------------------- *
@@ -1209,10 +1217,24 @@ export class QueueEngine {
     const controller = new AbortController();
     this.retryTimers.set(itemId, controller);
 
+    /**
+     * Recorded and announced before the wait, not after it.
+     *
+     * A failed row and a failed row that is about to try again looked exactly
+     * the same, so a link that dropped its connection sat there reading "The
+     * connection dropped or timed out" with nothing moving for up to thirty
+     * seconds. The reasonable conclusion is that the app is stuck on it, and
+     * the reasonable response is to cancel it — which is the one thing that
+     * guarantees it will never download.
+     */
+    this.nextAttempts.set(itemId, this.options.clock.now() + delayMs);
+    this.emitItem(this.options.queueItems.findById(itemId));
+
     void this.options.clock
       .sleep(delayMs, controller.signal)
       .then(() => {
         this.retryTimers.delete(itemId);
+        this.nextAttempts.delete(itemId);
         const row = this.options.queueItems.findById(itemId);
         // Only requeue if nothing else touched it while it waited.
         if (row?.status !== 'failed') return;
@@ -1222,6 +1244,7 @@ export class QueueEngine {
       })
       .catch(() => {
         this.retryTimers.delete(itemId);
+        this.nextAttempts.delete(itemId);
         this.settleIdle();
       });
   }
@@ -1427,7 +1450,7 @@ export class QueueEngine {
   }
 
   getSnapshot(): QueueItemSnapshot[] {
-    return this.options.queueItems.listOrdered().map(toSnapshot);
+    return this.options.queueItems.listOrdered().map((row) => toSnapshot(row, this.nextAttempts.get(row.id) ?? null));
   }
 
   /* ---------------------------------------------------------------- *

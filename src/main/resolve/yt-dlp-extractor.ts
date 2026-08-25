@@ -226,6 +226,36 @@ export class YtDlpExtractor implements Extractor {
       '--skip-download',
       '--socket-timeout',
       '15',
+      /**
+       * Ride out a connection that drops mid-request, here rather than upstairs.
+       *
+       * The failure this is for arrives as
+       * `curl: (56) Connection closed abruptly`, and it is the most common one
+       * this app sees. It is not a refusal and not a timeout: the other end
+       * hung up part-way through, which a second attempt a moment later
+       * usually gets past. Without these, one dropped connection abandoned the
+       * route immediately, all three routes fell over the same way within a
+       * few seconds, and the item came back to the queue as a failure — so a
+       * hiccup that a single retry would have absorbed cost the video one of
+       * its four attempts, and made the whole batch look broken when the
+       * network merely stuttered.
+       *
+       * Retried inside the route it costs seconds and nothing else. Retried
+       * upstairs it costs an attempt, a backoff, and a trip to the back of the
+       * queue.
+       *
+       * `--extractor-retries` covers the metadata request, which is all this
+       * call makes; `--retries` covers the transport beneath it. The sleep is
+       * capped so three retries cannot become a minute of silence.
+       */
+      '--extractor-retries',
+      '3',
+      '--retries',
+      '3',
+      '--retry-sleep',
+      'extractor:exp=1:8',
+      '--retry-sleep',
+      'http:exp=1:8',
       // TikTok rejects requests that do not look like a browser, and yt-dlp's
       // default agent is one of the first things a site starts filtering on.
       '--user-agent',

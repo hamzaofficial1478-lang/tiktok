@@ -114,6 +114,11 @@ export const QueueItemSchema = z.object({
   finishedAt: z.number().nullable(),
   sourceStrategy: z.enum(SOURCE_STRATEGIES).nullable(),
   watermarkRemoved: z.boolean().nullable(),
+  /**
+   * When an automatic retry is due, for a failure that is waiting one out.
+   * Null for everything else, including a failure that is finished with.
+   */
+  nextAttemptAt: z.number().nullable(),
 });
 
 export const PendingDuplicateSchema = z.object({

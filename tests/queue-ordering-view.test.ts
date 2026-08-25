@@ -38,6 +38,7 @@ function item(id: number, position: number): QueueItemDto {
     finishedAt: null,
     sourceStrategy: null,
     watermarkRemoved: null,
+    nextAttemptAt: null,
   };
 }
 

@@ -249,6 +249,47 @@ describe('YtDlpExtractor — invocation', () => {
     });
     await expect(extractor.resolve(CANONICAL)).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
   });
+
+  /**
+   * The commonest failure this app sees, and the cheapest place to survive it:
+   *
+   *   ERROR: [TikTok] …: Unable to download webpage: Failed to perform,
+   *   curl: (56) Connection closed abruptly.
+   *
+   * Not a refusal and not a timeout — the other end hung up part-way through,
+   * which a second attempt a moment later usually gets past. Without a retry
+   * inside the route, one dropped connection abandoned that route instantly,
+   * all three fell over the same way within seconds, and a hiccup cost the
+   * video one of its four queue attempts and a trip to the back of the queue.
+   */
+  it('rides out a dropped connection inside the route rather than failing the item', async () => {
+    const run = vi.fn<ProcessRunner['run']>(async () => ({
+      stdout: JSON.stringify(CLEAN_AND_WATERMARKED),
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    }));
+    await new YtDlpExtractor({ binaryPath: '/fake/yt-dlp', runner: { run } }).resolve(CANONICAL);
+
+    const args = run.mock.calls[0]?.[1] as string[];
+    expect(args[args.indexOf('--extractor-retries') + 1]).toBe('3');
+    expect(args[args.indexOf('--retries') + 1]).toBe('3');
+  });
+
+  it('caps the wait between those retries, so three cannot become a minute of silence', async () => {
+    const run = vi.fn<ProcessRunner['run']>(async () => ({
+      stdout: JSON.stringify(CLEAN_AND_WATERMARKED),
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    }));
+    await new YtDlpExtractor({ binaryPath: '/fake/yt-dlp', runner: { run } }).resolve(CANONICAL);
+
+    const args = run.mock.calls[0]?.[1] as string[];
+    const sleeps = args.filter((_arg, i) => args[i - 1] === '--retry-sleep');
+    expect(sleeps).toContain('extractor:exp=1:8');
+    expect(sleeps).toContain('http:exp=1:8');
+  });
 });
 
 describe('failure diagnostics', () => {

@@ -72,6 +72,54 @@ describe('retries (section 8)', () => {
     expect(harness.pipeline.processed).toEqual([awemeIdFor(2), awemeIdFor(3), awemeIdFor(1)]);
   });
 
+  /**
+   * A failure that is waiting, told apart from a failure that is finished.
+   *
+   * They looked identical on screen, so a link that dropped its connection sat
+   * there reading "The connection dropped or timed out" with nothing moving
+   * for up to thirty seconds. The reasonable conclusion is that the app is
+   * stuck on it; the reasonable response is to cancel it; and cancelling is
+   * the one thing that guarantees it will never download.
+   */
+  it('says when the next attempt is due, while it waits for it', async () => {
+    harness = createHarness();
+    harness.pipeline.hangFor(awemeIdFor(2));
+    harness.pipeline.failFor(awemeIdFor(1), ['NETWORK_ERROR']);
+
+    harness.engine.addLinks([makeUrl(1), makeUrl(2)]);
+    harness.engine.start();
+
+    await vi.waitFor(() => {
+      const waiting = harness.events
+        .filter((e): e is Extract<typeof e, { type: 'item-updated' }> => e.type === 'item-updated')
+        .find((e) => e.item.status === 'failed' && e.item.nextAttemptAt !== null);
+      expect(waiting).toBeDefined();
+    });
+  });
+
+  it('leaves it null for a failure that is finished with', async () => {
+    harness = createHarness();
+    harness.extractor.failFor(awemeIdFor(1), ['VIDEO_DELETED']);
+
+    harness.engine.addLinks([makeUrl(1)]);
+    harness.engine.start();
+    await harness.engine.whenIdle();
+
+    // Nothing is coming, so a countdown would be a lie.
+    expect(harness.engine.getSnapshot()[0]?.nextAttemptAt).toBeNull();
+  });
+
+  it('clears it once the attempt is actually made', async () => {
+    harness = createHarness();
+    harness.pipeline.failFor(awemeIdFor(1), ['NETWORK_ERROR']);
+
+    harness.engine.addLinks([makeUrl(1)]);
+    harness.engine.start();
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.status).toBe('completed'));
+
+    expect(harness.engine.getSnapshot()[0]?.nextAttemptAt).toBeNull();
+  });
+
   it('does not sweep a failure that can never succeed', async () => {
     harness = createHarness();
     harness.extractor.failFor(awemeIdFor(1), ['VIDEO_DELETED', 'VIDEO_DELETED']);

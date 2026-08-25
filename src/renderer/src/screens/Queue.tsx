@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { describeError } from '@shared/errors';
 import type { QueueItemDto } from '@shared/ipc/contract';
@@ -57,6 +57,30 @@ function activityLabel(item: QueueItemDto, live: LiveProgress | undefined): stri
   return parts.join(' · ');
 }
 
+/**
+ * Seconds left until a moment, ticking down; null when there is no moment.
+ *
+ * One interval per waiting row, and only while one is waiting — a backoff is
+ * at most thirty seconds and there are rarely several at once, so this costs
+ * nothing next to a screen that already streams download progress. It stops on
+ * its own the instant the retry is due, so nothing keeps ticking behind a row
+ * that has moved on.
+ */
+function useCountdown(at: number | null): number | null {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (at === null) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(timer);
+  }, [at]);
+
+  if (at === null) return null;
+  const seconds = Math.ceil((at - now) / 1_000);
+  return seconds > 0 ? seconds : null;
+}
+
 function Row({
   item,
   live,
@@ -70,6 +94,7 @@ function Row({
 }): React.JSX.Element {
   const isActive = item.status === 'downloading' || item.status === 'processing' || item.status === 'resolving';
   const descriptor = item.errorCode ? describeError(item.errorCode) : null;
+  const retryIn = useCountdown(item.nextAttemptAt);
 
   return (
     <div className="border-b border-white/4 px-4">
@@ -96,6 +121,22 @@ function Row({
             title={item.errorDetail ?? undefined}
           >
             {descriptor ? (item.errorDetail ?? descriptor.title) : activityLabel(item, live)}
+            {/**
+             * The wait, said out loud.
+             *
+             * A failed row and a failed row about to try again looked
+             * identical, so a link that dropped its connection sat there
+             * reading "The connection dropped or timed out" with nothing
+             * moving for up to thirty seconds. The reasonable conclusion is
+             * that the app is stuck on it, and the reasonable response is to
+             * cancel it — which is the one thing that guarantees it will not
+             * download.
+             */}
+            {retryIn !== null && (
+              <span className="ml-2 text-ink-400" aria-live="polite">
+                · trying again in {retryIn}s
+              </span>
+            )}
           </p>
         </button>
 

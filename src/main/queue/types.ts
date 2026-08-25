@@ -81,9 +81,24 @@ export interface QueueItemSnapshot {
    */
   readonly sourceStrategy: SourceStrategy | null;
   readonly watermarkRemoved: boolean | null;
+  /**
+   * When the next automatic attempt is due, for an item waiting out a backoff.
+   *
+   * Null for everything else, including a failure that will not be retried.
+   *
+   * It exists because a failed row and a failed row that is about to try again
+   * looked identical, and the difference is the whole of what the user needs to
+   * know. A link that failed on a dropped connection sits there saying "The
+   * connection dropped or timed out" for thirty seconds with nothing moving,
+   * and the reasonable conclusion is that the app is stuck on it — so people
+   * cancel the item, which is the one thing that guarantees it will not
+   * download. Saying "trying again in 8s" turns the same wait into something
+   * that is visibly working.
+   */
+  readonly nextAttemptAt: number | null;
 }
 
-export function toSnapshot(row: QueueItemRow): QueueItemSnapshot {
+export function toSnapshot(row: QueueItemRow, nextAttemptAt: number | null = null): QueueItemSnapshot {
   return {
     id: row.id,
     position: row.position,
@@ -104,6 +119,7 @@ export function toSnapshot(row: QueueItemRow): QueueItemSnapshot {
     finishedAt: row.finished_at,
     sourceStrategy: row.source_strategy,
     watermarkRemoved: row.watermark_removed === null ? null : row.watermark_removed === 1,
+    nextAttemptAt,
   };
 }
 
