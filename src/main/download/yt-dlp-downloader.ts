@@ -5,6 +5,7 @@ import type { Logger } from 'pino';
 import type { ProcessRunner } from '../resolve/process-runner';
 import { classifyYtDlpFailure } from '../resolve/yt-dlp-errors';
 import { BROWSER_USER_AGENT } from '../resolve/yt-dlp-extractor';
+import { impersonateArgs } from '../resolve/impersonation';
 import { partPathFor, type DownloadOutcome, type DownloadProgress } from './downloader';
 
 /**
@@ -129,6 +130,8 @@ export interface YtDlpDownloadOptions {
    */
   readonly subtitleLangs?: string | undefined;
   readonly timeoutMs?: number;
+  /** The browser this transfer should look like at the TLS layer, or null. */
+  readonly impersonate?: string | null | undefined;
   readonly log?: Logger;
 }
 
@@ -289,6 +292,17 @@ async function attemptDownload(
      */
     '--user-agent',
     BROWSER_USER_AGENT,
+    /**
+     * And the TLS handshake to match it, for the same reason.
+     *
+     * The download re-extracts before it transfers anything, so it faces the
+     * identical check the extraction did — and a mismatch between the browser
+     * user agent above and the TLS fingerprint underneath is what gets a
+     * connection cut before any reply arrives. Passing it on one call and not
+     * the other would reintroduce exactly the split this comment block's
+     * neighbour was written about. See resolve/impersonation.ts.
+     */
+    ...impersonateArgs(options.impersonate ?? null),
     '-f',
     options.formatId,
     /**

@@ -43,6 +43,30 @@ describe('stopping a running process', () => {
     await expect(running).rejects.toMatchObject({ code: 'CANCELLED' });
   });
 
+  /**
+   * The one that let an abandoned item keep working for minutes afterwards.
+   *
+   * `addEventListener('abort', …)` on a signal that is *already* aborted never
+   * fires — that is how AbortSignal works — so a process started after the
+   * abort had nothing left that could kill it and ran to its own timeout
+   * instead. Resolution tries three routes in turn and the download tries
+   * three more, each a separate spawn: abort during the first and the
+   * remaining five were each started fresh and left to run out the clock,
+   * long after the engine believed it had moved on.
+   */
+  it('starts nothing at all once the signal has already been raised', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const started = Date.now();
+    await expect(runner.run(process.execPath, forever, { signal: controller.signal })).rejects.toMatchObject({
+      code: 'CANCELLED',
+    });
+    // Immediate, because nothing was spawned — not a minute later when a
+    // process nobody could stop finally timed out.
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
   it('leaves an ordinary run completely alone', async () => {
     const result = await runner.run(process.execPath, ['-e', 'process.stdout.write("ok")']);
     expect(result.exitCode).toBe(0);

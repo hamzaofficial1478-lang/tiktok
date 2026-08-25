@@ -1,6 +1,7 @@
 import type { Logger } from 'pino';
 import { appInfoPool } from './device-id';
 import { AppError } from '@shared/errors';
+import { impersonateArgs } from './impersonation';
 import type { Extractor, ResolvedVideo, StreamCandidate, VideoMetadata } from './types';
 import type { ProcessRunner } from './process-runner';
 import { classifyYtDlpFailure } from './yt-dlp-errors';
@@ -198,6 +199,11 @@ export interface YtDlpExtractorOptions {
   readonly strategy?: YtDlpStrategy;
   /** Read fresh per call so a Settings change applies mid-batch. */
   readonly session?: () => YtDlpSessionOptions;
+  /**
+   * The browser this request should look like at the TLS layer, or null.
+   * Probed once and cached by the caller; see impersonation.ts.
+   */
+  readonly impersonate?: () => Promise<string | null>;
 }
 
 export class YtDlpExtractor implements Extractor {
@@ -262,6 +268,17 @@ export class YtDlpExtractor implements Extractor {
       BROWSER_USER_AGENT,
     ];
 
+    /**
+     * A browser's TLS handshake, not just a browser's User-Agent.
+     *
+     * The header half was already here and only ever fixed half the problem:
+     * TikTok reads the handshake too, and Chrome's user agent arriving over
+     * Python's TLS stack is a mismatch a CDN can spot before any HTTP is
+     * exchanged. Cutting the connection at that point is what produces
+     * `curl: (56) Connection closed abruptly`. See impersonation.ts.
+     */
+    args.push(...impersonateArgs((await this.options.impersonate?.()) ?? null));
+
     if (this.options.strategy) args.push(...this.options.strategy.args);
 
     const proxy = typeof this.options.proxyUrl === 'function' ? this.options.proxyUrl() : this.options.proxyUrl;
@@ -318,7 +335,20 @@ export class YtDlpExtractor implements Extractor {
         },
         `yt-dlp failed: ${reason || `exited ${result.exitCode} with no output`}`,
       );
-      throw new AppError(classified.code, truncate(result.stderr) || `yt-dlp exited ${result.exitCode}`);
+      /**
+       * A plain sentence where the raw text would mislead, and yt-dlp's own
+       * words everywhere else.
+       *
+       * The raw stderr is normally the better thing to put in front of someone
+       * — it is specific, and it is what they would search for. `curl: (56)
+       * Connection closed abruptly` is the exception: it reads as a fault in
+       * this program to anyone who does not already know what curl is. Either
+       * way the raw text is in the log line just above.
+       */
+      throw new AppError(
+        classified.code,
+        classified.detail ?? truncate(result.stderr) ?? `yt-dlp exited ${result.exitCode}`,
+      );
     }
 
     let payload: YtDlpPayload;

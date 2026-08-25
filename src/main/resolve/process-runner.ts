@@ -55,6 +55,24 @@ export class ChildProcessRunner implements ProcessRunner {
     const timeoutMs = options.timeoutMs ?? 60_000;
     const maxBuffer = options.maxBufferBytes ?? 64 * 1024 * 1024;
 
+    /**
+     * Nothing is started once the signal has already been raised.
+     *
+     * `addEventListener('abort', …)` on a signal that is *already* aborted
+     * never fires — that is how AbortSignal works — so without this check the
+     * process below was spawned with nothing left that could ever kill it, and
+     * ran until its own timeout instead. That is not theoretical: resolution
+     * tries three routes in turn and the download tries three more, each a
+     * separate `run`. Abort during the first, and the remaining five were each
+     * started fresh and left to run out the clock, so an item the watchdog had
+     * given up on carried on occupying the queue for many minutes afterwards —
+     * silently, because as far as the engine was concerned it had already
+     * moved on.
+     */
+    if (options.signal?.aborted) {
+      throw new AppError('CANCELLED', `${basename(command)} was stopped before it finished`);
+    }
+
     return new Promise<ProcessResult>((resolve, reject) => {
       const child = spawn(command, [...args], {
         windowsHide: true,

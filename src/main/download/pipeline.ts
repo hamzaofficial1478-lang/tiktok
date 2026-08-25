@@ -53,6 +53,14 @@ export interface DownloadPipelineOptions {
    */
   readonly downloadStrategies?: () => readonly YtDlpStrategy[];
   readonly proxyUrl?: () => string | undefined;
+  /**
+   * The browser the transfer should look like at the TLS layer, or null.
+   *
+   * Must be the same answer the extraction used: TikTok checks the handshake,
+   * and resolving as a browser then downloading as something else is the split
+   * that produces a successful resolve followed by a dropped connection.
+   */
+  readonly impersonate?: () => Promise<string | null>;
   /** Overridable so tests can point at a temp directory. */
   readonly outputDir?: () => string;
   /** Phase 5. Absent means downloads are saved exactly as fetched. */
@@ -216,6 +224,7 @@ export class DownloadPipeline implements MediaPipeline {
           signal: input.signal,
           onProgress: progressSink,
           proxyUrl: this.options.proxyUrl?.(),
+          impersonate: (await this.options.impersonate?.()) ?? null,
           // Caption tracks ride along with the transfer rather than costing a
           // second extraction; see captions/tiktok-tracks.ts.
           ...(config.captions.mode === 'off'

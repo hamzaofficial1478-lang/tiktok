@@ -60,6 +60,39 @@ describe('a failing link does not hold up the ones behind it', () => {
     expect(order.filter((id) => id === awemeIdFor(0))).toHaveLength(4);
   });
 
+  /**
+   * The guarantee stated as the user stated it: every link that can download
+   * does, and only then are the failures tried again.
+   *
+   * Several links failing is the case that decides it. One failure behaving
+   * itself proves little — the question is whether a run with three bad links
+   * among nine good ones works through all nine first, or ends up alternating
+   * between the broken ones while good links wait.
+   */
+  it('finishes every healthy link before retrying any failure', async () => {
+    harness = createHarness({ config: { concurrency: 1 } });
+    for (const bad of [1, 4, 7]) harness.pipeline.failFor(awemeIdFor(bad), ['NETWORK_ERROR']);
+
+    const links = Array.from({ length: 9 }, (_, i) => i);
+    harness.engine.addLinks(links.map(makeUrl));
+    harness.engine.start();
+    await vi.waitFor(() => {
+      expect(harness.engine.getSnapshot().every((i) => i.status === 'completed')).toBe(true);
+    });
+
+    const healthy = links.filter((i) => ![1, 4, 7].includes(i)).map(awemeIdFor);
+    const firstPass = harness.pipeline.attempts.slice(0, 9);
+    // The first nine attempts are the nine links, each once. No link is tried
+    // a second time while another has not been tried at all.
+    expect([...firstPass].sort()).toEqual([...links.map(awemeIdFor)].sort());
+    // And every healthy one is finished before the first retry happens.
+    const firstRetryAt = harness.pipeline.attempts.findIndex(
+      (id, i) => harness.pipeline.attempts.indexOf(id) !== i,
+    );
+    const beforeAnyRetry = new Set(harness.pipeline.attempts.slice(0, firstRetryAt));
+    for (const id of healthy) expect(beforeAnyRetry.has(id)).toBe(true);
+  });
+
   it('does not disturb the running order when nothing fails', async () => {
     harness = createHarness({ config: { concurrency: 1 } });
     harness.engine.addLinks([0, 1, 2, 3, 4].map(makeUrl));

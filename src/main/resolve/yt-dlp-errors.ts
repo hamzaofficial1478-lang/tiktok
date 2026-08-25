@@ -28,6 +28,16 @@ interface Rule {
   readonly pattern: RegExp;
   readonly code: ErrorCode;
   readonly why: string;
+  /**
+   * A plain sentence to show in place of yt-dlp's own words.
+   *
+   * Set only where the raw text actively misleads. Normally the raw stderr is
+   * the better thing to put in front of someone — it is specific, and it is
+   * what they would search for — but a line like `curl: (56) Connection closed
+   * abruptly` reads as a fault in the program to anyone who does not already
+   * know what curl is. The raw text stays in the log either way.
+   */
+  readonly detail?: string;
 }
 
 const RULES: readonly Rule[] = [
@@ -128,6 +138,27 @@ const RULES: readonly Rule[] = [
   { pattern: /HTTP Error 403\b|403: Forbidden|Forbidden/i, code: 'CDN_FORBIDDEN', why: 'CDN refused the media request' },
 
   // --- Transport ---------------------------------------------------------
+  /**
+   * The connection was cut before any reply came back.
+   *
+   *     Unable to download webpage: Failed to perform,
+   *     curl: (56) Connection closed abruptly.
+   *
+   * Matched ahead of the general transport rule so it can say what it is,
+   * because the raw text is what the user was being shown and it reads like a
+   * fault in the program. It is not a refusal — a server that has decided
+   * against you answers and says so — and it is not a timeout. Something hung
+   * up mid-request: the connection itself, or TikTok deciding it did not like
+   * the look of the client before the exchange finished.
+   */
+  {
+    pattern: /connection closed abruptly|curl: \(56\)|failed to perform/i,
+    code: 'NETWORK_ERROR',
+    why: 'the connection was closed mid-request',
+    detail:
+      'The connection to TikTok was cut before it answered. This is a network problem rather than a problem with ' +
+      'the video — usually a brief drop, or a connection an ISP or CDN closed on its own. It will be tried again.',
+  },
   { pattern: /HTTP Error 5\d\d\b/i, code: 'NETWORK_ERROR', why: 'server error' },
   {
     pattern:
@@ -142,6 +173,8 @@ export interface ClassifiedError {
   readonly code: ErrorCode;
   /** Short reason for the log line; not shown to the user. */
   readonly why: string;
+  /** A plain sentence to show instead of yt-dlp's own words, where one helps. */
+  readonly detail?: string;
 }
 
 /**
@@ -157,7 +190,9 @@ export function classifyYtDlpFailure(input: {
 
   const text = input.stderr ?? '';
   for (const rule of RULES) {
-    if (rule.pattern.test(text)) return { code: rule.code, why: rule.why };
+    if (rule.pattern.test(text)) {
+      return { code: rule.code, why: rule.why, ...(rule.detail ? { detail: rule.detail } : {}) };
+    }
   }
 
   return { code: 'EXTRACTOR_FAILED', why: 'unrecognised extractor failure' };

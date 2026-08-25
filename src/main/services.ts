@@ -26,6 +26,7 @@ import { RateLimiter } from './queue/rate-limiter';
 import { systemClock } from './clock';
 import type { MediaPipeline } from './queue/types';
 import { ChildProcessRunner } from './resolve/process-runner';
+import { Impersonation } from './resolve/impersonation';
 import { Ffprobe } from './media/ffprobe';
 import { DownloadPipeline } from './download/pipeline';
 import { PostProcessor } from './postprocess/processor';
@@ -256,6 +257,9 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
         // not suppressed for a day.
         appMeta.setNumber(EXTRACTOR_CHECKED_AT_KEY, Date.now());
         if (result.updated) {
+          // A replaced extractor may gain or lose the ability to impersonate a
+          // browser, so the cached answer is no longer about this binary.
+          impersonation.reset();
           await refreshSidecars();
           onSidecarsChanged?.(snapshot);
         }
@@ -335,6 +339,21 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
    * a downloader that survives a TikTok change and one that tells its users to
    * go and find a proxy.
    */
+  /**
+   * One probe, shared by resolution and the download.
+   *
+   * Both have to present the same TLS identity — resolving as a browser and
+   * then transferring as something else is the split that produces a
+   * successful resolve followed by a dropped connection — and asking twice
+   * would spawn a process per video to re-learn something that only changes
+   * when yt-dlp itself is replaced.
+   */
+  const impersonation = new Impersonation({
+    binaryPath: () => sidecars.resolve('yt-dlp').path,
+    runner: processRunner,
+    log: logging.log.child({ scope: 'impersonation' }),
+  });
+
   const extractor = new ExtractorChain(
     strategies.map(
       (strategy) =>
@@ -351,6 +370,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
             forceIpv4: config.get().forceIpv4,
           }),
           proxyUrl: () => config.get().proxyUrl || undefined,
+          impersonate: () => impersonation.target(),
           log: logging.log.child({ scope: `yt-dlp/${strategy.label}` }),
         }),
     ),
@@ -406,6 +426,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       // The download re-extracts, so it needs the same routes resolution has.
       downloadStrategies: () => strategies,
       proxyUrl: () => config.get().proxyUrl || undefined,
+      impersonate: () => impersonation.target(),
       log: logging.log.child({ scope: 'download' }),
       postProcessor,
       capabilities: () => snapshot.capabilities,

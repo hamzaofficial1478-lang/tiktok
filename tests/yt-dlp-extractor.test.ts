@@ -276,6 +276,73 @@ describe('YtDlpExtractor — invocation', () => {
     expect(args[args.indexOf('--retries') + 1]).toBe('3');
   });
 
+  /**
+   * The other half of looking like a browser.
+   *
+   * `--user-agent` is a header; TikTok also reads the TLS handshake, whose
+   * fingerprint identifies the library no matter what the header claims.
+   * Chrome's user agent over Python's TLS stack is a mismatch a CDN can spot
+   * before any HTTP is exchanged, and hanging up at that point is exactly what
+   * produces `curl: (56) Connection closed abruptly`.
+   */
+  it('presents a browser TLS fingerprint when the extractor supports one', async () => {
+    const run = vi.fn<ProcessRunner['run']>(async () => ({
+      stdout: JSON.stringify(CLEAN_AND_WATERMARKED),
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    }));
+    await new YtDlpExtractor({
+      binaryPath: '/fake/yt-dlp',
+      runner: { run },
+      impersonate: async () => 'chrome',
+    }).resolve(CANONICAL);
+
+    const args = run.mock.calls[0]?.[1] as string[];
+    expect(args[args.indexOf('--impersonate') + 1]).toBe('chrome');
+    // Both halves, or the mismatch is still there.
+    expect(args).toContain('--user-agent');
+  });
+
+  it('sends no impersonation flag at all when the extractor cannot do it', async () => {
+    const run = vi.fn<ProcessRunner['run']>(async () => ({
+      stdout: JSON.stringify(CLEAN_AND_WATERMARKED),
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    }));
+    await new YtDlpExtractor({
+      binaryPath: '/fake/yt-dlp',
+      runner: { run },
+      impersonate: async () => null,
+    }).resolve(CANONICAL);
+
+    // Asking for a target that is not there fails the download outright, which
+    // trades an intermittent problem for a permanent one.
+    expect(run.mock.calls[0]?.[1] as string[]).not.toContain('--impersonate');
+  });
+
+  it('says what a dropped connection is, instead of showing curl\'s own words', async () => {
+    const extractor = new YtDlpExtractor({
+      binaryPath: '/fake/yt-dlp',
+      runner: runner({
+        stdout: '',
+        stderr:
+          'ERROR: [TikTok] 7671733116226112781: Unable to download webpage: Failed to perform, ' +
+          'curl: (56) Connection closed abruptly.',
+        exitCode: 1,
+        timedOut: false,
+      }),
+    });
+
+    await expect(extractor.resolve(CANONICAL)).rejects.toMatchObject({
+      code: 'NETWORK_ERROR',
+      // "curl: (56)" reads as a fault in this program to anyone who does not
+      // already know what curl is.
+      detail: expect.stringMatching(/network problem rather than a problem with the video/i),
+    });
+  });
+
   it('caps the wait between those retries, so three cannot become a minute of silence', async () => {
     const run = vi.fn<ProcessRunner['run']>(async () => ({
       stdout: JSON.stringify(CLEAN_AND_WATERMARKED),
