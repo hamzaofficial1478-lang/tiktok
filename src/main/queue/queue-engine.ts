@@ -1249,6 +1249,91 @@ export class QueueEngine {
       });
   }
 
+  /**
+   * Frees items parked on a question nobody can answer any more.
+   *
+   * This is the one that makes a queue quietly stop working after a day or
+   * two, and it is worth spelling out because nothing about it looks like a
+   * fault while it is happening.
+   *
+   * Layers 3 and the slideshow prompt park an item in `awaiting_user` and hold
+   * the question — who posted it, where the existing file is — in a Map on
+   * this object. The status goes to the database; the question does not,
+   * because it is a live conversation with a window that is open now.
+   *
+   * Then the app is quit, or the machine restarts. The row comes back as
+   * `awaiting_user`; the Map is empty. `resetInFlight` does not touch it,
+   * because from the database's point of view nothing was in flight. Nothing
+   * rebuilds the question, so no modal can ever appear, `resolveDuplicate`
+   * would throw "no pending decision" if anything called it, and
+   * `hasPendingWork` does not count the row — so the queue reports itself
+   * finished with an item sitting in it that will never move again.
+   *
+   * One is a row that looks stuck. They accumulate: every quit while a
+   * question is open leaves another, which is exactly the shape of "it works
+   * for a day or two and then starts sticking". The only escape was to cancel
+   * the row by hand, which is what people did.
+   *
+   * Requeueing is the right recovery rather than re-asking from the database:
+   * the decision was never made, so the item simply has not been processed
+   * yet. Running it again re-checks for the duplicate and parks it again if it
+   * still is one — this time with a live question and a window to show it in.
+   */
+  recoverUnansweredQuestions(): number {
+    let recovered = 0;
+    for (const row of this.options.queueItems.listByStatus(['awaiting_user'])) {
+      // A question this process is still holding is a live one; leave it be.
+      if (this.pendingDuplicates.has(row.id) || this.pendingPhotos.has(row.id)) continue;
+      this.update(row.id, { status: 'queued', progress: 0, startedAt: null, finishedAt: null });
+      this.emitItem(this.options.queueItems.findById(row.id));
+      recovered++;
+    }
+    if (recovered > 0) {
+      this.log.info({ recovered }, 'requeued items parked on a question that no longer has anywhere to be asked');
+    }
+    return recovered;
+  }
+
+  /**
+   * Takes responsibility again for batches that were part-way through.
+   *
+   * `knownBatches` is what stops a batch-complete being announced for work this
+   * engine never saw — without it, every launch would fire a completion event
+   * for every finished batch still in the table. It is filled in by `addLinks`,
+   * and that is the whole of it, which is fine right up until the app restarts
+   * with a queue still in it.
+   *
+   * After a restart the set is empty, so `checkBatchComplete` returns at its
+   * first line for every batch that came back from disk. The batch finishes and
+   * nothing says so: no completion event, no summary — and, because the
+   * end-of-run retry lives behind that same guard, no second chance for the
+   * links that failed. Given that the app is built to start at login and pick
+   * the queue straight back up, that is not an edge case; it is what happens
+   * every time it does the thing it was designed to do.
+   *
+   * Rebuilt from the rows rather than persisted, because the question it
+   * answers — is there outstanding work in this batch — is one the table can
+   * already answer. `failed` counts: those are exactly the rows the end-of-run
+   * sweep exists for.
+   */
+  adoptUnfinishedBatches(): number {
+    const unfinished = this.options.queueItems.listByStatus([
+      'queued',
+      'resolving',
+      'awaiting_user',
+      'downloading',
+      'processing',
+      'failed',
+    ]);
+
+    const before = this.knownBatches.size;
+    for (const row of unfinished) this.knownBatches.add(row.batch_id);
+
+    const adopted = this.knownBatches.size - before;
+    if (adopted > 0) this.log.info({ batches: adopted }, 'picked up batches that were unfinished at the last exit');
+    return adopted;
+  }
+
   /** Requeues retryable failures left behind by a crash mid-backoff. */
   requeueInterruptedRetries(): number {
     let requeued = 0;
@@ -1650,6 +1735,15 @@ export class QueueEngine {
     this.batchChoices.delete(batchId);
     this.photoBatchChoices.delete(batchId);
     this.sweptBatches.delete(batchId);
+    /**
+     * The per-item slideshow answers too, which nothing else released.
+     *
+     * Keyed by item rather than by batch, so they were not covered by the
+     * three lines above and stayed for the life of the process — one entry per
+     * slideshow ever answered. Small, but this is a program that is meant to
+     * run for weeks at a time, and "small and forever" is how that ends.
+     */
+    for (const row of rows) this.photoChoices.delete(row.id);
     this.emit({ type: 'batch-complete', summary });
     this.log.info(summary, 'batch complete');
   }

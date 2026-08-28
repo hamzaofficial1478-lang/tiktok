@@ -474,6 +474,24 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
   queue.requeueInterruptedRetries();
 
   /**
+   * And an item parked on a question that died with the previous window.
+   *
+   * `resetInFlight` above cannot see these — from the database's point of view
+   * nothing was in flight — and the question itself only ever existed in
+   * memory, so without this the row sits in `awaiting_user` for good. See
+   * `recoverUnansweredQuestions`.
+   */
+  queue.recoverUnansweredQuestions();
+
+  /**
+   * And the batches themselves, which the engine only knows about because it
+   * was the one that queued them. See `adoptUnfinishedBatches`: without this,
+   * a queue picked up from disk finishes silently and its failed links never
+   * get their end-of-run retry.
+   */
+  queue.adoptUnfinishedBatches();
+
+  /**
    * Pick the batch back up automatically.
    *
    * The queue's rows, their order and their `.part` files all survived the
