@@ -73,6 +73,15 @@ Electron versions. The npm package ships a prebuilt binary for every platform
 (`node_modules/better-sqlite3/prebuilds/`) and has no install script, so there
 is **nothing to compile** — no Visual Studio, no Xcode, no Python, no node-gyp.
 
+That holds **on a Node the package publishes a build for**, which is why
+`engines` pins this to Node 20–22. npm reaches for the prebuilt binary only
+when one matches the running Node; on a newer one it falls back to compiling
+from source, which needs the C++ toolchain this section exists to say you do
+not need. The symptom is a wall of node-gyp output ending in "Could not find
+any Visual Studio installation to use", which names the missing compiler and
+not the actual cause. `Run TikTok Downloader.bat` checks the version at both
+ends and says which Node to install rather than letting the install fail.
+
 This is why there is no `postinstall` step. An earlier version of this file ran
 `electron-builder install-app-deps`, which is what older, ABI-specific
 better-sqlite3 releases needed. Against v13 it compiles nothing useful and

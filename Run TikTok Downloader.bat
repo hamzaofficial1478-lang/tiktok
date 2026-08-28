@@ -6,7 +6,7 @@ rem ---------------------------------------------------------------------------
 rem  Double-click this file to start the app.
 rem
 rem  It does what you were typing by hand, in order, and stops at the first step
-rem  that fails with a message saying which one — rather than flashing a window
+rem  that fails with a message saying which one - rather than flashing a window
 rem  shut and leaving you to guess. Nothing here needs PowerShell.
 rem
 rem  It also updates itself: the latest code is pulled before the build, so
@@ -33,15 +33,48 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem  Checked at both ends, and the upper end is not fussiness.
+rem
+rem  better-sqlite3 ships a ready-built binary for each platform, so a normal
+rem  install compiles nothing and needs no build tools. npm only falls back to
+rem  compiling it when it has no prebuilt binary for the Node in use - and on a
+rem  Node newer than the ones it was published for, that is exactly what
+rem  happens. The compile then fails on a machine with no Visual Studio, which
+rem  is every machine that has not deliberately installed a 6 GB C++ toolchain,
+rem  and buries the reason under two hundred lines of node-gyp output ending in
+rem  "Could not find any Visual Studio installation to use".
+rem
+rem  Nothing about the app needs the newest Node. Saying so here costs one line
+rem  and replaces that wall of text with an instruction.
 for /f "tokens=1 delims=." %%v in ('node -p "process.versions.node"') do set NODE_MAJOR=%%v
 if !NODE_MAJOR! LSS 20 (
-  echo   [X] Node.js !NODE_MAJOR! is too old. This app needs 20 or newer.
-  echo       Install the LTS version from https://nodejs.org, then run this again.
+  echo   [X] Node.js !NODE_MAJOR! is too old. This app needs 20 or 22.
+  echo.
+  echo       Get Node 22 ^(LTS^) from:
+  echo         https://nodejs.org/dist/latest-v22.x/
+  echo       Pick the file ending in x64.msi, install it, then run this again.
   echo.
   pause
   exit /b 1
 )
-echo   [1/4] Node.js: OK
+if !NODE_MAJOR! GTR 22 (
+  echo   [X] Node.js !NODE_MAJOR! is too new for one of this app's components.
+  echo.
+  echo       Nothing here needs the newest Node, and on !NODE_MAJOR! the install
+  echo       tries to COMPILE a database component instead of using the
+  echo       ready-made one - which then fails, asking for Visual Studio.
+  echo.
+  echo       Install Node 22 ^(LTS^) instead - it replaces this one, no need to
+  echo       uninstall anything first:
+  echo         https://nodejs.org/dist/latest-v22.x/
+  echo       Pick the file ending in x64.msi.
+  echo.
+  echo       Then delete the node_modules folder here and run this file again.
+  echo.
+  pause
+  exit /b 1
+)
+echo   [1/4] Node.js: OK ^(v!NODE_MAJOR!^)
 
 rem --- Updates ---------------------------------------------------------------
 rem  Pulls the latest code before building, so double-clicking this file is the
@@ -49,7 +82,7 @@ rem  whole update procedure and there is nothing to remember.
 rem
 rem  --ff-only on purpose: it takes updates cleanly or not at all, and never
 rem  invents a merge commit in someone's working folder. Any failure here is a
-rem  warning, not a stop — offline, or a folder with local edits, should start
+rem  warning, not a stop - offline, or a folder with local edits, should start
 rem  the version already on disk rather than refusing to start at all.
 rem
 rem  A failed update used to be one quiet line among four steps, with git's own
@@ -60,8 +93,9 @@ rem  actually running is stated whether the update worked or not.
 if not exist ".git" (
   echo   [^!] This folder is not a git checkout, so it can NEVER update itself.
   echo       It was probably downloaded as a ZIP. To get updates, delete this
-  echo       folder and clone it instead:
-  echo         git clone https://github.com/hamzaofficial1478-lang/tiktok.git
+  echo       folder and clone it instead - the -b part matters, the default
+  echo       branch holds only a readme:
+  echo         git clone -b claude/tiktok-downloader-desktop-0bsyo1 https://github.com/hamzaofficial1478-lang/tiktok.git
   echo.
 ) else (
   where git >nul 2>&1
@@ -74,8 +108,8 @@ if not exist ".git" (
     rem  Throw away local edits to package-lock.json before pulling.
     rem
     rem  This is the fix for an update that failed every single time. `npm
-    rem  install` rewrites package-lock.json as a side effect — a different npm
-    rem  version, a platform-specific optional dependency, anything — and git
+    rem  install` rewrites package-lock.json as a side effect - a different npm
+    rem  version, a platform-specific optional dependency, anything - and git
     rem  then refuses to pull because the incoming commit touches the same file:
     rem
     rem      error: Your local changes to the following files would be
@@ -140,7 +174,7 @@ rem  `npm ci` rather than `npm install`, and the difference is the whole reason
 rem  updates kept failing.
 rem
 rem  `npm install` treats package-lock.json as something it may rewrite, and it
-rem  does — which leaves a modified tracked file in the folder, which makes the
+rem  does - which leaves a modified tracked file in the folder, which makes the
 rem  next `git pull` abort rather than overwrite it. `npm ci` installs exactly
 rem  what the lockfile says and never writes to it, so the folder stays clean
 rem  and updates keep working. It also installs devDependencies by default,
@@ -177,7 +211,7 @@ rem  git: it is platform-specific, and TikTok changes often enough that yt-dlp
 rem  has to be replaceable on its own schedule rather than an app release's.
 rem
 rem  Fetching it here is the fix for a genuinely bad first run on a new machine.
-rem  Without this step the app installed, built and opened perfectly — and then
+rem  Without this step the app installed, built and opened perfectly - and then
 rem  failed every single download with an extraction error, because the very
 rem  thing that does the downloading was never fetched. "Works, but nothing
 rem  downloads" is a far worse first impression than a slower first start.
