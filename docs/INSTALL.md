@@ -9,22 +9,13 @@ two downloads.
 
 That is the whole list.
 
-1. **Node.js 22** — <https://nodejs.org/dist/latest-v22.x/>, take the file
-   ending in **`x64.msi`**, run the installer, accept every default.
-   - **Take 22 specifically, not whatever nodejs.org's front page offers as
-     LTS.** The front page moves on, and a newer Node breaks the install in a
-     way that reads like a completely different problem. `better-sqlite3`
-     ships a ready-built binary for each platform, and npm only reaches for it
-     when a matching build exists for the Node in use; on a Node newer than
-     the ones it was published for, npm falls back to *compiling* it instead.
-     That compile then fails on any machine without Visual Studio, and buries
-     the reason under two hundred lines of node-gyp output ending in "Could
-     not find any Visual Studio installation to use". Nothing here needs a
-     newer Node, and the launcher now refuses one rather than letting you
-     discover this the long way.
+1. **Node.js** — <https://nodejs.org>, click the big **LTS** button, run the
+   installer, accept every default. Any version from 20 up works, including
+   whatever the front page is offering today.
    - It offers a checkbox called **"Tools for Native Modules"**. Leave it
      unticked. This project needs none of it, and ticking it starts a long
      install of things you will never use.
+
 2. **Git** — <https://git-scm.com/download/win>, run it, accept every default.
 
 You do **not** need Visual Studio, C++ Build Tools, Python, ffmpeg, or yt-dlp.

@@ -184,6 +184,61 @@ describe('an item that never finishes', () => {
     expect(harness.engine.getSnapshot()[0]?.errorCode).toBeNull();
   });
 
+  /**
+   * The hole the download limit left behind it.
+   *
+   * The limit used to be switched *off* once the bytes were in, because
+   * re-encoding to strip a watermark and transcribing for burned-in captions
+   * are legitimately slow and a network timeout is the wrong thing to hold
+   * them to. But "the wrong limit" was replaced with no limit at all, and past
+   * that line an item could sit forever — which is exactly what a queue stuck
+   * on one download that never moves and never fails looks like.
+   *
+   * The subprocesses each have their own timeouts, and that reasoning is what
+   * produced the hole: fifteen minutes for a re-encode plus fifteen for
+   * captions plus thirty for a transcription is an hour of ceilings that never
+   * sum to one.
+   */
+  it('is still bounded once the download is done and processing starts', async () => {
+    harness = createHarness({
+      config: { concurrency: 1 },
+      engineOverrides: { itemDeadlineMs: 30_000, processingDeadlineMs: 40 },
+    });
+    // Reports that processing has begun, then never finishes it.
+    harness.pipeline.slowPostProcessFor(awemeIdFor(0), 60_000);
+
+    harness.engine.addLinks([makeUrl(0), makeUrl(1)]);
+    harness.engine.start();
+
+    await vi.waitFor(
+      () => expect(harness.engine.getSnapshot()[1]?.status).toBe('completed'),
+      { timeout: 5_000 },
+    );
+
+    // It was cut short rather than left running: the attempt was counted, and
+    // the healthy link behind it got the worker. Without a ceiling here the
+    // first item would still be processing and the second would never start.
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.attemptCount).toBeGreaterThan(0), {
+      timeout: 5_000,
+    });
+  });
+
+  it('gives processing its own, longer allowance rather than the download\'s', async () => {
+    harness = createHarness({
+      config: { concurrency: 1 },
+      // A download limit far too short for the processing that follows it: if
+      // the two shared a clock, this would be cut off at 40ms.
+      engineOverrides: { itemDeadlineMs: 40, processingDeadlineMs: 30_000 },
+    });
+    harness.pipeline.slowPostProcessFor(awemeIdFor(0), 200);
+
+    harness.engine.addLinks([makeUrl(0)]);
+    harness.engine.start();
+
+    await vi.waitFor(() => expect(harness.engine.getSnapshot()[0]?.status).toBe('completed'), { timeout: 5_000 });
+    expect(harness.engine.getSnapshot()[0]?.errorCode).toBeNull();
+  });
+
   it('never fires for an item that finishes in time', async () => {
     harness = createHarness({ config: { concurrency: 1 }, engineOverrides: { itemDeadlineMs: 30_000 } });
     harness.engine.addLinks([0, 1].map(makeUrl));

@@ -73,6 +73,8 @@ export interface QueueEngineOptions {
    * Defaults to `ITEM_TOTAL_BUDGET_MS`.
    */
   readonly itemTotalBudgetMs?: number;
+  /** The ceiling on local ffmpeg work. Defaults to `PROCESSING_DEADLINE_MS`. */
+  readonly processingDeadlineMs?: number;
   /**
    * Several links in a row failed in a way that points at the extractor rather
    * than at the links.
@@ -118,6 +120,22 @@ export const ITEM_DEADLINE_MS = 8 * 60_000;
  * usually a person who has changed something.
  */
 export const ITEM_TOTAL_BUDGET_MS = 15 * 60_000;
+
+/**
+ * The ceiling on the local half — everything after the bytes have landed.
+ *
+ * Separate from the download's because the work is nothing like it. Removing a
+ * watermark re-encodes the video and burning in captions transcribes it first;
+ * on a slow or memory-starved machine either can genuinely take minutes, and
+ * holding them to a network timeout would fail downloads that were working.
+ *
+ * What it must not be is absent, which is what it was. Each subprocess has its
+ * own timeout, and that reasoning is precisely what left the gap: fifteen
+ * minutes for a re-encode plus fifteen for captions plus thirty for a
+ * transcription is an hour of ceilings that never sum to one, and any step
+ * added later starts with none at all. This is the number that covers the lot.
+ */
+export const PROCESSING_DEADLINE_MS = 20 * 60_000;
 
 /**
  * Failures in a row that mean "the extractor is broken", not "those links were
@@ -193,6 +211,8 @@ export class QueueEngine {
   private extractorFailures = 0;
   /** Cancels the per-item time limit, by item id. See `armWatchdog`. */
   private readonly watchdogs = new Map<number, () => void>();
+  /** Items past the download and into local ffmpeg work; see beginProcessingPhase. */
+  private readonly processing = new Set<number>();
   private readonly pendingDuplicates = new Map<number, PendingDuplicate>();
   /** Slideshow questions waiting on an answer, and the answers already given. */
   private readonly pendingPhotos = new Map<number, PendingPhotoPost>();
@@ -496,7 +516,7 @@ export class QueueEngine {
 
     const controller = new AbortController();
     this.controllers.set(row.id, controller);
-    this.watchdogs.set(row.id, this.armWatchdog(row, controller));
+    this.watchdogs.set(row.id, this.armWatchdog(row.id, controller, this.itemDeadlineMs, 'download'));
 
     try {
       await this.processItem(row, controller.signal);
@@ -513,6 +533,7 @@ export class QueueEngine {
       // just as the cancel arrived never reaches that branch.
       this.cancelledByUser.delete(row.id);
       this.timedOut.delete(row.id);
+      this.processing.delete(row.id);
       this.lastProgressEmit.delete(row.id);
       this.lastProgressWrite.delete(row.id);
       this.checkBatchComplete(row.batch_id);
@@ -569,18 +590,23 @@ export class QueueEngine {
    * deadline that also elapses instantly would abort every item the moment it
    * started. Tests set a short `itemDeadlineMs` and wait for it instead.
    */
-  private armWatchdog(row: QueueItemRow, controller: AbortController): () => void {
-    const spent = row.busy_ms ?? 0;
-    const allowed = Math.max(1, Math.min(this.itemDeadlineMs, this.itemTotalBudgetMs - spent));
+  private armWatchdog(
+    itemId: number,
+    controller: AbortController,
+    limitMs: number,
+    phase: 'download' | 'post-processing',
+  ): () => void {
+    const spent = this.options.queueItems.findById(itemId)?.busy_ms ?? 0;
+    const allowed = Math.max(1, Math.min(limitMs, this.itemTotalBudgetMs - spent));
     const startedAt = Date.now();
 
     const timer = setTimeout(() => {
       if (controller.signal.aborted) return;
       this.log.warn(
-        { itemId: row.id, afterMs: allowed, alreadySpentMs: spent },
+        { itemId, phase, afterMs: allowed, alreadySpentMs: spent },
         'item exceeded its time limit; failing it so the queue can move on',
       );
-      this.timedOut.add(row.id);
+      this.timedOut.add(itemId);
       controller.abort();
     }, allowed);
 
@@ -592,13 +618,55 @@ export class QueueEngine {
       // Wall-clock, not the injected clock: this is a real duration being
       // charged against a real budget, and a test clock that never advances
       // would hand every item an unlimited one.
-      this.options.queueItems.addBusyMs(row.id, Date.now() - startedAt);
+      this.options.queueItems.addBusyMs(itemId, Date.now() - startedAt);
     };
   }
 
   private disarmWatchdog(itemId: number): void {
     this.watchdogs.get(itemId)?.();
     this.watchdogs.delete(itemId);
+  }
+
+  /**
+   * The bytes are in; from here on it is local ffmpeg work — under a new
+   * ceiling, not under none.
+   *
+   * The download limit used to be switched *off* at this point, and that was a
+   * hole big enough to drive the whole complaint through. Removing a watermark
+   * re-encodes the video and burning in captions transcribes it first, both
+   * legitimately slow, so the download's own limit is the wrong one to hold
+   * them to — but "the wrong limit" was replaced with no limit at all. Past
+   * this line an item could sit forever, and forever is what it did: a queue
+   * apparently stuck on one download that never moved and never failed, with
+   * nothing to cancel it but a person.
+   *
+   * The subprocesses each have their own timeouts, which is exactly the
+   * reasoning that produced the hole — a ceiling made of other people's
+   * ceilings holds only while every one of them is right, and they add up:
+   * fifteen minutes for a re-encode, fifteen for captions, thirty for a
+   * transcription, in sequence, on a machine that may be swapping. This is one
+   * number covering all of it.
+   *
+   * The time is charged to the item's budget like any other, so a video whose
+   * processing hangs is set aside after its first go rather than hanging again
+   * on every retry.
+   */
+  private beginProcessingPhase(itemId: number): void {
+    // Progress can report `processing` many times; the phase begins once.
+    if (this.processing.has(itemId)) return;
+    this.processing.add(itemId);
+
+    const controller = this.controllers.get(itemId);
+    if (!controller) return;
+
+    // Closes out the network phase, charging what it spent, before the new
+    // ceiling starts counting.
+    this.disarmWatchdog(itemId);
+    this.watchdogs.set(itemId, this.armWatchdog(itemId, controller, this.processingDeadlineMs, 'post-processing'));
+  }
+
+  private get processingDeadlineMs(): number {
+    return this.options.processingDeadlineMs ?? PROCESSING_DEADLINE_MS;
   }
 
   private get itemTotalBudgetMs(): number {
@@ -1567,7 +1635,7 @@ export class QueueEngine {
      * than a progress tick and dropping it would leave the time limit running
      * over a re-encode it has no business interrupting.
      */
-    if (progress.processing === true) this.disarmWatchdog(itemId);
+    if (progress.processing === true) this.beginProcessingPhase(itemId);
 
     const throttleMs = this.options.progressThrottleMs ?? 250;
     const now = this.options.clock.now();

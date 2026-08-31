@@ -173,7 +173,21 @@ export class FakePipeline implements MediaPipeline {
     const slow = this.slowPostProcess.get(awemeId);
     if (slow !== undefined) {
       input.onProgress({ bytesDone: 1_000_000, bytesTotal: 1_000_000, speed: null, etaMs: 0, processing: true });
-      await new Promise<void>((resolve) => setTimeout(resolve, slow));
+      // Abort-aware, as the real post-processor is: it hands the signal to
+      // every ffmpeg it spawns and checks it between steps. A fake that
+      // ignored it would model a pipeline that cannot be stopped at all, and
+      // would hang the suite rather than exercise the limit.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(resolve, slow);
+        input.signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(timer);
+            reject(new AppError('CANCELLED', 'post-processing aborted'));
+          },
+          { once: true },
+        );
+      });
     }
 
     this.processed.push(awemeId);

@@ -1,9 +1,6 @@
 {
   "name": "tiktok-downloader",
   "version": "0.1.0",
-  "engines": {
-    "node": ">=20 <23"
-  },
   "description": "Desktop TikTok downloader with an ordered queue, deduplication, and watermark removal",
   "private": true,
   "type": "module",

@@ -33,43 +33,19 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem  Checked at both ends, and the upper end is not fussiness.
+rem  Only a lower bound, and that is the point.
 rem
-rem  better-sqlite3 ships a ready-built binary for each platform, so a normal
-rem  install compiles nothing and needs no build tools. npm only falls back to
-rem  compiling it when it has no prebuilt binary for the Node in use - and on a
-rem  Node newer than the ones it was published for, that is exactly what
-rem  happens. The compile then fails on a machine with no Visual Studio, which
-rem  is every machine that has not deliberately installed a 6 GB C++ toolchain,
-rem  and buries the reason under two hundred lines of node-gyp output ending in
-rem  "Could not find any Visual Studio installation to use".
-rem
-rem  Nothing about the app needs the newest Node. Saying so here costs one line
-rem  and replaces that wall of text with an instruction.
+rem  This used to refuse anything newer than 22, because a fresh install on a
+rem  newer Node fell over compiling better-sqlite3 and demanded Visual Studio.
+rem  Telling someone to install an older Node to run a downloader is not a fix,
+rem  it is a note left for them to keep re-reading, so the install itself was
+rem  changed instead - see the dependencies step below. Any Node from 20 up
+rem  works now, including whatever nodejs.org is calling LTS this month.
 for /f "tokens=1 delims=." %%v in ('node -p "process.versions.node"') do set NODE_MAJOR=%%v
 if !NODE_MAJOR! LSS 20 (
-  echo   [X] Node.js !NODE_MAJOR! is too old. This app needs 20 or 22.
-  echo.
-  echo       Get Node 22 ^(LTS^) from:
-  echo         https://nodejs.org/dist/latest-v22.x/
-  echo       Pick the file ending in x64.msi, install it, then run this again.
-  echo.
-  pause
-  exit /b 1
-)
-if !NODE_MAJOR! GTR 22 (
-  echo   [X] Node.js !NODE_MAJOR! is too new for one of this app's components.
-  echo.
-  echo       Nothing here needs the newest Node, and on !NODE_MAJOR! the install
-  echo       tries to COMPILE a database component instead of using the
-  echo       ready-made one - which then fails, asking for Visual Studio.
-  echo.
-  echo       Install Node 22 ^(LTS^) instead - it replaces this one, no need to
-  echo       uninstall anything first:
-  echo         https://nodejs.org/dist/latest-v22.x/
-  echo       Pick the file ending in x64.msi.
-  echo.
-  echo       Then delete the node_modules folder here and run this file again.
+  echo   [X] Node.js !NODE_MAJOR! is too old. This app needs 20 or newer.
+  echo       Install the current version from https://nodejs.org, then run this
+  echo       file again.
   echo.
   pause
   exit /b 1
@@ -183,14 +159,31 @@ rem
 rem  It falls back to `npm install` when the lockfile and package.json disagree,
 rem  since `npm ci` refuses outright in that case and a refusal here means the
 rem  app cannot start at all.
+rem
+rem  --ignore-scripts is what makes this work on any Node, and it is the real
+rem  fix for the wall of node-gyp output that used to end in "You need to
+rem  install the latest version of Visual Studio".
+rem
+rem  better-sqlite3 ships a ready-built binary for every platform and needs no
+rem  compiler. npm reaches for it only when one matches the Node in use; on a
+rem  newer Node it decides to build from source instead, and that build is what
+rem  wants a C++ toolchain nobody asked for. Skipping install scripts skips
+rem  that decision entirely - the shipped binary is loaded either way, and it
+rem  is Node-API, so the same file works under Node and under Electron.
+rem
+rem  Nothing else here needs its install script: esbuild's binary arrives as an
+rem  optional platform package, and Electron's download is the one that does
+rem  matter, which is why it is run by name on the next line rather than left
+rem  to chance. Verified by installing this lockfile with scripts off and
+rem  running both.
 if not exist "node_modules\electron\dist\electron.exe" (
   echo   [2/4] Installing dependencies. First run only - this takes a few minutes.
   echo.
-  call npm ci
+  call npm ci --ignore-scripts
   if errorlevel 1 (
     echo.
     echo       Lockfile out of step with package.json; falling back.
-    call npm install --include=dev
+    call npm install --include=dev --ignore-scripts
   )
   if errorlevel 1 (
     echo.
@@ -201,6 +194,11 @@ if not exist "node_modules\electron\dist\electron.exe" (
     pause
     exit /b 1
   )
+
+  rem  The one install script that matters, run by name because the line above
+  rem  skipped them all. It fetches the ~150 MB Electron binary, without which
+  rem  the window cannot open, and does nothing when it is already there.
+  call npm run setup:electron
 ) else (
   echo   [2/4] Dependencies: OK
 )

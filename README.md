@@ -73,14 +73,14 @@ Electron versions. The npm package ships a prebuilt binary for every platform
 (`node_modules/better-sqlite3/prebuilds/`) and has no install script, so there
 is **nothing to compile** — no Visual Studio, no Xcode, no Python, no node-gyp.
 
-That holds **on a Node the package publishes a build for**, which is why
-`engines` pins this to Node 20–22. npm reaches for the prebuilt binary only
-when one matches the running Node; on a newer one it falls back to compiling
-from source, which needs the C++ toolchain this section exists to say you do
-not need. The symptom is a wall of node-gyp output ending in "Could not find
-any Visual Studio installation to use", which names the missing compiler and
-not the actual cause. `Run TikTok Downloader.bat` checks the version at both
-ends and says which Node to install rather than letting the install fail.
+npm can still decide to build it from source on a Node it has no matching
+prebuild for, which is how a clean install on a brand-new Node ends in
+`node-gyp` demanding Visual Studio. `Run TikTok Downloader.bat` installs with
+`--ignore-scripts` and then runs `setup:electron` by name, which skips that
+decision entirely: the shipped binary is loaded either way, and it is
+Node-API, so one file serves both Node and Electron. Nothing else in the tree
+needs its install script — esbuild's binary arrives as an optional platform
+package — so any Node from 20 up works.
 
 This is why there is no `postinstall` step. An earlier version of this file ran
 `electron-builder install-app-deps`, which is what older, ABI-specific
