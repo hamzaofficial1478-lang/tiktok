@@ -153,6 +153,20 @@ export interface MakeUploadableInput {
   readonly probe: ProbeResult | null;
   readonly ffmpegPath: string | null;
   readonly runner: ProcessRunner;
+  /**
+   * Convert an H.265 video track to H.264, keeping every pixel of it.
+   *
+   * Absent means leave the codec alone. Present, it carries the encoder and
+   * its quality arguments, chosen from what this ffmpeg build actually has.
+   *
+   * This exists because the alternative was so much worse. Wanting H.264 used
+   * to mean *downloading* H.264, and TikTok routinely publishes its top
+   * resolution only as H.265 — so asking for compatibility silently fetched
+   * 480p in place of a 1080p source, and no amount of processing afterwards
+   * could put those pixels back. Converting costs one near-transparent encode
+   * and some time, and keeps the picture.
+   */
+  readonly toH264?: { readonly encoderArgs: readonly string[] } | undefined;
   readonly signal?: AbortSignal | undefined;
   readonly log?: Logger | undefined;
 }
@@ -175,14 +189,26 @@ export interface MakeUploadableResult {
  */
 export async function makeUploadable(input: MakeUploadableInput): Promise<MakeUploadableResult> {
   const verdict = assessCompatibility({ boxes: safeBoxes(input.filePath), probe: input.probe });
-  if (!verdict.needed) return { rewritten: false, reason: null };
+
+  /**
+   * A conversion is work worth doing even when the container is otherwise fine.
+   *
+   * `assessCompatibility` only looks at how the file is written, and the codec
+   * inside it is a separate question with a separate answer.
+   */
+  const video = input.probe?.streams.find((stream) => stream.codecType === 'video');
+  const convert = input.toH264 !== undefined && (video?.codecName ?? '').toLowerCase() === 'hevc';
+
+  if (!verdict.needed && !convert) return { rewritten: false, reason: null };
+
+  const why = convert ? [verdict.reason, 'its video is H.265'].filter(Boolean).join(' and ') : verdict.reason;
 
   if (!input.ffmpegPath) {
     input.log?.warn(
-      { reason: verdict.reason },
+      { reason: why },
       'the file may be refused by upload sites, and ffmpeg is not installed to correct it',
     );
-    return { rewritten: false, reason: verdict.reason };
+    return { rewritten: false, reason: why };
   }
 
   const output = `${input.filePath}.compat.mp4`;
@@ -197,8 +223,18 @@ export async function makeUploadable(input: MakeUploadableInput): Promise<MakeUp
     // Every stream, including a soft caption track added earlier.
     '-map',
     '0',
+    /**
+     * Copy unless a codec conversion was asked for, and even then only the
+     * video: the audio is already AAC and re-encoding it would spend a second
+     * generation of loss on a track nothing was complaining about.
+     *
+     * No scaling, no filters. The whole point of converting rather than
+     * downloading a smaller stream is that the picture arrives intact, and the
+     * fastest way to undo that would be to touch the frame size here.
+     */
     '-c',
     'copy',
+    ...(convert ? ['-c:v', ...(input.toH264?.encoderArgs ?? []), '-pix_fmt', 'yuv420p'] : []),
     '-movflags',
     '+faststart',
     ...(verdict.retagHevc ? ['-tag:v', 'hvc1'] : []),

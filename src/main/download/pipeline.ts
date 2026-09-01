@@ -455,6 +455,28 @@ export class DownloadPipeline implements MediaPipeline {
           probe: verified.probe,
           ffmpegPath: this.options.ffmpegPath(),
           runner: this.options.runner,
+          /**
+           * Convert the codec, having already downloaded the best picture.
+           *
+           * Asking for H.264 used to mean asking for a smaller stream, because
+           * TikTok publishes its top resolution only as H.265 for plenty of
+           * videos. The conversion happens here instead, at the resolution
+           * that was downloaded, with the same near-transparent encoder the
+           * watermark path uses.
+           */
+          ...(selection.needsH264Transcode
+            ? {
+                toH264: {
+                  encoderArgs: (() => {
+                    const encoder = selectEncoder(
+                      this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
+                      config.hardwareAcceleration,
+                    );
+                    return [encoder.name, ...encoder.args];
+                  })(),
+                },
+              }
+            : {}),
           signal: input.signal,
           log,
         });

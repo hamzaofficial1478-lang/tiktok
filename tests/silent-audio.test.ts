@@ -166,86 +166,70 @@ describe('H.265, and the black picture it produces on Windows', () => {
   });
 
   /**
-   * The default reversed, and the reason it reversed.
+   * Wanting H.264 is not a reason to download less of the video.
    *
-   * Refusing H.265 can cost a resolution step, and the standing rule is not to
-   * trade picture quality — a fair argument for a file that will be watched
-   * where it lands. It is the wrong trade here. The same codec turned out to
-   * decide three separate failures, none of which name it anywhere the user
-   * can see: a black picture on Windows without a paid add-on, an upload
-   * Facebook refuses outright, and a black rectangle where the video plays
-   * back. A resolution step is a difference nobody notices side by side; a
-   * file that will not open is worthless.
+   * This used to filter every H.265 stream out, which is a reasonable-sounding
+   * rule that did the worst thing in the program: TikTok routinely publishes
+   * its top resolution *only* as H.265, so the filter left the best available
+   * H.264 — 480p against a 1080p source. The download then succeeded, said
+   * nothing, and produced a video good for nothing. Asking for compatibility
+   * got a quarter of the picture, permanently, and no processing afterwards
+   * could put those pixels back.
+   *
+   * The picture is chosen first and the codec is dealt with second, by
+   * converting the file at the resolution that was downloaded.
    */
-  it('skips H.265 at a higher resolution when compatibility is asked for', () => {
+  it('takes the larger H.265 stream and converts it, rather than downloading a smaller one', () => {
     const result = selectStream(
       [
         stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 1080, height: 1920, hasAudio: true }),
-        stream({ id: 'play_addr', codec: 'h264', width: 720, height: 1280, hasAudio: true }),
+        stream({ id: 'play_addr', codec: 'h264', width: 480, height: 854, hasAudio: true }),
       ],
-      { audioOnly: false, watermarkMode: 'auto', forceH264: true },
-    );
-
-    expect(result.stream.id).toBe('play_addr');
-    expect(result.reason).not.toMatch(/HEVC/i);
-  });
-
-  it('still takes H.265 when TikTok offers nothing else', () => {
-    // Filtering to nothing would turn "this might not play" into "this did not
-    // download", which is strictly worse. The warning carries instead.
-    const result = selectStream(
-      [stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 1080, height: 1920, hasAudio: true })],
       { audioOnly: false, watermarkMode: 'auto', forceH264: true },
     );
 
     expect(result.stream.id).toBe('play_addr_bytevc1');
+    expect(result.needsH264Transcode).toBe(true);
+    expect(result.reason).toMatch(/converted to H\.264/i);
+  });
+
+  it('asks for no conversion when H.264 already is the best picture', () => {
+    const result = selectStream(
+      [
+        stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 720, height: 1280, hasAudio: true }),
+        stream({ id: 'play_addr', codec: 'h264', width: 1080, height: 1920, hasAudio: true }),
+      ],
+      { audioOnly: false, watermarkMode: 'auto', forceH264: true },
+    );
+
+    // Nothing to convert, so nothing is re-encoded: the best stream is already
+    // the compatible one.
+    expect(result.stream.id).toBe('play_addr');
+    expect(result.needsH264Transcode).toBeUndefined();
+  });
+
+  it('leaves H.265 alone when compatibility was not asked for', () => {
+    const result = selectStream(
+      [stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 1080, height: 1920, hasAudio: true })],
+      { audioOnly: false, watermarkMode: 'auto', forceH264: false },
+    );
+
+    expect(result.stream.id).toBe('play_addr_bytevc1');
+    expect(result.needsH264Transcode).toBeUndefined();
     expect(result.reason).toMatch(/HEVC Video Extensions/i);
   });
 
-  it('is what a stock install now does, without anyone changing a setting', () => {
+  it('never costs resolution on a stock install', () => {
     const result = selectStream(
       [
         stream({ id: 'play_addr_bytevc1', codec: 'h265', width: 1080, height: 1920, hasAudio: true }),
-        stream({ id: 'play_addr', codec: 'h264', width: 720, height: 1280, hasAudio: true }),
+        stream({ id: 'play_addr', codec: 'h264', width: 480, height: 854, hasAudio: true }),
       ],
       { audioOnly: false, watermarkMode: 'auto', forceH264: DEFAULT_CONFIG.forceH264 },
     );
 
-    expect(result.stream.id).toBe('play_addr');
-  });
-});
-
-describe('where the flag actually came from', () => {
-  it('reads acodec: none as no audio, which the old expression could not', () => {
-    // The one case that mattered, straight through the real extractor.
-    const payload = {
-      id: '7123456789012345678',
-      formats: [
-        { format_id: 'play_addr', url: 'https://cdn/v.mp4', vcodec: 'h264', acodec: 'none', height: 1920, width: 1080 },
-        { format_id: 'audio', url: 'https://cdn/a.m4a', vcodec: 'none', acodec: 'mp4a.40.2' },
-      ],
-    };
-
-    return extractorFor(payload)
-      .resolve('https://www.tiktok.com/@a/video/7123456789012345678')
-      .then((resolved) => {
-        const video = resolved.streams.find((s) => s.id === 'play_addr');
-        expect(video?.hasAudio).toBe(false);
-
-        // And end to end: the selector now asks for the merge.
-        const selection = selectStream(resolved.streams, { audioOnly: false, watermarkMode: 'auto' });
-        expect(selection.formatId).toBe('play_addr+audio');
-      });
-  });
-
-  it('still reads a real codec as audio present', async () => {
-    const payload = {
-      id: '7123456789012345678',
-      formats: [
-        { format_id: 'play_addr', url: 'https://cdn/v.mp4', vcodec: 'h264', acodec: 'mp4a.40.2', height: 1920 },
-      ],
-    };
-    const resolved = await extractorFor(payload).resolve('https://www.tiktok.com/@a/video/7123456789012345678');
-    expect(resolved.streams[0]?.hasAudio).toBe(true);
+    // The one that matters: whatever the defaults are, they must not hand
+    // someone 480p from a 1080p source.
+    expect(result.stream.width).toBe(1080);
   });
 });

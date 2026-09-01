@@ -308,6 +308,84 @@ describe('rewriting the container', () => {
     expect(readFileSync(path, 'utf8')).toBe('rewritten');
   });
 
+  /**
+   * Converting the codec instead of downloading less of the video.
+   *
+   * Asking for H.264 used to mean fetching an H.264 *stream*, and TikTok
+   * publishes its top resolution only as H.265 for plenty of videos — so the
+   * request quietly delivered 480p from a 1080p source. The picture is chosen
+   * first now and the codec dealt with here, at whatever resolution arrived.
+   */
+  it('re-encodes an H.265 video to H.264 when asked, and only the video', async () => {
+    const path = writeMp4('hevc-convert.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner, calls } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc', codecTag: 'hvc1' }), stream({ codecType: 'audio', codecName: 'aac' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoderArgs: ['h264_nvenc', '-cq', '19'] },
+    });
+
+    const call = calls[0] ?? [];
+    expect(result.rewritten).toBe(true);
+    expect(call[call.indexOf('-c:v') + 1]).toBe('h264_nvenc');
+    // The audio is already AAC; a second generation of loss on it would buy
+    // nothing at all.
+    expect(call[call.indexOf('-c') + 1]).toBe('copy');
+    // No scaling, no filters: converting exists to keep the picture.
+    expect(call).not.toContain('-vf');
+    expect(call).not.toContain('-s');
+  });
+
+  it('runs the conversion even when the container is otherwise perfect', async () => {
+    // `assessCompatibility` only judges how the file is written. The codec
+    // inside it is a separate question, and would have been skipped entirely.
+    const path = writeMp4('hevc-tidy.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner, calls } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc', codecTag: 'hvc1' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoderArgs: ['libopenh264'] },
+    });
+
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not re-encode a video that is already H.264', async () => {
+    const path = writeMp4('already-h264.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner, calls } = runnerThat(() => undefined);
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'h264', codecTag: 'avc1' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoderArgs: ['h264_nvenc'] },
+    });
+
+    // Nothing to convert and nothing wrong with the container, so no encode is
+    // spent and no generation of quality is lost.
+    expect(result.rewritten).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   it('keeps the download exactly as it was when ffmpeg fails', async () => {
     const path = writeMp4('fail.mp4', [
       ['ftyp', 16],

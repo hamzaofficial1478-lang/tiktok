@@ -334,8 +334,8 @@ export function Settings(): React.JSX.Element {
               ],
               [
                 'forceH264',
-                'Always download H.264',
-                'On by default. H.265 plays as a black picture on Windows without a paid add-on, and upload sites refuse it or play it back black. It is occasionally the higher resolution, so turning this off buys a quality step at the cost of a file that may not open anywhere.',
+                'Always deliver H.264',
+                'On by default, and it never costs resolution. The best picture TikTok offers is always downloaded; if that copy is H.265 — which Windows plays as a black screen without a paid add-on, and upload sites refuse — it is converted afterwards at the same resolution. Turning this off skips the conversion and leaves the H.265 file as it is.',
               ],
               [
                 'groupByCreator',

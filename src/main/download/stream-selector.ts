@@ -44,6 +44,11 @@ export interface SelectionResult {
   readonly strategy: SourceStrategy;
   /** Why this stream won, for the row detail and the Logs screen. */
   readonly reason: string;
+  /**
+   * The winner is H.265 and H.264 was asked for, so convert it after the
+   * download — at this resolution, rather than having taken a smaller stream.
+   */
+  readonly needsH264Transcode?: boolean;
 }
 
 export interface SelectOptions {
@@ -138,17 +143,23 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
   };
 
   /**
-   * Applied before ranking, and only when something would survive it.
+   * Resolution is never traded for codec. Not here, not for anything.
    *
-   * Filtering to nothing would turn "this might not play" into "this did not
-   * download", which is a strictly worse outcome — so a video TikTok offers
-   * only as H.265 is still taken, with the warning attached.
+   * This used to filter every H.265 stream out when `forceH264` was set, which
+   * is a reasonable-sounding rule that quietly did the worst thing in the
+   * program: TikTok routinely offers its top resolution *only* as H.265, so
+   * dropping those left the best available H.264 — often 480p against a 1080p
+   * source. The download then succeeded, said nothing, and produced a video
+   * good for nothing. Asking for compatibility got a quarter of the picture.
+   *
+   * Wanting H.264 is still a real want; it is just not a reason to download
+   * less. The best stream is chosen on quality alone, and if the winner turns
+   * out to be H.265, it is converted afterwards at its own resolution — see
+   * `needsH264Transcode`. A conversion costs time and one near-transparent
+   * encode. The filter cost half the pixels, permanently.
    */
-  const playable = options.forceH264 ? video.filter((s) => !isHevc(s)) : video;
-  const usable = playable.length > 0 ? playable : video;
-
-  const clean = rank(usable.filter((s) => !s.watermarked));
-  const watermarked = rank(usable.filter((s) => s.watermarked));
+  const clean = rank(video.filter((s) => !s.watermarked));
+  const watermarked = rank(video.filter((s) => s.watermarked));
 
   // "Keep watermark" makes the watermarked variant a first-class choice; it is
   // usually the higher-quality encode TikTok offers for download.
@@ -202,14 +213,19 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
   /**
    * Said out loud when H.265 wins on resolution anyway.
    *
-   * Windows will not play it without the HEVC extensions, and a black picture
-   * with no explanation sends people looking for a bug in the downloader. It is
-   * only reachable when the H.265 stream is genuinely higher resolution than
-   * any H.264 one, since equal resolutions are already broken the other way.
+   * Only reachable when the H.265 stream is genuinely higher resolution than
+   * any H.264 one, since equal resolutions are already broken the other way and
+   * cost nothing to break.
    */
-  if (isHevc(preferred)) {
-    reason += '; this is an H.265 encode — Windows needs the HEVC Video Extensions to play it, ' +
-      'and shows a black picture without them';
+  const hevcWon = isHevc(preferred);
+  const transcode = hevcWon && options.forceH264 === true;
+
+  if (hevcWon) {
+    reason += transcode
+      ? '; H.265 at this resolution, which will be converted to H.264 after the download — the picture is kept, ' +
+        'the codec is not'
+      : '; this is an H.265 encode — Windows needs the HEVC Video Extensions to play it, ' +
+        'and shows a black picture without them';
   }
 
   return {
@@ -218,6 +234,7 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
     formatId: audioStream ? `${preferred.id}+${audioStream.id}` : preferred.id,
     strategy: isClean ? 'clean_source' : 'raw',
     reason,
+    ...(transcode ? { needsH264Transcode: true } : {}),
   };
 }
 

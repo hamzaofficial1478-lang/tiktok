@@ -80,27 +80,22 @@ export const AppConfigSchema = z.object({
   groupByCreator: z.boolean(),
 
   /**
-   * Never download H.265, even when it is the higher resolution on offer.
+   * Deliver H.264 — by converting when necessary, never by downloading less.
    *
    * TikTok serves the same video as H.264 and H.265, and sometimes offers H.265
    * at a resolution it has no H.264 for.
    *
-   * On by default, which is a reversal, and the reversal is the point. It was
-   * off because refusing H.265 can cost a resolution step and the standing rule
-   * is not to trade picture quality — a fair argument for a file that is going
-   * to be watched where it lands. It is the wrong trade for these files. The
-   * same setting turned out to decide three separate failures, none of which
-   * name a codec anywhere the user can see:
+   * This used to *refuse* H.265 outright, which is where the name comes from
+   * and which was a serious mistake: on those videos it left the best available
+   * H.264, often 480p against a 1080p source. Compatibility was bought with
+   * three quarters of the picture, silently, on a file being kept and
+   * re-uploaded. The best stream is now always the one downloaded, and an H.265
+   * winner is converted afterwards at its own resolution.
    *
-   *   - Windows cannot decode H.265 without the HEVC Video Extensions from the
-   *     Store, a paid add-on. Films & TV and Media Player show a black picture
-   *     rather than saying so.
-   *   - Facebook refuses the upload outright, with a generic technical error.
-   *   - Uploaded some other way, it plays back as a black rectangle.
-   *
-   * A resolution step is a difference nobody would notice side by side. A file
-   * that will not play, or will not upload, is worthless. Turn this off to take
-   * the largest encode TikTok offers regardless of what will open it.
+   * On by default. Since it no longer costs a pixel, the only reason to turn
+   * it off is to skip the conversion — which is a real reason on a slow
+   * machine, and the file it leaves behind is one Windows shows as a black
+   * picture without a paid Store add-on and some upload sites refuse outright.
    */
   forceH264: z.boolean(),
 
