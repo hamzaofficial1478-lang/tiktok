@@ -268,6 +268,21 @@ export function Settings(): React.JSX.Element {
           </Field>
 
           <Field
+            label="Colour correction"
+            hint="Fixes dull, flat video. It measures the picture first — tonal range, how colourful it is, whether it has a colour cast — and restores only what is missing, so a video that is already vivid is left completely alone and skips the re-encode with it. It corrects, it does not restyle: your video's own colours, not a filter over them."
+          >
+            <Select
+              value={config.colourCorrection}
+              onChange={(value) => void set('colourCorrection', value)}
+              options={[
+                { value: 'off', label: 'Off — copy untouched' },
+                { value: 'auto', label: 'Auto (recommended)' },
+                { value: 'strong', label: 'Strong' },
+              ]}
+            />
+          </Field>
+
+          <Field
             label="Encode quality"
             hint="Only applies when a video is being re-encoded anyway — watermark removal, an H.265 conversion, or sharpening. Higher steps are not about this encode looking better; they are about surviving the next one when a platform re-compresses your upload. Costs file size and nothing else."
           >

@@ -49,6 +49,17 @@ export type SharpenLevel = (typeof SHARPEN_LEVELS)[number];
 export const ENCODE_QUALITIES = ['balanced', 'high', 'maximum'] as const;
 export type EncodeQuality = (typeof ENCODE_QUALITIES)[number];
 
+/**
+ * How hard to correct dull colour, if at all.
+ *
+ * Measured per video rather than applied blindly: roughly half of TikTok is
+ * already graded within an inch of its life, and adding saturation to that
+ * produces the clipped look of a video that has been through three apps. A
+ * flat video gets a real lift; a vivid one gets nothing and skips the encode.
+ */
+export const COLOUR_MODES = ['off', 'auto', 'strong'] as const;
+export type ColourMode = (typeof COLOUR_MODES)[number];
+
 export const IN_FLIGHT_STATUSES = ['resolving', 'downloading', 'processing'] as const satisfies readonly QueueStatus[];
 
 /** Statuses that occupy a slot for dedup layer 2 (section 7). */

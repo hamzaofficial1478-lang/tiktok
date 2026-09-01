@@ -235,9 +235,25 @@ export async function makeUploadable(input: MakeUploadableInput): Promise<MakeUp
     'error',
     '-i',
     input.filePath,
-    // Every stream, including a soft caption track added earlier.
-    '-map',
-    '0',
+    /**
+     * Which streams come across, and why the answer differs by path.
+     *
+     * A straight copy takes everything — `-map 0` — because everything in the
+     * file is worth keeping and none of it is being touched.
+     *
+     * An encode cannot say that. `-map 0` selects *every* video stream, and a
+     * TikTok MP4 routinely carries a second one: a single-frame attached
+     * picture for the cover art. With `-c:v` set, ffmpeg dutifully tries to
+     * put that one frame through a hardware H.264 encoder and through the
+     * filter chain, and the run fails — taking a download that had already
+     * succeeded with it. `0:V:0` is the first *real* video stream,
+     * attached pictures excluded, which is exactly the distinction wanted
+     * here. Audio and subtitles follow with `?` so a file without them is not
+     * an error.
+     */
+    ...(encoding
+      ? ['-map', '0:V:0', '-map', '0:a?', '-map', '0:s?']
+      : ['-map', '0']),
     /**
      * Copy unless a codec conversion was asked for, and even then only the
      * video: the audio is already AAC and re-encoding it would spend a second

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   BROWSER_COOKIE_SOURCES,
+  COLOUR_MODES,
   ENCODE_QUALITIES,
   OUTRO_MODES,
   PHOTO_SLIDESHOW_MODES,
@@ -123,6 +124,25 @@ export const AppConfigSchema = z.object({
    * programs that promise 4K from a phone clip.
    */
   sharpen: z.enum(SHARPEN_LEVELS),
+
+  /**
+   * Fix dull, flat colour — from what the video actually measures.
+   *
+   * Off by default for the same reason sharpening is: it needs a re-encode.
+   *
+   * `auto` decodes a handful of frames, measures the tonal range, how
+   * colourful the picture is and whether it carries a colour cast, and
+   * corrects only what is missing. A video that is already vivid gets nothing
+   * at all and skips the encode with it — which is the whole design, because
+   * a fixed "add 20% saturation" would wreck the half of TikTok that is
+   * already heavily graded.
+   *
+   * It restores rather than restyles. No film look, no teal-and-orange, no
+   * curve that imposes a mood: the video's own colours, in the form they would
+   * have had without a flat sensor and a compressor. Every adjustment is
+   * bounded so that being wrong is invisible rather than embarrassing.
+   */
+  colourCorrection: z.enum(COLOUR_MODES),
 
   /**
    * How much bit budget to spend when a re-encode happens at all.
@@ -269,6 +289,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   // Off: sharpening means a re-encode on a file that would otherwise be
   // copied untouched, and that is a trade to make on purpose.
   sharpen: 'off',
+  colourCorrection: 'off',
   encodeQuality: 'balanced',
   startOnLogin: false,
   detectReposts: false,

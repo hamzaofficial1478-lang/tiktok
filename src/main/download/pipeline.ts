@@ -24,6 +24,7 @@ import { workPathFor } from './yt-dlp-downloader';
 import { writeSeoSidecar } from '../metadata/sidecar';
 import { selectEncoder } from '../postprocess/encoder';
 import { applyQuality, sharpenFilter } from '../postprocess/enhance';
+import { measureColour, planColourCorrection } from '../postprocess/colour';
 
 /**
  * The download pipeline — spec section 9 steps 4-11.
@@ -324,6 +325,33 @@ export class DownloadPipeline implements MediaPipeline {
     const sharpen = config.audioOnly ? null : sharpenFilter(config.sharpen);
     let watermarkReEncoded = false;
 
+    /**
+     * Colour, measured before it is corrected.
+     *
+     * The measurement is what makes this safe to offer. A fixed lift would
+     * ruin the half of TikTok that is already heavily graded, so the video is
+     * sampled and only what is actually missing is restored — and a video that
+     * needs nothing returns no filter, which means no re-encode either.
+     */
+    let colour: string | null = null;
+    if (config.colourCorrection !== 'off' && !config.audioOnly) {
+      const ffmpegPath = this.options.ffmpegPath();
+      if (ffmpegPath) {
+        const stats = await measureColour(targetPath, {
+          ffmpegPath,
+          runner: this.options.runner,
+          ...(input.signal ? { signal: input.signal } : {}),
+          log,
+        });
+        const plan = planColourCorrection(stats, config.colourCorrection === 'strong' ? 1.6 : 1);
+        colour = plan.filter;
+        log.info({ stats, correction: plan.filter }, `colour: ${plan.reason}`);
+      }
+    }
+
+    /** One chain, so one encode does every job that wants doing. */
+    const enhanceFilter = [colour, sharpen].filter(Boolean).join(',') || null;
+
     if (this.options.postProcessor) {
       try {
         const processed = await this.options.postProcessor.process({
@@ -336,7 +364,7 @@ export class DownloadPipeline implements MediaPipeline {
           outroMode: config.outroMode,
           hardwareAcceleration: config.hardwareAcceleration,
           capabilities: this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
-          ...(sharpen ? { sharpen } : {}),
+          ...(enhanceFilter ? { sharpen: enhanceFilter } : {}),
           encodeQuality: config.encodeQuality,
           signal: input.signal,
           ...(this.options.confirmOutro ? { confirmOutro: this.options.confirmOutro } : {}),
@@ -478,7 +506,7 @@ export class DownloadPipeline implements MediaPipeline {
            * that was downloaded, with the same near-transparent encoder the
            * watermark path uses.
            */
-          ...(selection.needsH264Transcode || sharpen !== null
+          ...(selection.needsH264Transcode || enhanceFilter !== null
             ? {
                 toH264: {
                   encoderArgs: (() => {
@@ -502,7 +530,7 @@ export class DownloadPipeline implements MediaPipeline {
            * A watermarked video never reaches here needing it: that path is
            * already re-encoding, so the filter goes into its graph instead.
            */
-          ...(sharpen !== null && !watermarkReEncoded ? { videoFilter: sharpen } : {}),
+          ...(enhanceFilter !== null && !watermarkReEncoded ? { videoFilter: enhanceFilter } : {}),
           signal: input.signal,
           log,
         });
