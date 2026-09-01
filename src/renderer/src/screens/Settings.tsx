@@ -251,6 +251,37 @@ export function Settings(): React.JSX.Element {
             />
           </Field>
 
+          <Field
+            label="Sharpen"
+            hint="For videos you re-upload. Raises contrast at the edges that survived TikTok's compression, so the next platform's encoder has something better defined to work with. It adds no detail — it is not upscaling — and it needs a re-encode, so a video that would have been copied untouched is encoded instead. Strong is as far as anything already compressed should be taken."
+          >
+            <Select
+              value={config.sharpen}
+              onChange={(value) => void set('sharpen', value)}
+              options={[
+                { value: 'off', label: 'Off — copy untouched' },
+                { value: 'light', label: 'Light' },
+                { value: 'medium', label: 'Medium' },
+                { value: 'strong', label: 'Strong' },
+              ]}
+            />
+          </Field>
+
+          <Field
+            label="Encode quality"
+            hint="Only applies when a video is being re-encoded anyway — watermark removal, an H.265 conversion, or sharpening. Higher steps are not about this encode looking better; they are about surviving the next one when a platform re-compresses your upload. Costs file size and nothing else."
+          >
+            <Select
+              value={config.encodeQuality}
+              onChange={(value) => void set('encodeQuality', value)}
+              options={[
+                { value: 'balanced', label: 'Balanced' },
+                { value: 'high', label: 'High' },
+                { value: 'maximum', label: 'Maximum — biggest files' },
+              ]}
+            />
+          </Field>
+
           <Field label="Trailing outro" hint="Never trims videos under 8s, more than 5s, or more than 15% of a video.">
             <Select
               value={config.outroMode}

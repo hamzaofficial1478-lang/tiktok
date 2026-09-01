@@ -2,7 +2,7 @@ import { existsSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs
 import { dirname, extname, join } from 'node:path';
 import type { Logger } from 'pino';
 import { AppError } from '@shared/errors';
-import type { SourceStrategy, WatermarkMode, OutroMode } from '@shared/types';
+import type { SourceStrategy, WatermarkMode, OutroMode, EncodeQuality } from '@shared/types';
 import type { MediaCapabilities } from '@shared/ipc/contract';
 import type { ProcessRunner } from '../resolve/process-runner';
 import type { Ffprobe } from '../media/ffprobe';
@@ -18,6 +18,7 @@ import {
   insetBoxFromEdges,
 } from './filter-graph';
 import { estimateProcessingMs, selectEncoder } from './encoder';
+import { applyQuality } from './enhance';
 import type { WatermarkPlan } from './types';
 
 /**
@@ -52,6 +53,16 @@ export interface PostProcessInput {
     confidence: number;
   }) => Promise<boolean>;
   readonly onEstimate?: (estimatedMs: number) => void;
+  /**
+   * A sharpening filter to fold into this pass, when one is wanted.
+   *
+   * Given here rather than applied afterwards because this path is already
+   * decoding and encoding the video. Sharpening it in a second pass would cost
+   * a second generation of loss to do work this one can do for free.
+   */
+  readonly sharpen?: string | undefined;
+  /** Quality step for the encoder; see postprocess/enhance.ts. */
+  readonly encodeQuality?: EncodeQuality | undefined;
 }
 
 export interface PostProcessResult {
@@ -292,16 +303,30 @@ export class PostProcessor {
       if (watermarkPlan) {
         const graph = this.buildGraph(watermarkPlan, frameWidth, frameHeight, maskPaths, input.filePath);
         if (watermarkPlan.tier === 'removelogo') {
-          args.push('-vf', graph);
+          // Sharpening chains onto the end, so it acts on the repaired frame
+          // rather than on the watermark that is about to be painted over.
+          args.push('-vf', input.sharpen ? `${graph},${input.sharpen}` : graph);
         } else {
-          args.push('-filter_complex', graph, '-map', '[vout]', '-map', '0:a?');
+          args.push(
+            '-filter_complex',
+            input.sharpen ? `${graph};[vout]${input.sharpen}[vsharp]` : graph,
+            '-map',
+            input.sharpen ? '[vsharp]' : '[vout]',
+            '-map',
+            '0:a?',
+          );
         }
       }
+      // Deliberately no `else` here. An encoder is only selected when there is
+      // a watermark plan, so with no plan this pass is a stream copy — and a
+      // filter on a copied stream is not a slower encode, it is an ffmpeg
+      // error. Those videos are sharpened in the finishing pass instead, which
+      // is encoding anyway.
 
       if (trimPlan) args.push('-t', (trimPlan.cutAtMs / 1_000).toFixed(3));
 
       if (encoder) {
-        args.push('-c:v', encoder.name, ...encoder.args, '-c:a', 'copy');
+        args.push('-c:v', encoder.name, ...applyQuality(encoder.args, input.encodeQuality ?? 'balanced'), '-c:a', 'copy');
       } else {
         args.push('-c', 'copy');
       }

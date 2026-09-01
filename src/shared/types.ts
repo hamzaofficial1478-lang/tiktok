@@ -26,6 +26,29 @@ export type QueueStatus = (typeof QUEUE_STATUSES)[number];
  * Statuses that mean work is in flight. On startup these are reset to
  * 'queued' so a crash never strands an item (section 8, crash recovery).
  */
+/**
+ * How hard to sharpen, for a video that is going to be uploaded again.
+ *
+ * `unsharp` raises local contrast at edges. It adds no detail — the pixels are
+ * the pixels — but it makes what survived TikTok's compression read as
+ * crisper, and it means the next compressor has better-defended edges to spend
+ * its bits on. Overdone it is unmistakable and cannot be undone, which is why
+ * these are three conservative steps rather than a slider.
+ */
+export const SHARPEN_LEVELS = ['off', 'light', 'medium', 'strong'] as const;
+export type SharpenLevel = (typeof SHARPEN_LEVELS)[number];
+
+/**
+ * How much of the bit budget to spend when a video is re-encoded at all.
+ *
+ * `balanced` is the near-transparent target that has always been used. The
+ * higher steps are not about this encode looking better — it already looks
+ * like its input — but about surviving the *next* one, when a platform
+ * re-compresses the upload.
+ */
+export const ENCODE_QUALITIES = ['balanced', 'high', 'maximum'] as const;
+export type EncodeQuality = (typeof ENCODE_QUALITIES)[number];
+
 export const IN_FLIGHT_STATUSES = ['resolving', 'downloading', 'processing'] as const satisfies readonly QueueStatus[];
 
 /** Statuses that occupy a slot for dedup layer 2 (section 7). */

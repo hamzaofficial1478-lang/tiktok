@@ -386,6 +386,61 @@ describe('rewriting the container', () => {
     expect(calls).toEqual([]);
   });
 
+  /**
+   * Sharpening rides in whichever encode is already happening.
+   *
+   * A file that needs both a codec conversion and a sharpen would otherwise be
+   * decoded and encoded twice, and two generations of loss to do what one pass
+   * can do is exactly the quiet quality cost this program has been bitten by
+   * before.
+   */
+  it('applies a filter and the conversion in one pass', async () => {
+    const path = writeMp4('both.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner, calls } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc', codecTag: 'hev1' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoderArgs: ['h264_nvenc', '-cq', '19'] },
+      videoFilter: 'unsharp=5:5:0.9:5:5:0.0',
+    });
+
+    expect(calls).toHaveLength(1);
+    const call = calls[0] ?? [];
+    expect(call[call.indexOf('-vf') + 1]).toBe('unsharp=5:5:0.9:5:5:0.0');
+    expect(call[call.indexOf('-c:v') + 1]).toBe('h264_nvenc');
+  });
+
+  it('re-encodes for a filter alone, on a file with nothing else wrong', async () => {
+    const path = writeMp4('sharpen-only.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner, calls } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'h264', codecTag: 'avc1' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoderArgs: ['libopenh264'] },
+      videoFilter: 'unsharp=5:5:0.5:5:5:0.0',
+    });
+
+    // A filter cannot be applied to a copied stream, so asking for one is
+    // asking for an encode whatever else is or is not wrong with the file.
+    expect(result.rewritten).toBe(true);
+    expect(calls[0]).toContain('-vf');
+    expect((calls[0] ?? []).indexOf('-c:v')).toBeGreaterThan(-1);
+  });
+
   it('keeps the download exactly as it was when ffmpeg fails', async () => {
     const path = writeMp4('fail.mp4', [
       ['ftyp', 16],

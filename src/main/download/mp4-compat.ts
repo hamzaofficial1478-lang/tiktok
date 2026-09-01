@@ -167,6 +167,15 @@ export interface MakeUploadableInput {
    * and some time, and keeps the picture.
    */
   readonly toH264?: { readonly encoderArgs: readonly string[] } | undefined;
+  /**
+   * A video filter to apply, which forces a re-encode on its own.
+   *
+   * Sharpening lives here rather than in its own pass, and that placement is
+   * the whole reason it is here: an H.265 file that also wants sharpening
+   * would otherwise be decoded and encoded twice, for two generations of loss
+   * where one will do. One pass, one encode, both jobs.
+   */
+  readonly videoFilter?: string | undefined;
   readonly signal?: AbortSignal | undefined;
   readonly log?: Logger | undefined;
 }
@@ -198,10 +207,16 @@ export async function makeUploadable(input: MakeUploadableInput): Promise<MakeUp
    */
   const video = input.probe?.streams.find((stream) => stream.codecType === 'video');
   const convert = input.toH264 !== undefined && (video?.codecName ?? '').toLowerCase() === 'hevc';
+  const filter = input.videoFilter ?? null;
+  // A filter cannot be applied to a copied stream, so asking for one is asking
+  // for an encode whatever else is or is not wrong with the file.
+  const encoding = convert || filter !== null;
 
-  if (!verdict.needed && !convert) return { rewritten: false, reason: null };
+  if (!verdict.needed && !encoding) return { rewritten: false, reason: null };
 
-  const why = convert ? [verdict.reason, 'its video is H.265'].filter(Boolean).join(' and ') : verdict.reason;
+  const why = [verdict.reason, convert ? 'its video is H.265' : '', filter ? 'sharpening was asked for' : '']
+    .filter(Boolean)
+    .join(' and ');
 
   if (!input.ffmpegPath) {
     input.log?.warn(
@@ -234,7 +249,8 @@ export async function makeUploadable(input: MakeUploadableInput): Promise<MakeUp
      */
     '-c',
     'copy',
-    ...(convert ? ['-c:v', ...(input.toH264?.encoderArgs ?? []), '-pix_fmt', 'yuv420p'] : []),
+    ...(filter ? ['-vf', filter] : []),
+    ...(encoding ? ['-c:v', ...(input.toH264?.encoderArgs ?? []), '-pix_fmt', 'yuv420p'] : []),
     '-movflags',
     '+faststart',
     ...(verdict.retagHevc ? ['-tag:v', 'hvc1'] : []),

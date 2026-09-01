@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { BROWSER_COOKIE_SOURCES, OUTRO_MODES, PHOTO_SLIDESHOW_MODES, WATERMARK_MODES, LOG_LEVELS } from './types';
+import {
+  BROWSER_COOKIE_SOURCES,
+  ENCODE_QUALITIES,
+  OUTRO_MODES,
+  PHOTO_SLIDESHOW_MODES,
+  SHARPEN_LEVELS,
+  WATERMARK_MODES,
+  LOG_LEVELS,
+} from './types';
 import { CaptionSettingsSchema, DEFAULT_CAPTION_SETTINGS } from './caption-schema';
 
 /**
@@ -98,6 +106,37 @@ export const AppConfigSchema = z.object({
    * picture without a paid Store add-on and some upload sites refuse outright.
    */
   forceH264: z.boolean(),
+
+  /**
+   * Sharpen the picture, for a video that is going to be uploaded again.
+   *
+   * Off by default, and the default matters more than usual here: sharpening
+   * requires a re-encode, so turning it on means a video that would have been
+   * copied byte for byte is decoded and encoded instead. That is a generation
+   * of loss traded for crisper edges — worth it deliberately, never worth it
+   * by accident.
+   *
+   * What it buys is real but narrow. It adds no detail; it raises contrast at
+   * the edges that survived TikTok's compression, which reads as sharper and
+   * gives the next compressor something better defined to spend its bits on.
+   * It is not upscaling and it is not enhancement in the sense advertised by
+   * programs that promise 4K from a phone clip.
+   */
+  sharpen: z.enum(SHARPEN_LEVELS),
+
+  /**
+   * How much bit budget to spend when a re-encode happens at all.
+   *
+   * Changes nothing on the common path: a video that is copied is still
+   * copied. It applies to watermark removal, to an H.265 conversion, and to
+   * sharpening — the passes where the encoder is already running.
+   *
+   * The higher steps are not about this encode looking better, since it is
+   * already near-transparent. They are about surviving the *next* one: an
+   * upload that a platform re-compresses keeps more of itself when it arrives
+   * with more to give. The cost is file size and nothing else.
+   */
+  encodeQuality: z.enum(ENCODE_QUALITIES),
 
   /**
    * Start the app when you sign in to the machine.
@@ -227,6 +266,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   // On: see the schema note above. Compatibility beats a resolution step for a
   // file that is going to be uploaded somewhere else.
   forceH264: true,
+  // Off: sharpening means a re-encode on a file that would otherwise be
+  // copied untouched, and that is a trade to make on purpose.
+  sharpen: 'off',
+  encodeQuality: 'balanced',
   startOnLogin: false,
   detectReposts: false,
   autoUpdateExtractor: true,

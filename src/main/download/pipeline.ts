@@ -23,6 +23,7 @@ import { subtitleLanguages } from '../captions/tiktok-tracks';
 import { workPathFor } from './yt-dlp-downloader';
 import { writeSeoSidecar } from '../metadata/sidecar';
 import { selectEncoder } from '../postprocess/encoder';
+import { applyQuality, sharpenFilter } from '../postprocess/enhance';
 
 /**
  * The download pipeline — spec section 9 steps 4-11.
@@ -312,6 +313,16 @@ export class DownloadPipeline implements MediaPipeline {
     let strategy = selection.strategy;
     let watermarkRemoved = selection.strategy === 'clean_source';
     let outroTrimmedMs: number | null = null;
+    /**
+     * Sharpening, and which pass gets to carry it.
+     *
+     * Whichever encode happens anyway should do it. A watermarked video is
+     * already being re-encoded downstairs, so the filter goes into that graph;
+     * anything else picks it up in the finishing pass. Both would be two
+     * generations of loss for one job.
+     */
+    const sharpen = config.audioOnly ? null : sharpenFilter(config.sharpen);
+    let watermarkReEncoded = false;
 
     if (this.options.postProcessor) {
       try {
@@ -325,6 +336,8 @@ export class DownloadPipeline implements MediaPipeline {
           outroMode: config.outroMode,
           hardwareAcceleration: config.hardwareAcceleration,
           capabilities: this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
+          ...(sharpen ? { sharpen } : {}),
+          encodeQuality: config.encodeQuality,
           signal: input.signal,
           ...(this.options.confirmOutro ? { confirmOutro: this.options.confirmOutro } : {}),
           onEstimate: (estimatedMs) =>
@@ -340,6 +353,7 @@ export class DownloadPipeline implements MediaPipeline {
         strategy = processed.sourceStrategy;
         watermarkRemoved = processed.watermarkRemoved || watermarkRemoved;
         outroTrimmedMs = processed.outroTrimmedMs;
+        watermarkReEncoded = processed.reEncoded;
         for (const note of processed.notes) log.info({ note }, 'post-processing');
       } catch (err) {
         log.warn(
@@ -464,7 +478,7 @@ export class DownloadPipeline implements MediaPipeline {
            * that was downloaded, with the same near-transparent encoder the
            * watermark path uses.
            */
-          ...(selection.needsH264Transcode
+          ...(selection.needsH264Transcode || sharpen !== null
             ? {
                 toH264: {
                   encoderArgs: (() => {
@@ -472,11 +486,23 @@ export class DownloadPipeline implements MediaPipeline {
                       this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
                       config.hardwareAcceleration,
                     );
-                    return [encoder.name, ...encoder.args];
+                    return [encoder.name, ...applyQuality(encoder.args, config.encodeQuality)];
                   })(),
                 },
               }
             : {}),
+          /**
+           * Sharpening rides in this pass rather than one of its own.
+           *
+           * An H.265 file that also wants sharpening would otherwise be
+           * decoded and encoded twice, and two generations of loss to do what
+           * one pass can do is exactly the kind of quiet quality cost this
+           * program has already been bitten by.
+           *
+           * A watermarked video never reaches here needing it: that path is
+           * already re-encoding, so the filter goes into its graph instead.
+           */
+          ...(sharpen !== null && !watermarkReEncoded ? { videoFilter: sharpen } : {}),
           signal: input.signal,
           log,
         });
