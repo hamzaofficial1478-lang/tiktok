@@ -143,6 +143,10 @@ describe('migration runner', () => {
       // The steps already banked, and where their file is. What turns a retry
       // into a resumption instead of a second download of the same video.
       'resume_state',
+      // The details TikTok returned, kept for the attempt after this one — so a
+      // resuming item never asks again, and a refused ask does not throw away
+      // an answer from four minutes ago that is still true.
+      'lookup',
     ]);
     expect(columns('creators')).toContain('video_limit');
     expect(columns('downloads')).toContain('source_strategy');

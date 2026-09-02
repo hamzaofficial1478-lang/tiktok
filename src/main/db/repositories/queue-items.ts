@@ -50,6 +50,14 @@ export interface QueueItemRow {
    * what lets a retry resume rather than re-download; see the 010 migration.
    */
   resume_state: string | null;
+  /**
+   * JSON: the details TikTok returned, and when.
+   *
+   * Lets a resuming attempt skip the lookup entirely, and lets a refused
+   * lookup fall back on a recent answer instead of failing the item. See the
+   * 011 migration.
+   */
+  lookup: string | null;
 }
 
 export interface EnqueueInput {
@@ -82,6 +90,7 @@ export interface QueueItemPatch {
   stage?: string | null;
   failedStage?: string | null;
   resumeState?: string | null;
+  lookup?: string | null;
 }
 
 const POSITION_SEQ_KEY = 'queue_position_seq';
@@ -313,6 +322,7 @@ export class QueueItemsRepository {
       stage: 'stage',
       failedStage: 'failed_stage',
       resumeState: 'resume_state',
+      lookup: 'lookup',
     };
 
     const sets: string[] = [];

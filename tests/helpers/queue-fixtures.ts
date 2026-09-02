@@ -292,6 +292,16 @@ export class FakePipeline implements MediaPipeline {
 export class FakeExtractor implements Extractor {
   readonly name = 'fake';
   readonly resolvedIds: string[] = [];
+  /**
+   * Every call, including the ones that throw.
+   *
+   * `resolvedIds` records answers, which makes it the wrong instrument for
+   * "did it ask TikTok at all?" — a refused request leaves no trace in it, so
+   * an item that asked and was turned down looks exactly like one that never
+   * asked. The whole point of the cached lookup is the difference between
+   * those two.
+   */
+  readonly resolveCalls: string[] = [];
   private failures = new Map<string, ErrorCode[]>();
 
   failFor(awemeId: string, codes: ErrorCode[]): void {
@@ -307,6 +317,7 @@ export class FakeExtractor implements Extractor {
 
   async resolve(canonicalUrl: string): Promise<ResolvedVideo> {
     const awemeId = this.shortLinks.get(canonicalUrl) ?? /\/(\d{15,21})/.exec(canonicalUrl)?.[1] ?? '';
+    this.resolveCalls.push(awemeId);
     const queued = this.failures.get(awemeId);
     if (queued && queued.length > 0) {
       const code = queued.shift() as ErrorCode;

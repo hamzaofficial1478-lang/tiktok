@@ -17,8 +17,10 @@ import { decideRetry, MAX_RETRIES } from './retry-policy';
 import { checkDuplicate, checkRepost, dedupePaste } from './dedup';
 import type { PipelineStage, StageState } from '@shared/stages';
 import {
+  readLookupCache,
   readResumeState,
   toSnapshot,
+  type LookupCache,
   type ResumeState,
   type AddLinksResult,
   type BatchSummary,
@@ -150,6 +152,41 @@ export const PROCESSING_DEADLINE_MS = 20 * 60_000;
  * which is about that video and says nothing about the extractor.
  */
 export const EXTRACTOR_SUSPECT_THRESHOLD = 3;
+
+/**
+ * How long a lookup TikTok already answered stays usable as a fallback.
+ *
+ * The metadata in it — duration, handle, caption — would stay true for as long
+ * as the video exists. The stream URLs would not: TikTok signs them and they
+ * expire, so an old answer trades a lookup failure for a download failure,
+ * which is no better and reads worse. Half an hour is comfortably inside their
+ * life and comfortably longer than a retry ladder.
+ *
+ * This bound does not apply to a *resuming* item. That one has its bytes
+ * already and no transfer left to do, so nothing in the answer can go stale in
+ * a way that matters.
+ */
+export const LOOKUP_CACHE_TTL_MS = 30 * 60_000;
+
+/**
+ * Lookup failures a recent cached answer may stand in for.
+ *
+ * All four are about the request rather than the video: TikTok refusing a
+ * request it decided was automated, a connection that dropped, an extractor
+ * that could not parse the page it was served, a rate limit. None of them is a
+ * statement that the video changed.
+ *
+ * Deliberately not here: VIDEO_DELETED, VIDEO_PRIVATE, REGION_BLOCKED,
+ * AGE_RESTRICTED, UNSUPPORTED_MEDIA and CANCELLED. Those are verdicts, and
+ * answering a verdict with an answer from before it was handed down would have
+ * the app cheerfully download a video that has since been taken down.
+ */
+export const LOOKUP_FALLBACK_CODES: readonly ErrorCode[] = [
+  'RESOLVE_FAILED',
+  'NETWORK_ERROR',
+  'EXTRACTOR_FAILED',
+  'RATE_LIMITED',
+];
 const EXTRACTOR_SUSPECT_CODES: readonly ErrorCode[] = ['EXTRACTOR_FAILED', 'RESOLVE_FAILED', 'CDN_FORBIDDEN'];
 
 /**
@@ -740,10 +777,41 @@ export class QueueEngine {
       this.update(row.id, { resumeState: null });
     }
 
+    /**
+     * The details TikTok gave a previous attempt.
+     *
+     * Read before the lookup rather than after it, because for a resuming item
+     * it replaces the lookup entirely. The video is already downloaded and
+     * every step it has left is local ffmpeg work, so asking TikTok again buys
+     * nothing — and it is the request TikTok is most likely to refuse. An item
+     * that had got its bytes and then fell over used to die on that refusal,
+     * leaving the video in the output folder unprocessed for good.
+     */
+    const cached = readLookupCache(row.lookup);
+
     this.noteStage(row.id, 'resolve', 'started');
-    const { normalized, resolved: alreadyResolved } = await this.normalize(row, signal);
-    this.noteStage(row.id, 'resolve', 'done');
-    this.log.info({ itemId: row.id, awemeId: normalized.awemeId, viaShortLink: normalized.viaShortLink }, 'link resolved');
+
+    let normalized: NormalizedUrl;
+    let alreadyResolved: ResolvedVideo | undefined;
+
+    if (resuming && cached) {
+      normalized = cached.normalized;
+      alreadyResolved = cached.resolved;
+      this.noteStage(row.id, 'resolve', 'skipped');
+      this.log.info(
+        { itemId: row.id, awemeId: normalized.awemeId },
+        'the video is already downloaded; carrying on with the details from the attempt that fetched it',
+      );
+    } else {
+      const looked = await this.lookUp(row, signal, cached);
+      normalized = looked.normalized;
+      alreadyResolved = looked.resolved;
+      this.noteStage(row.id, 'resolve', 'done');
+      this.log.info(
+        { itemId: row.id, awemeId: normalized.awemeId, viaShortLink: normalized.viaShortLink },
+        'link resolved',
+      );
+    }
 
     // Written before anything can throw, so a link that turns out to be
     // undownloadable still leaves its id on the row — which is what the ledger
@@ -858,8 +926,23 @@ export class QueueEngine {
     if (!resolved) {
       await this.options.rateLimiter.acquire(signal);
       throwIfAborted(signal);
-      resolved = await this.options.extractor.resolve(normalized.canonicalUrl, { signal });
+      try {
+        resolved = await this.options.extractor.resolve(normalized.canonicalUrl, { signal });
+      } catch (err) {
+        const recent = this.recentLookup(cached, err, normalized.awemeId, signal);
+        if (!recent) throw err;
+        resolved = recent.resolved;
+      }
     }
+
+    /**
+     * Written down as soon as it is known, before anything that can fail.
+     *
+     * This is what the next attempt reads, and the next attempt is the one that
+     * needs it — so it has to be on the row before the step that is going to go
+     * wrong, not after the item succeeds.
+     */
+    this.rememberLookup(row.id, normalized, resolved);
 
     /**
      * A post that is a set of images rather than a video.
@@ -954,6 +1037,81 @@ export class QueueEngine {
     }
 
     this.recordCompletion(row, normalized, resolved, result);
+  }
+
+  /**
+   * The lookup, with a recent answer to fall back on when TikTok refuses.
+   *
+   * `normalize` is where the short-link hop and, for those links, the whole
+   * resolution happens — so it is one of the two places a refusal can land.
+   * See `recentLookup` for which refusals are eligible.
+   */
+  private async lookUp(
+    row: QueueItemRow,
+    signal: AbortSignal,
+    cached: LookupCache | null,
+  ): Promise<{ normalized: NormalizedUrl; resolved?: ResolvedVideo }> {
+    try {
+      return await this.normalize(row, signal);
+    } catch (err) {
+      const recent = this.recentLookup(cached, err, row.aweme_id, signal);
+      if (!recent) throw err;
+      return { normalized: recent.normalized, resolved: recent.resolved };
+    }
+  }
+
+  /**
+   * A cached lookup good enough to stand in for one that was just refused.
+   *
+   * Four conditions, and every one of them is load-bearing:
+   *
+   *  - **It is about the same video.** An id that disagrees means the cache
+   *    belongs to something else and must not be substituted.
+   *  - **It is recent.** The metadata would stay true indefinitely, but the
+   *    stream URLs in it are signed and expire, so an old answer would trade a
+   *    lookup failure for a download failure — no better, and more confusing.
+   *  - **The failure is about the request, not the video.** This is the
+   *    important one. Deleted, private, region-blocked, age-gated and
+   *    unsupported are *verdicts*, and answering a verdict with an answer from
+   *    before it was handed down would have the app download a video that has
+   *    since been taken down, or insist a private account is still public.
+   *    Those must fail exactly as they do today.
+   *  - **Nothing has been cancelled.** An abort is the queue stopping, and a
+   *    fallback that ignored it would carry on working after Stop was pressed.
+   */
+  private recentLookup(
+    cached: LookupCache | null,
+    err: unknown,
+    awemeId: string | null,
+    signal: AbortSignal,
+  ): LookupCache | null {
+    if (!cached || signal.aborted) return null;
+    if (awemeId && cached.normalized.awemeId !== awemeId) return null;
+
+    const age = this.options.clock.now() - cached.at;
+    if (age < 0 || age > LOOKUP_CACHE_TTL_MS) return null;
+
+    const code = toAppError(err, 'RESOLVE_FAILED').code;
+    if (!LOOKUP_FALLBACK_CODES.includes(code)) return null;
+
+    this.log.warn(
+      { awemeId: cached.normalized.awemeId, code, ageMs: age },
+      'TikTok would not return the video details; using the answer it gave a few minutes ago instead of failing the link',
+    );
+    return cached;
+  }
+
+  /** Keeps the answer for the attempt after this one; see the 011 migration. */
+  private rememberLookup(itemId: number, normalized: NormalizedUrl, resolved: ResolvedVideo): void {
+    try {
+      this.update(itemId, {
+        lookup: JSON.stringify({ at: this.options.clock.now(), normalized, resolved } satisfies LookupCache),
+      });
+    } catch (err) {
+      // Never worth failing a download over. The cache is an optimisation and
+      // a safety net, and an item that cannot write one simply does without.
+      this.log.warn({ itemId, err: String(err) }, 'could not keep the video details for the next attempt');
+    }
   }
 
   /**
@@ -1779,14 +1937,15 @@ export class QueueEngine {
       finishedAt: this.options.clock.now(),
       stage: null,
       /**
-       * The note is torn up when the job is over — but not when it is
+       * The notes are torn up when the job is over — but not when it is
        * cancelled.
        *
        * A cancel leaves a real file mid-processing, and the whole point of the
-       * note is that pressing Retry then finishes the remaining steps instead
-       * of fetching the video a second time.
+       * resume note is that pressing Retry then finishes the remaining steps
+       * instead of fetching the video a second time. The cached lookup goes
+       * with it so that retry does not have to ask TikTok again either.
        */
-      ...(status === 'cancelled' ? {} : { resumeState: null }),
+      ...(status === 'cancelled' ? {} : { resumeState: null, lookup: null }),
       ...patch,
     });
     this.emitItem(this.options.queueItems.findById(itemId));

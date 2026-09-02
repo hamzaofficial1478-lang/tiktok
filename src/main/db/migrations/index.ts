@@ -8,6 +8,7 @@ import itemCaptionMode007 from './007_item_caption_mode.sql?raw';
 import linkLedger008 from './008_link_ledger.sql?raw';
 import itemBusyMs009 from './009_item_busy_ms.sql?raw';
 import itemStage010 from './010_item_stage.sql?raw';
+import itemLookup011 from './011_item_lookup.sql?raw';
 import type { Migration } from '../migrator';
 
 /**
@@ -32,4 +33,5 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 8, name: '008_link_ledger', sql: linkLedger008 },
   { version: 9, name: '009_item_busy_ms', sql: itemBusyMs009 },
   { version: 10, name: '010_item_stage', sql: itemStage010 },
+  { version: 11, name: '011_item_lookup', sql: itemLookup011 },
 ];

@@ -243,6 +243,52 @@ export function readResumeState(json: string | null): ResumeState | null {
   }
 }
 
+/**
+ * The answer TikTok gave, and when it gave it.
+ *
+ * Kept on the row between attempts for two jobs. A resuming item — one whose
+ * bytes are already on disk — reads it and skips the lookup altogether, because
+ * the steps it has left are local ffmpeg work that needs no network at all. And
+ * an attempt whose fresh lookup is *refused* reads it as a fallback, so a
+ * request TikTok declined does not throw away an answer from four minutes ago
+ * that is still perfectly true.
+ */
+export interface LookupCache {
+  /** When the lookup succeeded. The fallback path will not use a stale one. */
+  readonly at: number;
+  readonly normalized: NormalizedUrl;
+  readonly resolved: ResolvedVideo;
+}
+
+/**
+ * Parses the cached lookup, treating anything malformed as absent.
+ *
+ * Parsed defensively rather than trusted for the same reason the resume note
+ * is: it is a text column that an older build may have written in a different
+ * shape. Losing it costs one network request; acting on a shape that is not
+ * there would cost a crash inside the worker loop.
+ */
+export function readLookupCache(json: string | null): LookupCache | null {
+  if (!json) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const record = parsed as Record<string, unknown>;
+
+    const normalized = record.normalized as NormalizedUrl | undefined;
+    const resolved = record.resolved as ResolvedVideo | undefined;
+    if (typeof record.at !== 'number') return null;
+    if (!normalized || typeof normalized.awemeId !== 'string' || normalized.awemeId === '') return null;
+    if (typeof normalized.canonicalUrl !== 'string' || normalized.canonicalUrl === '') return null;
+    if (!resolved || typeof resolved.metadata !== 'object' || resolved.metadata === null) return null;
+    if (!Array.isArray(resolved.streams)) return null;
+
+    return { at: record.at, normalized, resolved };
+  } catch {
+    return null;
+  }
+}
+
 /** A layer-3 question waiting for the user. Several may be outstanding at once. */
 export interface PendingDuplicate {
   readonly itemId: number;

@@ -1,0 +1,33 @@
+-- 011_item_lookup — the answer TikTok gave, kept for the attempt after this one.
+--
+-- Every attempt begins by asking TikTok for the video's details: its streams,
+-- its duration, whose it is. That request is also the one TikTok is most likely
+-- to refuse. It refuses in bursts, to some links and not others, minutes apart
+-- from the same machine, with "Unexpected response from webpage request" —
+-- which is bot detection, not a stale extractor, and which no amount of
+-- updating yt-dlp will change.
+--
+-- Two consequences, both of which this column removes.
+--
+-- The first is the sharper one. An attempt that got the bytes on disk and then
+-- fell over at a later step is retried, and the retry starts by asking for the
+-- details again — details it does not need, because the video is already
+-- downloaded and the remaining steps are local ffmpeg work. If that request is
+-- refused, the retry dies at the first hurdle, and the video sits in the output
+-- folder unprocessed for ever while the row reports a lookup failure. A
+-- resuming item can now skip the request entirely, and never touches the
+-- network at all.
+--
+-- The second is the ordinary one. A lookup that succeeded four minutes ago
+-- describes the same video as a lookup now, so failing an item because the
+-- second request was refused throws away an answer that is still true. When a
+-- fresh lookup fails, a recent cached one is used instead — bounded by age, and
+-- only for failures that are about the *request*. A video that is deleted,
+-- private, region-blocked or age-gated is a verdict about the video itself, and
+-- those still fail as they should rather than being papered over with an answer
+-- from before it was taken down.
+--
+-- Cleared when the item finishes, so a completed row carries nothing, and kept
+-- through a cancel so pressing Retry does not have to ask again.
+
+ALTER TABLE queue_items ADD COLUMN lookup TEXT;
