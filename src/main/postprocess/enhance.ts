@@ -133,10 +133,11 @@ export function applyQuality(args: readonly string[], quality: EncodeQuality): s
     }
 
     if (flag === '-q:v') {
-      // Two encoders, two scales, told apart by the range they live in.
-      // VideoToolbox is 1-100 and higher is better; mpeg4 is 1-31 and lower
-      // is better. Applying one encoder's direction to the other would make
-      // "maximum quality" mean "as bad as possible".
+      // Told apart by the range the value lives in, because `-q:v` means
+      // opposite things to different encoders: VideoToolbox is 1-100 and
+      // higher is better, while the 1-31 scales are lower-is-better. Applying
+      // one direction to the other would make "maximum quality" mean "as bad
+      // as possible".
       out[i + 1] =
         value > 31 ? String(Math.min(100, value - offset * 2)) : String(Math.max(1, value + Math.round(offset / 3)));
     }

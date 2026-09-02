@@ -48,8 +48,22 @@ export const ENCODER_CANDIDATES = [
   'h264_amf',
   'h264_vaapi',
   'libopenh264',
-  'mpeg4',
 ] as const;
+
+/**
+ * `mpeg4` used to be the last entry, as a "universally available" fallback.
+ *
+ * It is MPEG-4 Part 2 — the DivX-era codec — and it is not H.264 by any
+ * reading. Its presence satisfied the check immediately below, so a build with
+ * no hardware encoder and no libopenh264 reported that it had an H.264 encoder,
+ * re-encoded every processed video into a format Facebook and every other
+ * upload form refuse, and said nothing. The failure surfaced days later on a
+ * website, with a message naming nothing.
+ *
+ * Reporting the encoder as missing is the honest answer, and the far kinder
+ * one: the download is kept exactly as TikTok served it, which for most videos
+ * is already H.264 and uploads fine.
+ */
 
 export interface ProbeOptions {
   ffmpegPath: string | null;

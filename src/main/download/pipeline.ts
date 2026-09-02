@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 import { AppError, toAppError } from '@shared/errors';
 import type { AppConfig } from '@shared/config-schema';
 import type { ProcessRunner } from '../resolve/process-runner';
-import type { Ffprobe } from '../media/ffprobe';
+import type { Ffprobe, ProbeResult } from '../media/ffprobe';
 import type { MediaPipeline, PipelineInput, PipelineResult } from '../queue/types';
 import { selectStream } from './stream-selector';
 import { commitPart, discardPart, downloadToPart, partPathFor } from './downloader';
@@ -22,7 +22,8 @@ import { applyCaptions, type Transcriber } from '../captions/caption-step';
 import { subtitleLanguages } from '../captions/tiktok-tracks';
 import { workPathFor } from './yt-dlp-downloader';
 import { writeSeoSidecar } from '../metadata/sidecar';
-import { selectEncoder } from '../postprocess/encoder';
+import { encoderCandidates, selectEncoder, type EncoderChoice } from '../postprocess/encoder';
+import type { EncoderProbe } from '../postprocess/encoder-probe';
 import { applyQuality, sharpenFilter } from '../postprocess/enhance';
 import { measureColour, planColourCorrection } from '../postprocess/colour';
 import { StageTracker } from './stage-tracker';
@@ -70,6 +71,15 @@ export interface DownloadPipelineOptions {
   readonly postProcessor?: PostProcessor;
   /** Probed ffmpeg capabilities, for encoder and filter availability. */
   readonly capabilities?: () => MediaCapabilities;
+  /**
+   * Which of those encoders this machine can actually run.
+   *
+   * `capabilities` reports what ffmpeg was *compiled* with, which on the LGPL
+   * builds this app installs includes NVENC, QuickSync, AMF and VAAPI on every
+   * computer regardless of the hardware in it. Absent, the pipeline falls back
+   * to trusting that list, which is what the tests and the CLI harness do.
+   */
+  readonly encoderProbe?: EncoderProbe;
   /** Speech-to-text for videos TikTok published no caption track for. */
   readonly transcriber?: Transcriber;
   /** Section 9's "Ask on first detection" prompt; resolved by the UI. */
@@ -392,6 +402,9 @@ export class DownloadPipeline implements MediaPipeline {
           outroMode: config.outroMode,
           hardwareAcceleration: config.hardwareAcceleration,
           capabilities: this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
+          // The ones this machine can genuinely run, so the watermark pass is
+          // not handed an encoder that cannot open its device.
+          encoders: await this.encoders(config),
           ...(enhanceFilter ? { sharpen: enhanceFilter } : {}),
           encodeQuality: config.encodeQuality,
           signal: input.signal,
@@ -434,6 +447,11 @@ export class DownloadPipeline implements MediaPipeline {
      * downloaded and watchable, and losing it because a filter chain misbehaved
      * would be the worse outcome by far.
      */
+    /**
+     * What is still wrong with the finished file, from the upload sites' point
+     * of view. Empty when nothing is, which is the ordinary case.
+     */
+    let uploadProblems: readonly string[] = [];
     let captionNote: string | null = stages.carried.captionNote ?? null;
     let transcriptCues: readonly { startMs: number; endMs: number; lines: readonly string[] }[] = [];
 
@@ -547,19 +565,25 @@ export class DownloadPipeline implements MediaPipeline {
            * that was downloaded, with the same near-transparent encoder the
            * watermark path uses.
            */
-          ...(selection.needsH264Transcode || enhanceFilter !== null
+          ...(config.forceH264
             ? {
                 toH264: {
-                  encoderArgs: (() => {
-                    const encoder = selectEncoder(
-                      this.options.capabilities?.() ?? EMPTY_CAPABILITIES,
-                      config.hardwareAcceleration,
-                    );
-                    return [encoder.name, ...applyQuality(encoder.args, config.encodeQuality)];
-                  })(),
+                  encoders: (await this.encoders(config)).map((encoder) => ({
+                    name: encoder.name,
+                    args: applyQuality(encoder.args, config.encodeQuality),
+                  })),
                 },
               }
             : {}),
+          /**
+           * Read the file again, here and after the rewrite.
+           *
+           * `verified.probe` describes the `.part` from before the watermark
+           * and caption passes touched it, so it is the wrong thing to decide
+           * from and no basis at all for confirming the result.
+           */
+          reprobe: (path) => this.probeOrNull(path, input.signal),
+          onEncoderFailed: (name) => this.options.encoderProbe?.reject(name),
           /**
            * Sharpening rides in this pass rather than one of its own.
            *
@@ -576,7 +600,29 @@ export class DownloadPipeline implements MediaPipeline {
           log,
         });
         if (compat.rewritten) log.info({ reason: compat.reason }, 'container rewritten for compatibility');
-        stages.done('finish');
+
+        /**
+         * A file that is still in a form upload sites refuse is a failed step,
+         * even though the download itself succeeded.
+         *
+         * This is the whole reason the check exists. The pass is caught so that
+         * a misbehaving filter cannot cost somebody a video that downloaded
+         * perfectly well — but the cost of that safety was that a conversion
+         * which did not happen looked exactly like one that did, and the first
+         * anybody knew was an upload refused days later with a message naming
+         * nothing. Saying so on the row is the difference between "Facebook is
+         * broken" and "the finishing pass could not convert this one".
+         */
+        if (compat.uploadable === false) {
+          log.warn(
+            { problems: compat.problems },
+            'this video is still in a form upload sites refuse; see the finishing step on the row',
+          );
+          uploadProblems = compat.problems;
+          stages.failed('finish');
+        } else {
+          stages.done('finish');
+        }
       } catch (err) {
         log.warn(
           { err: err instanceof Error ? err.message : String(err) },
@@ -652,7 +698,42 @@ export class DownloadPipeline implements MediaPipeline {
        * reason anywhere a user would look. It rides back with the result now.
        */
       ...(captionNote ? { captionNote } : {}),
+      ...(uploadProblems.length > 0
+        ? { uploadNote: `Upload sites are likely to refuse this file: ${uploadProblems.join(', ')}.` }
+        : {}),
     };
+  }
+
+  /**
+   * The H.264 encoders worth trying on this machine, best first.
+   *
+   * A list rather than one choice, because the first can be a lie: an encoder
+   * that is compiled into the build but has no hardware behind it fails the
+   * moment it opens its device, and a single-choice API turned that into a
+   * video that silently stayed H.265 and was refused by every upload form.
+   *
+   * With a probe it is the verified list. Without one — tests, the CLI harness
+   * — it is the build's own answer, which is the behaviour that was there
+   * before, and an empty list when the build has no H.264 encoder at all rather
+   * than a throw that would take the download with it.
+   */
+  private async encoders(config: AppConfig): Promise<readonly EncoderChoice[]> {
+    const capabilities = this.options.capabilities?.() ?? EMPTY_CAPABILITIES;
+
+    if (this.options.encoderProbe) {
+      return this.options.encoderProbe.usable(capabilities, config.hardwareAcceleration);
+    }
+    return encoderCandidates(capabilities, config.hardwareAcceleration);
+  }
+
+  /** ffprobe, or null — never a throw, since every caller degrades gracefully. */
+  private async probeOrNull(filePath: string, signal?: AbortSignal): Promise<ProbeResult | null> {
+    if (!this.options.ffprobe.isAvailable) return null;
+    try {
+      return await this.options.ffprobe.probe(filePath, signal);
+    } catch {
+      return null;
+    }
   }
 
   /**

@@ -31,6 +31,7 @@ import { Impersonation } from './resolve/impersonation';
 import { Ffprobe } from './media/ffprobe';
 import { DownloadPipeline } from './download/pipeline';
 import { PostProcessor } from './postprocess/processor';
+import { EncoderProbe } from './postprocess/encoder-probe';
 import { YtDlpExtractor, ytDlpStrategies } from './resolve/yt-dlp-extractor';
 import { generateDeviceId, generateInstallId, isValidDeviceId } from './resolve/device-id';
 import { ExtractorChain } from './resolve/extractor-chain';
@@ -414,6 +415,22 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
     log: logging.log.child({ scope: 'postprocess' }),
   });
 
+  /**
+   * Which H.264 encoder this machine can genuinely run.
+   *
+   * `capabilities` reports what ffmpeg was compiled with, and the LGPL builds
+   * this app installs list NVENC, QuickSync, AMF and VAAPI on every computer
+   * regardless of the hardware in it. Trusting that list is how a conversion to
+   * H.264 was handed to an encoder that could not open its device, failed, and
+   * left the video as H.265 for Facebook to refuse. This one finds out by
+   * trying, once, and remembers the answer.
+   */
+  const encoderProbe = new EncoderProbe({
+    ffmpegPath: () => sidecars.resolve('ffmpeg').path,
+    runner: processRunner,
+    log: logging.log.child({ scope: 'encoder' }),
+  });
+
   const downloadPipeline =
     options.pipeline ??
     new DownloadPipeline({
@@ -431,6 +448,7 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
       log: logging.log.child({ scope: 'download' }),
       postProcessor,
       capabilities: () => snapshot.capabilities,
+      encoderProbe,
       transcriber,
     });
 

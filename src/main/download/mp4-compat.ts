@@ -105,6 +105,38 @@ export function indexIsAtTheEnd(boxes: readonly Mp4Box[]): boolean {
   return moov > mdat;
 }
 
+/**
+ * What an upload form will accept, which is a narrower thing than what plays.
+ *
+ * Facebook, Instagram and the rest all want the same shape and all report a
+ * refusal the same unhelpful way — "we couldn't process your video", or an
+ * upload that succeeds and then plays as a black rectangle. None of those
+ * messages names a codec, so the checks have to be made here, before the file
+ * is ever handed to one.
+ */
+
+/** The only video codec an upload form can be relied on to take. */
+export const UPLOADABLE_VIDEO_CODEC = 'h264';
+
+/**
+ * And the only audio codec.
+ *
+ * TikTok serves AAC and the common path never touches it, so this almost never
+ * fires — but yt-dlp merging a separate audio track can land Opus inside an
+ * MP4, which is legal, plays everywhere locally, and is refused on upload. The
+ * check costs nothing and the conversion costs one audio track.
+ */
+export const UPLOADABLE_AUDIO_CODECS = ['aac'];
+
+/**
+ * 8-bit 4:2:0, which is what "H.264 High profile" means in practice.
+ *
+ * A 10-bit or 4:4:4 H.264 stream is still H.264 and still refused — the same
+ * failure as the wrong codec, from a file whose codec name looks correct, which
+ * is exactly the kind of thing that costs an afternoon to work out.
+ */
+export const UPLOADABLE_PIXEL_FORMATS = ['yuv420p', 'yuvj420p'];
+
 export interface CompatibilityVerdict {
   readonly needed: boolean;
   /** Move the index to the front. */
@@ -113,6 +145,55 @@ export interface CompatibilityVerdict {
   readonly retagHevc: boolean;
   /** One line for the log, saying what is wrong and therefore why this ran. */
   readonly reason: string;
+}
+
+export interface UploadabilityVerdict {
+  /** Nothing about this file would get it refused by an upload form. */
+  readonly ok: boolean;
+  /** The video track is not H.264, or is H.264 in a form that is still refused. */
+  readonly videoNeedsEncode: boolean;
+  /** The audio track is not AAC. */
+  readonly audioNeedsEncode: boolean;
+  readonly reasons: readonly string[];
+}
+
+/**
+ * Reads a probe and says whether a site would take the file.
+ *
+ * Pure, and separate from the fixing, because it is used twice: once to decide
+ * what to do, and once afterwards on the result — which is the part that turns
+ * "we tried to convert it" into "it is converted". Nothing else in the pipeline
+ * checked its own work, and the silent failure this exists to catch is
+ * specifically one where the attempt is made and does not happen.
+ */
+export function assessUploadability(probe: ProbeResult | null): UploadabilityVerdict {
+  if (!probe) {
+    // Nothing read the file, so nothing is claimed about it. Guessing in either
+    // direction is worse than saying so.
+    return { ok: true, videoNeedsEncode: false, audioNeedsEncode: false, reasons: [] };
+  }
+
+  const video = probe.streams.find((stream) => stream.codecType === 'video');
+  const audio = probe.streams.find((stream) => stream.codecType === 'audio');
+  const reasons: string[] = [];
+
+  const codec = (video?.codecName ?? '').toLowerCase();
+  const pixelFormat = (video?.pixelFormat ?? '').toLowerCase();
+
+  let videoNeedsEncode = false;
+  if (video && codec !== '' && codec !== UPLOADABLE_VIDEO_CODEC) {
+    videoNeedsEncode = true;
+    reasons.push(`its video is ${codec} rather than H.264`);
+  } else if (video && pixelFormat !== '' && !UPLOADABLE_PIXEL_FORMATS.includes(pixelFormat)) {
+    videoNeedsEncode = true;
+    reasons.push(`its video is ${pixelFormat} rather than 8-bit 4:2:0`);
+  }
+
+  const audioCodec = (audio?.codecName ?? '').toLowerCase();
+  const audioNeedsEncode = audio !== undefined && audioCodec !== '' && !UPLOADABLE_AUDIO_CODECS.includes(audioCodec);
+  if (audioNeedsEncode) reasons.push(`its audio is ${audioCodec} rather than AAC`);
+
+  return { ok: !videoNeedsEncode && !audioNeedsEncode, videoNeedsEncode, audioNeedsEncode, reasons };
 }
 
 /**
@@ -154,19 +235,42 @@ export interface MakeUploadableInput {
   readonly ffmpegPath: string | null;
   readonly runner: ProcessRunner;
   /**
-   * Convert an H.265 video track to H.264, keeping every pixel of it.
+   * Reads the file as it stands now, for deciding and for checking the result.
    *
-   * Absent means leave the codec alone. Present, it carries the encoder and
-   * its quality arguments, chosen from what this ffmpeg build actually has.
+   * The `probe` above was taken before the watermark pass, the caption pass and
+   * anything else that rewrites the video, so by the time this runs it can be
+   * describing bytes that no longer exist — which is a poor basis for deciding
+   * whether the *current* file needs converting, and no basis at all for
+   * confirming afterwards that it does not.
    *
-   * This exists because the alternative was so much worse. Wanting H.264 used
-   * to mean *downloading* H.264, and TikTok routinely publishes its top
+   * Optional so the existing callers and tests that pass a probe and no prober
+   * behave exactly as before.
+   */
+  readonly reprobe?: ((filePath: string) => Promise<ProbeResult | null>) | undefined;
+  /**
+   * Convert the video track to H.264, keeping every pixel of it.
+   *
+   * Absent means leave the codec alone. Present, it carries the encoders worth
+   * trying, best first.
+   *
+   * A list rather than one encoder, because `ffmpeg -encoders` reports what the
+   * build was compiled with and not what this machine can run: the LGPL builds
+   * list NVENC, QuickSync, AMF and VAAPI on every computer, including ones with
+   * none of that hardware. Committing to the first name and giving up when it
+   * failed to start is how a video that needed converting stayed H.265 —
+   * silently, because this whole pass is caught so that a filter cannot cost
+   * somebody their download — and was then refused by every upload form.
+   *
+   * This exists at all because the alternative was so much worse. Wanting H.264
+   * used to mean *downloading* H.264, and TikTok routinely publishes its top
    * resolution only as H.265 — so asking for compatibility silently fetched
    * 480p in place of a 1080p source, and no amount of processing afterwards
    * could put those pixels back. Converting costs one near-transparent encode
    * and some time, and keeps the picture.
    */
-  readonly toH264?: { readonly encoderArgs: readonly string[] } | undefined;
+  readonly toH264?: { readonly encoders: readonly EncoderAttempt[] } | undefined;
+  /** Told which encoder failed on a real video, so the next item skips it. */
+  readonly onEncoderFailed?: ((name: string) => void) | undefined;
   /**
    * A video filter to apply, which forces a re-encode on its own.
    *
@@ -180,9 +284,29 @@ export interface MakeUploadableInput {
   readonly log?: Logger | undefined;
 }
 
+/** One encoder to try: its ffmpeg name and its quality arguments. */
+export interface EncoderAttempt {
+  readonly name: string;
+  readonly args: readonly string[];
+}
+
 export interface MakeUploadableResult {
   readonly rewritten: boolean;
   readonly reason: string | null;
+  /**
+   * Whether the file, as it now stands, is one an upload form will take.
+   *
+   * The point of reporting it is that it is checked rather than assumed. This
+   * pass cannot fail an item — losing a downloaded video because a filter chain
+   * misbehaved would be far worse than keeping it — so before this, an attempted
+   * conversion that did not happen looked exactly like one that did, and the
+   * first anybody knew was a rejected upload days later.
+   *
+   * Null when nothing could read the file to say either way.
+   */
+  readonly uploadable: boolean | null;
+  /** What is still wrong with it, when something is. */
+  readonly problems: readonly string[];
 }
 
 /**
@@ -197,24 +321,45 @@ export interface MakeUploadableResult {
  * no file.
  */
 export async function makeUploadable(input: MakeUploadableInput): Promise<MakeUploadableResult> {
-  const verdict = assessCompatibility({ boxes: safeBoxes(input.filePath), probe: input.probe });
+  /**
+   * The file as it is now, not as it was before post-processing.
+   *
+   * `input.probe` was taken from the `.part`, before the watermark pass and the
+   * caption pass rewrote the video. Deciding from it means deciding about bytes
+   * that may no longer exist — and confirming from it afterwards would be
+   * meaningless. When a fresh read is available it wins; when it is not, the
+   * old probe is still better than nothing.
+   */
+  const probe = (input.reprobe ? await input.reprobe(input.filePath).catch(() => null) : null) ?? input.probe;
+
+  const verdict = assessCompatibility({ boxes: safeBoxes(input.filePath), probe });
 
   /**
-   * A conversion is work worth doing even when the container is otherwise fine.
+   * What an upload form would say about it, which is a separate question from
+   * how the container is written.
    *
-   * `assessCompatibility` only looks at how the file is written, and the codec
-   * inside it is a separate question with a separate answer.
+   * This used to ask only "is it HEVC?", and that was too narrow twice over.
+   * TikTok has begun serving AV1 for some videos, which is refused just as
+   * readily; and a 10-bit H.264 stream passes a codec-name check and is refused
+   * anyway, which is the most confusing possible version of this failure.
    */
-  const video = input.probe?.streams.find((stream) => stream.codecType === 'video');
-  const convert = input.toH264 !== undefined && (video?.codecName ?? '').toLowerCase() === 'hevc';
+  const uploadability = assessUploadability(probe);
+  const convert = input.toH264 !== undefined && uploadability.videoNeedsEncode;
+  const convertAudio = uploadability.audioNeedsEncode;
   const filter = input.videoFilter ?? null;
   // A filter cannot be applied to a copied stream, so asking for one is asking
   // for an encode whatever else is or is not wrong with the file.
   const encoding = convert || filter !== null;
 
-  if (!verdict.needed && !encoding) return { rewritten: false, reason: null };
+  if (!verdict.needed && !encoding && !convertAudio) {
+    return { rewritten: false, reason: null, uploadable: uploadability.ok, problems: uploadability.reasons };
+  }
 
-  const why = [verdict.reason, convert ? 'its video is H.265' : '', filter ? 'sharpening was asked for' : '']
+  const why = [
+    verdict.reason,
+    convert || convertAudio ? uploadability.reasons.join(' and ') : '',
+    filter ? 'sharpening was asked for' : '',
+  ]
     .filter(Boolean)
     .join(' and ');
 
@@ -223,82 +368,167 @@ export async function makeUploadable(input: MakeUploadableInput): Promise<MakeUp
       { reason: why },
       'the file may be refused by upload sites, and ffmpeg is not installed to correct it',
     );
-    return { rewritten: false, reason: why };
+    return { rewritten: false, reason: why, uploadable: uploadability.ok, problems: uploadability.reasons };
+  }
+
+  /**
+   * The encoders to try, best first.
+   *
+   * More than one because the first can be a lie: the build lists NVENC on a
+   * machine with no NVIDIA card, and it fails the instant it tries to open the
+   * device. Falling through to the next one is the difference between a
+   * converted file and an H.265 file nobody can upload.
+   */
+  const encoders: readonly EncoderAttempt[] = encoding
+    ? (input.toH264?.encoders ?? [])
+    : [];
+  if (encoding && encoders.length === 0) {
+    input.log?.warn(
+      { reason: why },
+      'this ffmpeg build offers no usable H.264 encoder, so the file is kept exactly as it was downloaded',
+    );
+    return { rewritten: false, reason: why, uploadable: uploadability.ok, problems: uploadability.reasons };
   }
 
   const output = `${input.filePath}.compat.mp4`;
-  rmSync(output, { force: true });
+  // One entry when nothing is being encoded, so the loop below covers both.
+  const attempts: readonly (EncoderAttempt | null)[] = encoding ? encoders : [null];
+  let lastError: string | null = null;
 
-  const args = [
-    '-y',
-    '-v',
-    'error',
-    '-i',
-    input.filePath,
-    /**
-     * Which streams come across, and why the answer differs by path.
-     *
-     * A straight copy takes everything — `-map 0` — because everything in the
-     * file is worth keeping and none of it is being touched.
-     *
-     * An encode cannot say that. `-map 0` selects *every* video stream, and a
-     * TikTok MP4 routinely carries a second one: a single-frame attached
-     * picture for the cover art. With `-c:v` set, ffmpeg dutifully tries to
-     * put that one frame through a hardware H.264 encoder and through the
-     * filter chain, and the run fails — taking a download that had already
-     * succeeded with it. `0:V:0` is the first *real* video stream,
-     * attached pictures excluded, which is exactly the distinction wanted
-     * here. Audio and subtitles follow with `?` so a file without them is not
-     * an error.
-     */
-    ...(encoding
-      ? ['-map', '0:V:0', '-map', '0:a?', '-map', '0:s?']
-      : ['-map', '0']),
-    /**
-     * Copy unless a codec conversion was asked for, and even then only the
-     * video: the audio is already AAC and re-encoding it would spend a second
-     * generation of loss on a track nothing was complaining about.
-     *
-     * No scaling, no filters. The whole point of converting rather than
-     * downloading a smaller stream is that the picture arrives intact, and the
-     * fastest way to undo that would be to touch the frame size here.
-     */
-    '-c',
-    'copy',
-    ...(filter ? ['-vf', filter] : []),
-    ...(encoding ? ['-c:v', ...(input.toH264?.encoderArgs ?? []), '-pix_fmt', 'yuv420p'] : []),
-    '-movflags',
-    '+faststart',
-    ...(verdict.retagHevc ? ['-tag:v', 'hvc1'] : []),
-    '-f',
-    'mp4',
-    output,
-  ];
-
-  try {
-    const result = await input.runner.run(input.ffmpegPath, args, {
-      timeoutMs: 5 * 60_000,
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
-
-    if (result.exitCode !== 0) {
-      throw new AppError('FFMPEG_FAILED', result.stderr.trim().split('\n').pop() ?? `ffmpeg exited ${result.exitCode}`);
-    }
-    if (statSync(output).size === 0) {
-      throw new AppError('FFMPEG_FAILED', 'the rewritten file is empty');
-    }
-
-    renameSync(output, input.filePath);
-    input.log?.info({ reason: verdict.reason }, 'rewrote the container so the file uploads and plays everywhere');
-    return { rewritten: true, reason: verdict.reason };
-  } catch (err) {
+  for (const encoder of attempts) {
     rmSync(output, { force: true });
-    input.log?.warn(
-      { err: err instanceof Error ? err.message : String(err), reason: verdict.reason },
-      'could not rewrite the container; the download is kept as it is',
-    );
-    return { rewritten: false, reason: verdict.reason };
+
+    const args = [
+      '-y',
+      '-v',
+      'error',
+      '-i',
+      input.filePath,
+      /**
+       * Which streams come across, and why the answer differs by path.
+       *
+       * A straight copy takes everything — `-map 0` — because everything in the
+       * file is worth keeping and none of it is being touched.
+       *
+       * An encode cannot say that. `-map 0` selects *every* video stream, and a
+       * TikTok MP4 routinely carries a second one: a single-frame attached
+       * picture for the cover art. With `-c:v` set, ffmpeg dutifully tries to
+       * put that one frame through a hardware H.264 encoder and through the
+       * filter chain, and the run fails — taking a download that had already
+       * succeeded with it. `0:V:0` is the first *real* video stream,
+       * attached pictures excluded, which is exactly the distinction wanted
+       * here. Audio and subtitles follow with `?` so a file without them is not
+       * an error.
+       */
+      ...(encoding ? ['-map', '0:V:0', '-map', '0:a?', '-map', '0:s?'] : ['-map', '0']),
+      /**
+       * Copy is the default and the overrides are added on top, so a track
+       * nothing is wrong with is never re-encoded.
+       *
+       * No scaling, no resizing. The whole point of converting rather than
+       * downloading a smaller stream is that the picture arrives intact, and
+       * the fastest way to undo that would be to touch the frame size here.
+       */
+      '-c',
+      'copy',
+      ...(filter ? ['-vf', filter] : []),
+      ...(encoder ? ['-c:v', encoder.name, ...encoder.args, '-pix_fmt', 'yuv420p'] : []),
+      /**
+       * Audio, only when it is not already AAC.
+       *
+       * TikTok serves AAC and this almost never fires, but yt-dlp merging a
+       * separate audio track can land Opus inside an MP4 — legal, plays
+       * everywhere locally, refused on upload. 192k is above transparent for a
+       * source that was never better than that.
+       */
+      ...(convertAudio ? ['-c:a', 'aac', '-b:a', '192k'] : []),
+      '-movflags',
+      '+faststart',
+      // Only meaningful when the H.265 stream is being kept, which is the case
+      // where no H.264 conversion was asked for.
+      ...(verdict.retagHevc && !encoder ? ['-tag:v', 'hvc1'] : []),
+      '-f',
+      'mp4',
+      output,
+    ];
+
+    try {
+      const result = await input.runner.run(input.ffmpegPath, args, {
+        timeoutMs: 5 * 60_000,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+
+      if (result.exitCode !== 0) {
+        throw new AppError(
+          'FFMPEG_FAILED',
+          result.stderr.trim().split('\n').pop() ?? `ffmpeg exited ${result.exitCode}`,
+        );
+      }
+      if (statSync(output).size === 0) {
+        throw new AppError('FFMPEG_FAILED', 'the rewritten file is empty');
+      }
+
+      renameSync(output, input.filePath);
+
+      /**
+       * And then check the work, rather than assuming it.
+       *
+       * This is the assertion that would have caught the whole thing on the day
+       * it started: an encoder that cannot open its device fails, the failure is
+       * caught so the download survives, and the file quietly stays in the
+       * format that gets refused. Reading the result turns that from a silent
+       * outcome into a stated one.
+       */
+      const after = input.reprobe ? await input.reprobe(input.filePath).catch(() => null) : null;
+      const check = after ? assessUploadability(after) : null;
+
+      if (check && !check.ok) {
+        input.log?.warn(
+          { encoder: encoder?.name ?? null, problems: check.reasons },
+          'the file was rewritten and is still in a form upload sites refuse',
+        );
+      } else {
+        input.log?.info(
+          { reason: why, encoder: encoder?.name ?? null },
+          'rewrote the container so the file uploads and plays everywhere',
+        );
+      }
+
+      return {
+        rewritten: true,
+        reason: verdict.reason,
+        uploadable: check ? check.ok : null,
+        problems: check ? check.reasons : [],
+      };
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err);
+      rmSync(output, { force: true });
+
+      // An abort is the queue stopping, not this encoder being unusable.
+      if (input.signal?.aborted) break;
+
+      if (encoder) {
+        input.onEncoderFailed?.(encoder.name);
+        input.log?.warn(
+          { encoder: encoder.name, err: lastError },
+          attempts.indexOf(encoder) < attempts.length - 1
+            ? 'this encoder could not run here; trying the next one'
+            : 'no encoder on this machine could convert the video',
+        );
+      }
+    }
   }
+
+  input.log?.warn(
+    { err: lastError, reason: verdict.reason },
+    'could not rewrite the container; the download is kept as it is',
+  );
+  return {
+    rewritten: false,
+    reason: verdict.reason,
+    uploadable: uploadability.ok,
+    problems: uploadability.reasons,
+  };
 }
 
 /** A file this cannot parse simply reports no boxes, rather than throwing. */

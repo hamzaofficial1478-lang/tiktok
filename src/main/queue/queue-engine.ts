@@ -1036,6 +1036,19 @@ export class QueueEngine {
       this.log.warn({ itemId: row.id, reason: result.captionNote }, 'captions were not applied');
     }
 
+    /**
+     * A download that finished in a form upload sites will refuse.
+     *
+     * Not a failure either — the video is there and plays — but it is the one
+     * thing about a finished download that someone finds out about days later,
+     * from Facebook, in a message that names nothing. The row's finishing step
+     * is already marked failed; this puts the reason in the log the Activity
+     * panel shows.
+     */
+    if (result.uploadNote) {
+      this.log.warn({ itemId: row.id, reason: result.uploadNote }, 'this file may be refused by upload sites');
+    }
+
     this.recordCompletion(row, normalized, resolved, result);
   }
 

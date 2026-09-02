@@ -118,6 +118,16 @@ export interface PipelineResult {
   readonly outroTrimmedMs: number | null;
   /** Set when captions were wanted and not applied; says which step declined. */
   readonly captionNote?: string;
+  /**
+   * Set when the finished file is still in a form upload sites refuse.
+   *
+   * The finishing pass is caught so a misbehaving filter cannot cost somebody a
+   * download, which for a long time meant a conversion that did not happen
+   * looked identical to one that did — and the first anybody knew was Facebook
+   * refusing the video days later, with a message naming nothing. This is that
+   * silence broken.
+   */
+  readonly uploadNote?: string;
 }
 
 /** A queue row projected for the renderer — the read model of section 3. */

@@ -25,6 +25,18 @@ export interface ProbedStream {
    * black picture rather than saying what is wrong.
    */
   readonly codecTag: string | null;
+  /**
+   * How the pixels are stored: `yuv420p` for the ordinary 8-bit 4:2:0 that
+   * every upload form takes, `yuv420p10le` for 10-bit, `yuv444p` for full
+   * chroma.
+   *
+   * Read because the codec name alone does not settle whether a file is
+   * acceptable. A 10-bit H.264 stream is genuinely H.264 and is refused by the
+   * same sites that refuse H.265, which makes it the most confusing possible
+   * version of that failure: the check that looks right passes, and the upload
+   * still does not.
+   */
+  readonly pixelFormat: string | null;
   readonly width: number | null;
   readonly height: number | null;
   readonly frameRate: number | null;
@@ -50,6 +62,7 @@ interface RawProbe {
     codec_type?: string;
     codec_name?: string;
     codec_tag_string?: string;
+    pix_fmt?: string;
     width?: number;
     height?: number;
     r_frame_rate?: string;
@@ -91,6 +104,7 @@ export class Ffprobe {
       // ffprobe prints `[0][0][0][0]` for a stream with no tag at all, which is
       // a placeholder rather than a value and must not be read as one.
       codecTag: stream.codec_tag_string && !/^\[/.test(stream.codec_tag_string) ? stream.codec_tag_string : null,
+      pixelFormat: stream.pix_fmt ?? null,
       width: stream.width ?? null,
       height: stream.height ?? null,
       frameRate: parseFrameRate(stream.r_frame_rate),

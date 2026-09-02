@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   assessCompatibility,
+  assessUploadability,
   indexIsAtTheEnd,
   makeUploadable,
   readTopLevelBoxes,
@@ -47,6 +48,7 @@ const stream = (patch: Partial<ProbedStream>): ProbedStream => ({
   codecType: 'video',
   codecName: 'h264',
   codecTag: 'avc1',
+  pixelFormat: 'yuv420p',
   width: 1080,
   height: 1920,
   frameRate: 30,
@@ -329,7 +331,7 @@ describe('rewriting the container', () => {
       probe: probeOf(stream({ codecName: 'hevc', codecTag: 'hvc1' }), stream({ codecType: 'audio', codecName: 'aac' })),
       ffmpegPath: '/fake/ffmpeg',
       runner,
-      toH264: { encoderArgs: ['h264_nvenc', '-cq', '19'] },
+      toH264: { encoders: [{ name: 'h264_nvenc', args: ['-cq', '19'] }] },
     });
 
     const call = calls[0] ?? [];
@@ -358,7 +360,7 @@ describe('rewriting the container', () => {
       probe: probeOf(stream({ codecName: 'hevc', codecTag: 'hvc1' })),
       ffmpegPath: '/fake/ffmpeg',
       runner,
-      toH264: { encoderArgs: ['libopenh264'] },
+      toH264: { encoders: [{ name: 'libopenh264', args: [] }] },
     });
 
     expect(calls).toHaveLength(1);
@@ -377,7 +379,7 @@ describe('rewriting the container', () => {
       probe: probeOf(stream({ codecName: 'h264', codecTag: 'avc1' })),
       ffmpegPath: '/fake/ffmpeg',
       runner,
-      toH264: { encoderArgs: ['h264_nvenc'] },
+      toH264: { encoders: [{ name: 'h264_nvenc', args: [] }] },
     });
 
     // Nothing to convert and nothing wrong with the container, so no encode is
@@ -407,7 +409,7 @@ describe('rewriting the container', () => {
       probe: probeOf(stream({ codecName: 'hevc', codecTag: 'hev1' })),
       ffmpegPath: '/fake/ffmpeg',
       runner,
-      toH264: { encoderArgs: ['h264_nvenc', '-cq', '19'] },
+      toH264: { encoders: [{ name: 'h264_nvenc', args: ['-cq', '19'] }] },
       videoFilter: 'unsharp=5:5:0.9:5:5:0.0',
     });
 
@@ -430,7 +432,7 @@ describe('rewriting the container', () => {
       probe: probeOf(stream({ codecName: 'h264', codecTag: 'avc1' })),
       ffmpegPath: '/fake/ffmpeg',
       runner,
-      toH264: { encoderArgs: ['libopenh264'] },
+      toH264: { encoders: [{ name: 'libopenh264', args: [] }] },
       videoFilter: 'unsharp=5:5:0.5:5:5:0.0',
     });
 
@@ -517,5 +519,306 @@ describe('rewriting the container', () => {
 
     expect(readFileSync(path).length).toBeGreaterThan(0);
     expect(() => readFileSync(`${path}.compat.mp4`)).toThrow();
+  });
+});
+
+/**
+ * What an upload form will take, which is narrower than what plays.
+ *
+ * The user's report was "the videos are not getting uploaded on Facebook", and
+ * every symptom of that arrives useless: an upload that is refused with a
+ * generic apology, or one that succeeds and plays as a black rectangle. Nothing
+ * in either message names a codec, so the file has to be judged here before it
+ * ever reaches a site.
+ */
+describe('judging whether a file will upload', () => {
+  it('accepts the ordinary case', () => {
+    const verdict = assessUploadability(
+      probeOf(stream({ codecName: 'h264', pixelFormat: 'yuv420p' }), stream({ codecType: 'audio', codecName: 'aac' })),
+    );
+    expect(verdict.ok).toBe(true);
+    expect(verdict.reasons).toEqual([]);
+  });
+
+  it('refuses H.265, which is what TikTok serves for its best streams', () => {
+    const verdict = assessUploadability(probeOf(stream({ codecName: 'hevc', codecTag: 'hev1' })));
+    expect(verdict.videoNeedsEncode).toBe(true);
+    expect(verdict.reasons[0]).toMatch(/hevc/);
+  });
+
+  it('refuses AV1, which TikTok has begun serving too', () => {
+    // The old check asked "is it HEVC?", which answered no here and let an
+    // equally unacceptable file through.
+    expect(assessUploadability(probeOf(stream({ codecName: 'av1' }))).videoNeedsEncode).toBe(true);
+  });
+
+  /**
+   * The most confusing version of this failure: the codec name is right and the
+   * upload is still refused, so every check that looks correct passes.
+   */
+  it('refuses 10-bit H.264, whose codec name looks perfectly fine', () => {
+    const verdict = assessUploadability(probeOf(stream({ codecName: 'h264', pixelFormat: 'yuv420p10le' })));
+    expect(verdict.videoNeedsEncode).toBe(true);
+    expect(verdict.reasons[0]).toMatch(/8-bit/);
+  });
+
+  it('refuses Opus audio, which a merge can leave inside an MP4', () => {
+    const verdict = assessUploadability(
+      probeOf(stream({ codecName: 'h264' }), stream({ codecType: 'audio', codecName: 'opus' })),
+    );
+    expect(verdict.audioNeedsEncode).toBe(true);
+    expect(verdict.videoNeedsEncode).toBe(false);
+  });
+
+  it('claims nothing about a file nothing could read', () => {
+    // Guessing in either direction is worse than saying so: a false "needs
+    // converting" spends an encode on a fine file, and a false "fine" is the
+    // silence this whole thing exists to end.
+    expect(assessUploadability(null)).toEqual({
+      ok: true,
+      videoNeedsEncode: false,
+      audioNeedsEncode: false,
+      reasons: [],
+    });
+  });
+});
+
+/**
+ * An encoder that is compiled in is not an encoder that runs.
+ *
+ * `ffmpeg -encoders` lists NVENC, QuickSync, AMF and VAAPI on every one of the
+ * LGPL builds this app installs, including on machines with none of that
+ * hardware. Committing to the first name and giving up when it failed is how a
+ * video that needed converting stayed H.265 — silently, because this pass is
+ * caught so a filter cannot cost somebody their download — and was then refused
+ * by Facebook days later.
+ */
+describe('falling through to an encoder that works', () => {
+  /** Fails for the named encoders, succeeds for anything else. */
+  function runnerFailing(broken: readonly string[]): { runner: ProcessRunner; calls: string[][] } {
+    const calls: string[][] = [];
+    return {
+      calls,
+      runner: {
+        run: async (_cmd, args): Promise<ProcessResult> => {
+          calls.push([...args]);
+          const encoder = args[args.indexOf('-c:v') + 1];
+          if (encoder && broken.includes(encoder)) {
+            return { stdout: '', stderr: 'Cannot load nvcuda.dll', exitCode: 1, timedOut: false };
+          }
+          writeFileSync(outputOf(args), Buffer.alloc(900));
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        },
+      },
+    };
+  }
+
+  const hevcFile = (name: string): string =>
+    writeMp4(name, [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+
+  it('tries the next encoder when the first cannot open its device', async () => {
+    const path = hevcFile('fallback.mp4');
+    const { runner, calls } = runnerFailing(['h264_nvenc']);
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: {
+        encoders: [
+          { name: 'h264_nvenc', args: ['-cq', '19'] },
+          { name: 'libopenh264', args: ['-b:v', '10M'] },
+        ],
+      },
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.[(calls[1]?.indexOf('-c:v') ?? 0) + 1]).toBe('libopenh264');
+  });
+
+  it('says which encoder failed, so the next video does not repeat it', async () => {
+    const path = hevcFile('reject.mp4');
+    const { runner } = runnerFailing(['h264_nvenc']);
+    const rejected: string[] = [];
+
+    await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: {
+        encoders: [
+          { name: 'h264_nvenc', args: [] },
+          { name: 'libopenh264', args: [] },
+        ],
+      },
+      onEncoderFailed: (name) => rejected.push(name),
+    });
+
+    expect(rejected).toEqual(['h264_nvenc']);
+  });
+
+  it('keeps the download untouched when no encoder on the machine works', async () => {
+    const path = hevcFile('none.mp4');
+    const before = readFileSync(path);
+    const { runner } = runnerFailing(['h264_nvenc', 'libopenh264']);
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: {
+        encoders: [
+          { name: 'h264_nvenc', args: [] },
+          { name: 'libopenh264', args: [] },
+        ],
+      },
+    });
+
+    // A video that cannot be converted is still a video. Losing it would be
+    // very much worse than keeping one that some sites will not take.
+    expect(result.rewritten).toBe(false);
+    expect(readFileSync(path)).toEqual(before);
+    // And it says so, which is the part that was missing.
+    expect(result.uploadable).toBe(false);
+    expect(result.problems[0]).toMatch(/hevc/);
+  });
+
+  it('does nothing at all when the build has no H.264 encoder', async () => {
+    const path = hevcFile('no-encoder.mp4');
+    const { runner, calls } = runnerFailing([]);
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoders: [] },
+    });
+
+    // `mpeg4` used to sit at the end of the candidate list as a "last resort".
+    // It is MPEG-4 Part 2, not H.264, and every upload form refuses it — so a
+    // machine with no real encoder produced a library that plays locally and
+    // uploads nowhere. Spawning nothing is the better answer.
+    expect(calls).toEqual([]);
+    expect(result.rewritten).toBe(false);
+  });
+});
+
+/**
+ * Checking the work rather than assuming it.
+ *
+ * The pass is caught on purpose, so an attempted conversion that did not happen
+ * used to look exactly like one that did. Reading the result is what turns that
+ * into something the row can say.
+ */
+describe('confirming the result', () => {
+  it('reports a file that came out still unacceptable', async () => {
+    const path = writeMp4('still-wrong.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoders: [{ name: 'h264_nvenc', args: [] }] },
+      // ffmpeg claimed success and the file is still H.265 — which is what a
+      // hardware encoder that silently produced nothing useful looks like.
+      reprobe: async () => probeOf(stream({ codecName: 'hevc' })),
+    });
+
+    expect(result.rewritten).toBe(true);
+    expect(result.uploadable).toBe(false);
+  });
+
+  it('confirms one that came out right', async () => {
+    const path = writeMp4('now-fine.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    const result = await makeUploadable({
+      filePath: path,
+      probe: probeOf(stream({ codecName: 'hevc' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoders: [{ name: 'h264_nvenc', args: [] }] },
+      reprobe: async () => probeOf(stream({ codecName: 'h264', pixelFormat: 'yuv420p' })),
+    });
+
+    expect(result.uploadable).toBe(true);
+    expect(result.problems).toEqual([]);
+  });
+
+  /**
+   * The file as it is now, not as it was before post-processing.
+   *
+   * `probe` is taken from the `.part`, before the watermark and caption passes
+   * rewrite the video, so deciding from it means deciding about bytes that may
+   * no longer exist.
+   */
+  it('decides from a fresh read rather than the probe taken before processing', async () => {
+    const path = writeMp4('already-converted.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner, calls } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    await makeUploadable({
+      filePath: path,
+      // The old probe says H.265...
+      probe: probeOf(stream({ codecName: 'hevc' })),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+      toH264: { encoders: [{ name: 'h264_nvenc', args: [] }] },
+      // ...but the watermark pass already converted it.
+      reprobe: async () => probeOf(stream({ codecName: 'h264', pixelFormat: 'yuv420p' })),
+    });
+
+    // No second encode, and so no second generation of loss, on a file that was
+    // already correct.
+    expect(calls).toEqual([]);
+  });
+});
+
+/** Audio a merge left in a form no upload form takes. */
+describe('audio', () => {
+  it('converts Opus to AAC and leaves the video alone', async () => {
+    const path = writeMp4('opus.mp4', [
+      ['ftyp', 16],
+      ['moov', 128],
+      ['mdat', 512],
+    ]);
+    const { runner, calls } = runnerThat((args) => writeFileSync(outputOf(args), Buffer.alloc(900)));
+
+    await makeUploadable({
+      filePath: path,
+      probe: probeOf(
+        stream({ codecName: 'h264', pixelFormat: 'yuv420p' }),
+        stream({ codecType: 'audio', codecName: 'opus' }),
+      ),
+      ffmpegPath: '/fake/ffmpeg',
+      runner,
+    });
+
+    const call = calls[0] ?? [];
+    expect(call[call.indexOf('-c:a') + 1]).toBe('aac');
+    // The video was fine, so it is copied rather than encoded again.
+    expect(call).not.toContain('-c:v');
   });
 });

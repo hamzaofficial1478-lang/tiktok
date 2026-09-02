@@ -48,6 +48,16 @@ export interface SelectionResult {
    * The winner is H.265 and H.264 was asked for, so convert it after the
    * download — at this resolution, rather than having taken a smaller stream.
    */
+  /**
+   * Advisory only, now that the finishing pass reads the finished file.
+   *
+   * This is the selector's *expectation* of what will land, taken from the
+   * codec name in TikTok's stream listing. The finishing pass no longer acts on
+   * it, because by the time that runs the watermark and caption passes may have
+   * rewritten the video and a pre-download guess is the wrong thing to convert
+   * from. It stays because it is honest about the choice being made, and it is
+   * what the log line and its tests describe.
+   */
   readonly needsH264Transcode?: boolean;
 }
 

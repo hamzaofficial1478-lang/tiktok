@@ -65,13 +65,59 @@ const CANDIDATES: readonly Candidate[] = [
   // comfortably above any 1080x1920 TikTok source, which is what keeps the
   // second encode from becoming the visible one.
   { name: 'libopenh264', hardware: false, args: ['-b:v', '10M'] },
-  // Last resort: universally available and LGPL, but visibly worse. Better
-  // than refusing to process the video at all. Scale is 1-31, lower is better.
-  { name: 'mpeg4', hardware: false, args: ['-q:v', '2'] },
 ];
+
+/**
+ * `mpeg4` used to sit at the end of that list as a "last resort", and it was a
+ * quiet disaster.
+ *
+ * It is MPEG-4 Part 2 — the DivX-era codec — not H.264. Facebook, Instagram and
+ * every other upload form refuse it outright, and it satisfied the check that
+ * says this build has an H.264 encoder, so a machine with no hardware encoder
+ * and no libopenh264 believed it was fine and produced a library of videos that
+ * play locally and upload nowhere. The failure surfaces days later, on a site,
+ * with no message that points anywhere near the cause.
+ *
+ * A hard stop is the better outcome. The download is kept exactly as TikTok
+ * served it — which for the great majority of videos is already H.264 and
+ * uploads fine — and the row says the finishing pass could not run, which is
+ * true and actionable, rather than writing a file that is worse than doing
+ * nothing.
+ */
 
 /** Explicitly refused, whatever the build offers. */
 export const FORBIDDEN_ENCODERS = ['libx264', 'libx265', 'libxvid'] as const;
+
+/**
+ * Every encoder this build offers, best first.
+ *
+ * The plural matters. `ffmpeg -encoders` lists what was *compiled in*, not what
+ * this machine can actually run — the LGPL builds this app installs report
+ * h264_nvenc, h264_qsv, h264_amf and h264_vaapi on every computer, including
+ * ones with no NVIDIA card, no Intel graphics and no AMD GPU. Picking the first
+ * name off that list and committing to it is how a video that needed converting
+ * to H.264 was handed to an encoder that cannot start, failed, and — because the
+ * finishing pass is caught so a filter cannot cost somebody their download —
+ * was quietly kept as H.265. It plays locally. Facebook refuses it.
+ *
+ * So callers get the whole ordered list and fall back through it, and the first
+ * one that genuinely works is remembered for the rest of the run.
+ */
+export function encoderCandidates(capabilities: MediaCapabilities, preferHardware = true): EncoderChoice[] {
+  const available = (name: string): boolean => capabilities.encoders[name] === true;
+  const pool = preferHardware ? CANDIDATES : CANDIDATES.filter((c) => !c.hardware);
+
+  return pool
+    .filter((candidate) => available(candidate.name))
+    .map((candidate) => ({
+      name: candidate.name,
+      hardware: candidate.hardware,
+      args: candidate.args,
+      reason: candidate.hardware
+        ? `hardware encoding via ${candidate.name}`
+        : `software encoding via ${candidate.name} (no hardware encoder available)`,
+    }));
+}
 
 export function selectEncoder(capabilities: MediaCapabilities, preferHardware = true): EncoderChoice {
   const available = (name: string): boolean => capabilities.encoders[name] === true;

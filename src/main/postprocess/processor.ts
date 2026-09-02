@@ -17,7 +17,7 @@ import {
   buildStaticBlurGraph,
   insetBoxFromEdges,
 } from './filter-graph';
-import { estimateProcessingMs, selectEncoder } from './encoder';
+import { estimateProcessingMs, selectEncoder, type EncoderChoice } from './encoder';
 import { applyQuality } from './enhance';
 import type { WatermarkPlan } from './types';
 
@@ -42,6 +42,19 @@ export interface PostProcessInput {
   readonly outroMode: OutroMode;
   readonly hardwareAcceleration: boolean;
   readonly capabilities: MediaCapabilities;
+  /**
+   * Encoders already known to run on this machine, best first.
+   *
+   * `capabilities` says what ffmpeg was compiled with, which is not the same
+   * question: the LGPL builds list NVENC, QuickSync, AMF and VAAPI everywhere,
+   * including on computers with none of that hardware. Taking the first name
+   * off that list is how the watermark pass was handed an encoder that cannot
+   * open its device and failed on every single video.
+   *
+   * Absent, this falls back to the build's own list, which is the behaviour
+   * that was here before and what the tests exercise.
+   */
+  readonly encoders?: readonly EncoderChoice[];
   readonly signal?: AbortSignal;
   /**
    * Asked once per session on the first detection when outroMode is 'ask'
@@ -214,7 +227,7 @@ export class PostProcessor {
 
     const reEncoding = watermarkPlan !== null;
     const encoder = reEncoding
-      ? selectEncoder(input.capabilities, input.hardwareAcceleration)
+      ? (input.encoders?.[0] ?? selectEncoder(input.capabilities, input.hardwareAcceleration))
       : null;
     if (encoder) {
       notes.push(encoder.reason);
