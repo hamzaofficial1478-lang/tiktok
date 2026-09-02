@@ -110,6 +110,7 @@ export class FakePipeline implements MediaPipeline {
   private failures = new Map<string, ErrorCode[]>();
   private hangs = new Set<string>();
   private slowPostProcess = new Map<string, number>();
+  private failAfterCommit = new Map<string, number>();
   private strategies = new Map<string, { sourceStrategy: SourceStrategy; watermarkRemoved: boolean }>();
 
   /**
@@ -126,6 +127,18 @@ export class FakePipeline implements MediaPipeline {
 
   hangFor(awemeId: string): void {
     this.hangs.add(awemeId);
+  }
+
+  /**
+   * Commits the file, then fails — the shape that produced repeat downloads.
+   *
+   * Everything after `commitPart` is improvement to a video that already
+   * exists: watermark removal, captions, colour, the finishing pass. When one
+   * of them threw, the item failed, the queue retried it, and the retry found
+   * the committed file and picked the next free name.
+   */
+  failAfterCommitFor(awemeId: string, times = 1): void {
+    this.failAfterCommit.set(awemeId, times);
   }
 
   /**
@@ -162,6 +175,15 @@ export class FakePipeline implements MediaPipeline {
       await new Promise<void>((_resolve, reject) => {
         input.signal.addEventListener('abort', () => reject(new AppError('CANCELLED', 'aborted')), { once: true });
       });
+    }
+
+    const remainingCommitFailures = this.failAfterCommit.get(awemeId) ?? 0;
+    if (remainingCommitFailures > 0) {
+      this.failAfterCommit.set(awemeId, remainingCommitFailures - 1);
+      const filePath = `/out/${awemeId}.mp4`;
+      this.existingFiles.add(filePath);
+      input.onCommitted?.(filePath);
+      throw new AppError('FFMPEG_FAILED', 'post-processing failed after the file was committed');
     }
 
     const queued = this.failures.get(awemeId);

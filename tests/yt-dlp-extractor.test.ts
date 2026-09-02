@@ -508,10 +508,27 @@ describe('multiple routes to TikTok', () => {
       strategy: ytDlpStrategies('7300000000000000000')[0] as YtDlpStrategy,
     });
 
-    // EXTRACTOR_FAILED is deliberately not terminal for the chain, so the
-    // mobile routes get their turn rather than the item failing outright.
-    await expect(extractor.resolve(url)).rejects.toMatchObject({ code: 'EXTRACTOR_FAILED' });
-    expect(isTerminalForChain('EXTRACTOR_FAILED')).toBe(false);
+    /**
+     * RESOLVE_FAILED, not EXTRACTOR_FAILED, and the difference is an afternoon.
+     *
+     * yt-dlp's sentence tells the reader to confirm they are on the latest
+     * version, and that instruction is simply wrong for this site: TikTok
+     * returns this to a request it has decided is automated, and a current
+     * yt-dlp produces it just as readily as an old one. Classified as a stale
+     * extractor it produced "Extractor out of date. Update the extractor, then
+     * retry" — so someone updates, is told they are already current, gets the
+     * same error, and concludes the program is broken. That happened.
+     *
+     * It is also auto-retryable, which EXTRACTOR_FAILED is not, so the backoff
+     * runs instead of the item dying on its first attempt.
+     */
+    await expect(extractor.resolve(url)).rejects.toMatchObject({
+      code: 'RESOLVE_FAILED',
+      detail: expect.stringMatching(/updating yt-dlp will not change it/i),
+    });
+    // Not terminal for the chain either way, so the mobile routes get their
+    // turn rather than the item failing outright.
+    expect(isTerminalForChain('RESOLVE_FAILED')).toBe(false);
   });
 });
 

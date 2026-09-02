@@ -119,10 +119,40 @@ const RULES: readonly Rule[] = [
     why: 'TikTok served a page without the video data — usually bot detection, not a stale extractor',
   },
 
+  /**
+   * The same fault, wearing yt-dlp's most misleading sentence.
+   *
+   *     Unexpected response from webpage request; please report this issue on
+   *     https://github.com/yt-dlp/yt-dlp … confirm you are on the latest version
+   *
+   * The instruction is wrong for this site, and following it costs a user an
+   * afternoon: they update, are told they are already current, get the same
+   * error, and reasonably conclude the program is broken. It has happened here
+   * more than once.
+   *
+   * TikTok returns this to a request it has decided is automated — the same
+   * bot detection as the rehydration failure above, at a slightly different
+   * point. A current yt-dlp produces it just as readily as an old one, which
+   * is exactly why "update and retry" leads nowhere.
+   *
+   * As RESOLVE_FAILED it says something true and is auto-retryable, so the
+   * mobile-API routes get their turn and the backoff runs, rather than the
+   * item dying on the first attempt under a heading that blames the extractor.
+   */
+  {
+    pattern: /unexpected response from webpage/i,
+    code: 'RESOLVE_FAILED',
+    why: 'TikTok refused the page request as automated; not a stale extractor',
+    detail:
+      'TikTok would not serve the video details to this request. It does this in bursts, to some links and not ' +
+      'others, and it is not a sign that anything is out of date — updating yt-dlp will not change it. Another ' +
+      'route is tried automatically, and the link is retried after the rest of the queue.',
+  },
+
   // --- Extractor breakage ------------------------------------------------
   {
     pattern:
-      /unable to extract|unable to solve JS challenge|unexpected response from webpage|unsupported url|no video formats found|failed to parse JSON|signature extraction failed/i,
+      /unable to extract|unable to solve JS challenge|unsupported url|no video formats found|failed to parse JSON|signature extraction failed/i,
     code: 'EXTRACTOR_FAILED',
     why: 'extractor could not parse TikTok',
   },

@@ -782,6 +782,36 @@ export class QueueEngine {
       }
     }
 
+    /**
+     * The video is already on disk from an attempt that fell over afterwards.
+     *
+     * `checkDuplicate` reads the downloads table, and that row is only written
+     * when an item completes. Everything after the file is committed —
+     * watermark removal, captions, colour, the finishing pass — runs before
+     * that point and can throw, and when one does the item fails with no row
+     * to its name. The retry then found no history, downloaded the whole video
+     * again, and `resolveOutputPath` gave the second copy the next free name.
+     * That is what "downloading on repeat" was.
+     *
+     * The ledger does know, because it is written the moment the bytes land.
+     * Consulting it here closes the gap — and the check is deliberately narrow:
+     * only when the duplicate layers found nothing, only when the ledger says
+     * this video was downloaded rather than declined or unsupported, and only
+     * when the file it named is really there. A missing file falls through to
+     * the ordinary paths, which ask rather than assume.
+     */
+    if (verdict.kind === 'none' && !decided) {
+      const settled = this.options.ledger?.find(normalized.awemeId);
+      if (settled?.status === 'downloaded' && settled.file_path && this.fileExists(settled.file_path)) {
+        this.log.info(
+          { itemId: row.id, awemeId: normalized.awemeId, filePath: settled.file_path },
+          'already downloaded; not fetching it a second time',
+        );
+        this.finish(row.id, 'skipped', { errorCode: null, errorDetail: 'Already downloaded.' });
+        return;
+      }
+    }
+
     if (verdict.kind === 'needs-decision') {
       this.park(row, normalized, verdict.existing);
       return;
@@ -839,6 +869,32 @@ export class QueueEngine {
       ...(photoPost ? { photoPost: true } : {}),
       signal,
       onProgress: (progress) => this.onProgress(row.id, progress),
+      /**
+       * The video is on disk; write that down before anything else can fail.
+       *
+       * Post-processing, captions, colour and the finishing pass all run after
+       * the file is committed, and any of them can throw. When one does, the
+       * item fails, the queue retries it, and the retry finds the committed
+       * file and picks the next free name — downloading the whole video a
+       * second time. That is what "downloading on repeat" was.
+       *
+       * The ledger is what every later "have I taken this?" reads, so an entry
+       * here means a retry meets the duplicate check and asks, instead of
+       * quietly fetching another copy. `handleSuccess` records it again with
+       * the handle and the final path; the entry is keyed on the video's id,
+       * so writing it twice is writing it once.
+       */
+      onCommitted: (filePath) => {
+        this.options.ledger?.record({
+          awemeId: normalized.awemeId,
+          // The same handle `handleSuccess` would record, so a creator run's
+          // per-account tally does not split across two spellings of it.
+          handle: resolved.metadata.authorHandle ?? normalized.authorHandle ?? null,
+          status: 'downloaded',
+          filePath,
+          now: this.options.clock.now(),
+        });
+      },
     });
 
     throwIfAborted(signal);

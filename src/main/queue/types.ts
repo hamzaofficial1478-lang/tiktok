@@ -31,6 +31,22 @@ export interface PipelineInput {
   readonly photoPost?: boolean;
   readonly signal: AbortSignal;
   readonly onProgress: (progress: PipelineProgress) => void;
+  /**
+   * The bytes are on disk under their final name.
+   *
+   * Called the instant that is true, and before anything that could still go
+   * wrong. Everything after it — watermark removal, captions, colour, the
+   * finishing pass — can fail, and when it does the item fails with it and the
+   * queue retries. The retry finds the committed file, picks the next free
+   * name, and downloads the whole video a second time under it. That is how
+   * one video becomes two files, and it is not hypothetical: it is what
+   * "downloading on repeat" turned out to be.
+   *
+   * Recording the video as taken here closes it. A retry then meets the
+   * duplicate check like any other repeat link and asks, rather than quietly
+   * fetching another copy.
+   */
+  readonly onCommitted?: (filePath: string) => void;
 }
 
 export interface PipelineProgress {

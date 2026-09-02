@@ -299,6 +299,15 @@ export class DownloadPipeline implements MediaPipeline {
       processing: true,
     });
     commitPart(outcome.partPath, targetPath);
+    /**
+     * Announced before anything that can still fail.
+     *
+     * Everything below this line is improvement to a video that already
+     * exists, and every one of those steps can throw. When one did, the item
+     * failed, the queue retried it, and the retry picked the next free
+     * filename and downloaded the whole thing again — one video, two files.
+     */
+    input.onCommitted?.(targetPath);
 
     /**
      * 7. Post-processing (phase 5).
