@@ -8,6 +8,7 @@ import { LinkLedgerRepository } from '@main/db/repositories/link-ledger';
 import { CreatorRunner, type CreatorRunProgress } from '@main/creators/creator-runner';
 import type { ProfileExpander } from '@main/resolve/profile-expander';
 import type { QueueEngine } from '@main/queue/queue-engine';
+import { reconcileLedger } from '@main/library/reconcile';
 
 /**
  * How many videos a run is allowed to take.
@@ -46,7 +47,10 @@ beforeEach(() => {
  * downloaded, which is what a finished download really does — that feedback
  * loop is the thing under test.
  */
-function makeRunner(onProgress?: (progress: CreatorRunProgress) => void): {
+function makeRunner(
+  onProgress?: (progress: CreatorRunProgress) => void,
+  reconcile?: () => void,
+): {
   runner: CreatorRunner;
   listings: number;
 } {
@@ -78,6 +82,7 @@ function makeRunner(onProgress?: (progress: CreatorRunProgress) => void): {
     queue,
     log: silent,
     ...(onProgress ? { onProgress } : {}),
+    ...(reconcile ? { reconcile } : {}),
   });
 
   return {
@@ -273,5 +278,108 @@ describe('accounts switched off', () => {
     expect(made.listings).toBe(0);
     expect(result.visited).toBe(0);
     expect(queued).toEqual([]);
+  });
+});
+
+/**
+ * The complaint, end to end.
+ *
+ * Ten accounts with a per-account count. Press Run and the videos arrive. Close
+ * the app, or clear the Library, then press Run again — and the same videos
+ * download a second time, into the folder that already holds them, before it
+ * moves on to anything new. Press it once more and it behaves correctly.
+ *
+ * That last detail is the diagnosis. The run asks one question, "which of this
+ * account's videos do I already have?", answers it from a single database row
+ * per video, and behaves impeccably on the answer it is given. Re-downloading
+ * writes those rows back, which is why the third press is fine. Nothing
+ * downstream was wrong; the input had gone.
+ */
+describe('a record that went missing between runs', () => {
+  beforeEach(() => {
+    creators.addMany([{ handle: 'alpha', profileUrl: 'https://www.tiktok.com/@alpha', videoLimit: 3 }]);
+  });
+
+  /** The output folder as it stands after a run: three files, named by the app. */
+  function folderAfterFirstRun(): () => void {
+    const taken = queued.flat().map(awemeOf);
+    return () =>
+      reconcileLedger({
+        outputDir: '/out',
+        ledger,
+        fs: {
+          readdir: (dir) =>
+            dir === '/out'
+              ? [{ name: 'alpha', isDirectory: true, isFile: false }]
+              : taken.map((id, i) => ({
+                  name: `00${i + 1} - alpha - ${id}.mp4`,
+                  isDirectory: false,
+                  isFile: true,
+                })),
+          mtimeMs: () => 1_700_000_000_000,
+        },
+      });
+  }
+
+  it('is what made the same videos download twice', async () => {
+    await makeRunner().runner.run();
+    const first = queued.flat();
+    expect(first).toHaveLength(3);
+
+    // Exactly what clearing the Library used to do, and what a lost or restored
+    // database looks like from here.
+    ledger.clear();
+    queued = [];
+
+    await makeRunner().runner.run();
+
+    // The bug, reproduced: the same three links, a second time.
+    expect(queued.flat()).toEqual(first);
+  });
+
+  it('is repaired from the videos themselves before the run decides anything', async () => {
+    await makeRunner().runner.run();
+    const first = queued.flat();
+    const reconcile = folderAfterFirstRun();
+
+    ledger.clear();
+    queued = [];
+
+    const result = await makeRunner(undefined, reconcile).runner.run();
+
+    // Nothing queued, and the account correctly reported as finished — read off
+    // the three files sitting in the folder rather than off a row that is gone.
+    expect(queued.flat()).toEqual([]);
+    expect(result.queued).toBe(0);
+    expect(result.caughtUp).toBe(1);
+    expect(ledger.countForHandle('alpha', 'downloaded')).toBe(3);
+    expect(first).toHaveLength(3);
+  });
+
+  it('still takes what is genuinely outstanding after repairing itself', async () => {
+    // An account set to five that has three on disk owes two, and must not be
+    // reported as finished just because the folder is not empty.
+    const alpha = creators.list()[0];
+    await makeRunner().runner.run();
+    const reconcile = folderAfterFirstRun();
+
+    ledger.clear();
+    queued = [];
+    creators.update(alpha?.id ?? 0, { videoLimit: 5 });
+
+    const result = await makeRunner(undefined, reconcile).runner.run();
+
+    expect(result.queued).toBe(2);
+    expect(queued.flat()).toHaveLength(2);
+  });
+
+  it('runs anyway when the output folder cannot be read', async () => {
+    const result = await makeRunner(undefined, () => {
+      throw new Error('EACCES: permission denied');
+    }).runner.run();
+
+    // A folder the app cannot read leaves the record exactly as it was, which
+    // is where the run would have started from regardless.
+    expect(result.queued).toBe(3);
   });
 });

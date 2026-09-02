@@ -10,6 +10,7 @@ import { DownloadsRepository } from './db/repositories/downloads';
 import { QueueItemsRepository } from './db/repositories/queue-items';
 import { CreatorsRepository } from './db/repositories/creators';
 import { LinkLedgerRepository } from './db/repositories/link-ledger';
+import { reconcileLedger } from './library/reconcile';
 import { AppMetaRepository, EXTRACTOR_CHECKED_AT_KEY, QUEUE_RUNNING_KEY } from './db/repositories/app-meta';
 import { SidecarResolver } from './media/sidecars';
 import { ExtractorUpdater, shouldCheckExtractor } from './media/extractor-updater';
@@ -534,14 +535,53 @@ export async function createServices(options: CreateServicesOptions): Promise<Ap
    * hook so the Electron shell can forward run progress to the window without
    * this module knowing a window exists.
    */
+  /**
+   * The record of what has been downloaded, checked against the videos.
+   *
+   * Read fresh from config each time so it follows the output folder rather
+   * than a path captured at start-up.
+   */
+  const reconcile = (): void => {
+    reconcileLedger({
+      outputDir: config.get().outputDir,
+      ledger: linkLedger,
+      log: logging.log.child({ scope: 'library' }),
+    });
+  };
+
   const creatorRunner = new CreatorRunner({
     creators,
     ledger: linkLedger,
     profiles,
     queue,
+    reconcile,
     onProgress: (progress) => services.onCreatorProgress?.(progress),
     log: logging.log.child({ scope: 'creators' }),
   });
+
+  /**
+   * And once at start-up, off the critical path.
+   *
+   * A run does its own check, so this is not what makes the counts right — it
+   * is what makes the Creators screen tell the truth *before* anybody presses
+   * anything. A user who opens the app to "50 videos to download" over an
+   * account they finished last night has no reason to believe the number that
+   * appears after they press it either.
+   *
+   * Deferred so a large folder cannot delay the window opening, and its failure
+   * is logged rather than thrown: an unreadable output folder is a problem for
+   * the download that hits it, not a reason to refuse to start.
+   */
+  setTimeout(() => {
+    try {
+      reconcile();
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'could not check the output folder against the download record at start-up',
+      );
+    }
+  }, 0).unref?.();
 
   const services: AppServices = {
     paths,

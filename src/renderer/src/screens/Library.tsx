@@ -25,7 +25,15 @@ export function Library(): React.JSX.Element {
       setConfirmClear(false);
       pushToast({
         kind: 'success',
-        message: `${removed} record${removed === 1 ? '' : 's'} cleared · your video files were not touched`,
+        /**
+         * The second half is the part worth saying.
+         *
+         * Clearing the list used to erase the app's memory of every video it
+         * had taken, so the next creator run started again from the top of
+         * every account. It no longer does, and someone who has been bitten by
+         * that needs telling.
+         */
+        message: `${removed} record${removed === 1 ? '' : 's'} cleared · your videos are untouched and will not be downloaded again`,
       });
     } catch (err) {
       pushToast({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
@@ -83,7 +91,7 @@ export function Library(): React.JSX.Element {
     <div className="flex h-full flex-col gap-4">
       <PageHeader
         title="Library"
-        description="Every download this app has recorded. Clearing the list forgets the records; it never deletes a video."
+        description="Every download this app has recorded. Clearing the list empties this page only — the videos stay where they are, and the app still knows it has them."
       />
 
       <Panel className="shrink-0" bodyClassName="px-5 py-4">

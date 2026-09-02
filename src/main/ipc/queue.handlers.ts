@@ -251,26 +251,31 @@ export function registerLibraryHandlers(registry: IpcRegistry, services: AppServ
   }));
 
   /**
-   * Forgetting one download, and meaning it.
+   * Removing a row from the list, and only that.
    *
-   * The ledger is what stops a video being taken twice, so removing the
-   * history row without removing the ledger entry would leave the link
-   * permanently unclaimable — the record gone from the Library, and every
-   * future attempt still skipped as already taken. Deleting a record is a
-   * deliberate act, so it clears both.
+   * This used to forget the video as well, on the reasoning that a record
+   * deleted without its ledger entry leaves a link that can never be taken
+   * again. That reasoning had the consequences the wrong way round. The button
+   * is on a list, next to a heading that promises "clearing the list forgets the
+   * records; it never deletes a video", and what it silently did was erase the
+   * app's memory of having downloaded the thing — so the next creator run
+   * downloaded it a second time, into the same folder, beside the copy that was
+   * already there.
+   *
+   * Tidying a list is not a request to fetch fifty videos again. The one
+   * deletion the app can be certain of is `library:deleteFile`, which removes
+   * the video and does forget it — correctly, because it is gone.
    */
   registry.handle('library:deleteRecord', ({ downloadId }) => {
-    const row = services.repos.downloads.findWithVideoById(downloadId);
     services.repos.downloads.deleteRecord(downloadId);
-    if (row) services.repos.linkLedger.forget(row.aweme_id);
     return { ok: true as const };
   });
 
   registry.handle('library:clearRecords', () => {
+    // Same correction at scale, and this is the one that cost an afternoon:
+    // clearing the list wiped every "already taken" the app had, so the next
+    // run started again from the top of all ten accounts.
     const removed = services.repos.downloads.deleteAllRecords();
-    // Same reasoning at scale: "clear the history" that left the ledger intact
-    // would produce an app that remembers nothing and downloads nothing.
-    services.repos.linkLedger.clear();
     return { removed };
   });
 

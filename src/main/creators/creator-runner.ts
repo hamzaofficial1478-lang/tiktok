@@ -56,6 +56,21 @@ export interface CreatorRunnerOptions {
   readonly ledger: LinkLedgerRepository;
   readonly profiles: ProfileExpander;
   readonly queue: QueueEngine;
+  /**
+   * Brings the ledger back in step with the output folder before deciding
+   * anything.
+   *
+   * The run's entire behaviour hangs on one question — which of this account's
+   * videos do I already have? — and that question used to be answered from a
+   * single database row per video. When those rows went missing, by any of the
+   * several routes they could, the run concluded the account was untouched and
+   * fetched the same videos over again, in front of a folder that already
+   * contained them.
+   *
+   * Reading the folder first makes the answer come from the videos rather than
+   * from a record of them. See library/reconcile.ts.
+   */
+  readonly reconcile?: () => void;
   readonly onProgress?: (progress: CreatorRunProgress) => void;
   readonly log?: Logger;
 }
@@ -133,6 +148,26 @@ export class CreatorRunner {
     if (this.running) return { queued: 0, creators: 0, caughtUp: 0, visited: 0 };
     this.running = true;
     this.cancelled = false;
+
+    /**
+     * Check what is actually on disk before deciding what is owed.
+     *
+     * Here rather than only at startup, because the record can be lost while
+     * the app is open — clearing the Library was the obvious way — and pressing
+     * Run is exactly the moment a wrong answer turns into fifty duplicate
+     * downloads. It costs one directory read and writes nothing when there is
+     * nothing to recover, which is every run after the first.
+     */
+    try {
+      this.options.reconcile?.();
+    } catch (err) {
+      // Never a reason not to run. A folder that cannot be read leaves the
+      // ledger exactly as it was, which is where the run started from anyway.
+      this.options.log?.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'could not check the output folder before the run; using the record as it stands',
+      );
+    }
 
     const list = this.options.creators.list().filter((row) => row.enabled === 1);
     let totalQueued = 0;

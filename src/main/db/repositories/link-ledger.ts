@@ -43,6 +43,21 @@ export interface LedgerRow {
   readonly settled_at: number;
 }
 
+/**
+ * One spelling of a handle, on both sides of every comparison.
+ *
+ * The saved creator list stores handles lowercased — `parseProfile` normalises
+ * them — and the ledger recorded whatever the extractor reported, which is
+ * TikTok's own field in whatever case the account uses. The two are compared
+ * directly to answer "how many of this account's videos do I have?", and a
+ * mismatch answers zero for an account with fifty on disk. TikTok handles are
+ * case-insensitive, so folding them here loses nothing.
+ */
+function foldHandle(handle: string | null | undefined): string | null {
+  const trimmed = handle?.trim() ?? '';
+  return trimmed === '' ? null : trimmed.toLowerCase();
+}
+
 export class LinkLedgerRepository {
   /** Loaded once; kept in step by every write that goes through this class. */
   private settled: Set<string> | null = null;
@@ -100,7 +115,7 @@ export class LinkLedgerRepository {
       )
       .run({
         awemeId: input.awemeId,
-        handle: input.handle ?? null,
+        handle: foldHandle(input.handle),
         status: input.status,
         filePath: input.filePath ?? null,
         settledAt: input.now ?? Date.now(),
@@ -118,15 +133,18 @@ export class LinkLedgerRepository {
    * deliver four videos when they asked for five.
    */
   countForHandle(handle: string, status?: LedgerStatus): number {
+    const folded = foldHandle(handle);
+    if (folded === null) return 0;
+
     const row = status
       ? this.db
           .prepare<[string, string], { n: number }>(
             'SELECT COUNT(*) AS n FROM link_ledger WHERE handle = ? AND status = ?',
           )
-          .get(handle, status)
+          .get(folded, status)
       : this.db
           .prepare<[string], { n: number }>('SELECT COUNT(*) AS n FROM link_ledger WHERE handle = ?')
-          .get(handle);
+          .get(folded);
     return row?.n ?? 0;
   }
 
