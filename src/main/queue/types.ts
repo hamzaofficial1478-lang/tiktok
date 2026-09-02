@@ -1,4 +1,5 @@
 import type { PhotoAction, DuplicateAction, QueueStatus, SourceStrategy } from '@shared/types';
+import { isPipelineStage, type PipelineStage, type StageState } from '@shared/stages';
 import type { ErrorCode } from '@shared/errors';
 import type { NormalizedUrl, ResolvedVideo } from '../resolve/types';
 import type { QueueItemRow } from '../db/repositories/queue-items';
@@ -47,6 +48,54 @@ export interface PipelineInput {
    * fetching another copy.
    */
   readonly onCommitted?: (filePath: string) => void;
+  /**
+   * Which step is running, so the queue row can say more than "processing".
+   *
+   * Every step reports `started` and then exactly one of `done` or `skipped`.
+   * The engine keeps the last `started` it saw, which is what it names when the
+   * attempt throws — so a failure says *where* it failed rather than only what
+   * the error was.
+   */
+  readonly onStage?: (stage: PipelineStage, state: StageState) => void;
+  /**
+   * Work that survives a failure, handed over the moment it is true.
+   *
+   * Called after every step whose result must not be produced twice, carrying
+   * the accumulated state. The engine persists it, and hands it back as
+   * `resume` on the next attempt.
+   */
+  readonly onResumable?: (state: ResumeState) => void;
+  /**
+   * What a previous attempt already finished, when there was one.
+   *
+   * Present only when the bytes are on disk. The pipeline then skips the
+   * transfer and every step listed in `done`, and starts at the one that
+   * failed — instead of fetching a video it already has.
+   */
+  readonly resume?: ResumeState;
+}
+
+/**
+ * The note that turns a retry into a resumption.
+ *
+ * Persisted as JSON on the queue row between a committed download and the item
+ * finishing, and deliberately small: a path, the steps already done, and the
+ * conclusions those steps reached that the row would otherwise have to
+ * recompute by redoing them.
+ */
+export interface ResumeState {
+  /** The committed file. Nothing resumes without this actually existing. */
+  readonly filePath: string;
+  /** Steps finished, drawn from `ONCE_ONLY_STAGES`. */
+  readonly done: readonly PipelineStage[];
+  /** What the watermark pass concluded, so a resumed run keeps the right badge. */
+  readonly sourceStrategy?: SourceStrategy;
+  readonly watermarkRemoved?: boolean;
+  readonly outroTrimmedMs?: number | null;
+  /** Why captions were not applied, when they were wanted and did not happen. */
+  readonly captionNote?: string | null;
+  /** Size of the committed file, so progress can be reported without a stat. */
+  readonly bytes?: number;
 }
 
 export interface PipelineProgress {
@@ -112,6 +161,25 @@ export interface QueueItemSnapshot {
    * that is visibly working.
    */
   readonly nextAttemptAt: number | null;
+  /**
+   * The step running right now — "Removing the watermark", not "processing".
+   *
+   * The status column has four words for a job with seven steps, so a video
+   * that had finished downloading and was being re-encoded looked exactly like
+   * one that was stuck. This is the part that says which it is.
+   */
+  readonly stage: PipelineStage | null;
+  /** The step the last attempt failed at, so the row can name it. */
+  readonly failedStage: PipelineStage | null;
+  /**
+   * Steps already finished and banked, from a previous attempt.
+   *
+   * Non-empty means the video is on disk and a retry will pick up where it
+   * left off rather than downloading it again — which is worth showing,
+   * because "trying again" and "trying again from scratch" are very different
+   * promises to someone watching a queue.
+   */
+  readonly stagesDone: readonly PipelineStage[];
 }
 
 export function toSnapshot(row: QueueItemRow, nextAttemptAt: number | null = null): QueueItemSnapshot {
@@ -136,7 +204,43 @@ export function toSnapshot(row: QueueItemRow, nextAttemptAt: number | null = nul
     sourceStrategy: row.source_strategy,
     watermarkRemoved: row.watermark_removed === null ? null : row.watermark_removed === 1,
     nextAttemptAt,
+    stage: isPipelineStage(row.stage) ? row.stage : null,
+    failedStage: isPipelineStage(row.failed_stage) ? row.failed_stage : null,
+    stagesDone: readResumeState(row.resume_state)?.done ?? [],
   };
+}
+
+/**
+ * Parses the resume note, treating anything malformed as absent.
+ *
+ * It is a text column holding JSON written by an older build, so it is parsed
+ * defensively rather than trusted: a note that cannot be read means the item
+ * starts over, which is the behaviour before this existed and is never worse
+ * than acting on a shape that is not there.
+ */
+export function readResumeState(json: string | null): ResumeState | null {
+  if (!json) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const record = parsed as Record<string, unknown>;
+    if (typeof record.filePath !== 'string' || record.filePath === '') return null;
+
+    const done = Array.isArray(record.done) ? record.done.filter(isPipelineStage) : [];
+    return {
+      filePath: record.filePath,
+      done,
+      ...(typeof record.sourceStrategy === 'string'
+        ? { sourceStrategy: record.sourceStrategy as SourceStrategy }
+        : {}),
+      ...(typeof record.watermarkRemoved === 'boolean' ? { watermarkRemoved: record.watermarkRemoved } : {}),
+      ...(typeof record.outroTrimmedMs === 'number' ? { outroTrimmedMs: record.outroTrimmedMs } : {}),
+      ...(typeof record.captionNote === 'string' ? { captionNote: record.captionNote } : {}),
+      ...(typeof record.bytes === 'number' ? { bytes: record.bytes } : {}),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** A layer-3 question waiting for the user. Several may be outstanding at once. */

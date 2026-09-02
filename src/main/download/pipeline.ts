@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import type { Logger } from 'pino';
 import { AppError, toAppError } from '@shared/errors';
 import type { AppConfig } from '@shared/config-schema';
@@ -25,6 +25,7 @@ import { writeSeoSidecar } from '../metadata/sidecar';
 import { selectEncoder } from '../postprocess/encoder';
 import { applyQuality, sharpenFilter } from '../postprocess/enhance';
 import { measureColour, planColourCorrection } from '../postprocess/colour';
+import { StageTracker } from './stage-tracker';
 
 /**
  * The download pipeline — spec section 9 steps 4-11.
@@ -130,6 +131,24 @@ export class DownloadPipeline implements MediaPipeline {
     // stream to select, nothing to probe and no watermark to remove.
     if (input.photoPost) return this.processPhotoPost(input, config, log);
 
+    /**
+     * 0. Is the video already here from an attempt that fell over afterwards?
+     *
+     * Decided before anything else, because the answer changes what the rest of
+     * this method does: a usable file means no transfer, no new filename, and
+     * no repeat of the steps that already ran on it. An unusable one — or none
+     * at all — means the note is thrown away wholesale rather than half-trusted,
+     * so a fresh download does every step again instead of skipping the ones a
+     * dead file's note claimed.
+     */
+    const resumed = await this.reopen(input, config, log);
+
+    const stages = new StageTracker({
+      resume: resumed ? input.resume : undefined,
+      onStage: input.onStage,
+      onResumable: input.onResumable,
+    });
+
     // 1. Pick the stream. Clean beats watermarked before resolution is even
     //    considered (section 9 step 4).
     const selection = selectStream(input.resolved.streams, {
@@ -157,50 +176,39 @@ export class DownloadPipeline implements MediaPipeline {
     const directory = resolveOutputDirectory(root, subdirFor(input, config));
 
     // 2. Fail fast rather than part-way through (section 9 step 5).
-    if (selection.stream.filesize) assertEnoughSpace(directory, selection.stream.filesize);
+    if (!resumed && selection.stream.filesize) assertEnoughSpace(directory, selection.stream.filesize);
 
-    // 3. Work out the final name now, so the `.part` sits beside its
-    //    destination and the atomic rename is a same-filesystem move.
-    const extension = pickExtension(selection.stream.ext, config.audioOnly);
-    const basename = renderTemplate(config.filenameTemplate, {
-      metadata: input.resolved.metadata,
-      awemeId: input.normalized.awemeId,
-      index: input.item.position,
-      batchIndex: input.item.batch_index,
-      extension,
-    });
-    const targetPath = resolveOutputPath({
-      directory,
-      basename,
-      extension,
-      // 'replace' is dedup layer 3's Replace existing; everything else must
-      // not clobber a file that is already there.
-      onCollision: input.duplicateAction === 'replace' ? 'replace' : 'suffix',
-    });
-
-    // 4. Download to `.part`.
     /**
-     * yt-dlp performs the transfer, not our own HTTP client.
+     * 3. Work out the final name now, so the `.part` sits beside its
+     *    destination and the atomic rename is a same-filesystem move.
      *
-     * TikTok's CDN authenticates against the cookiejar yt-dlp builds while
-     * solving the challenge during extraction — `_set_cookie(hostname,
-     * 'sid_tt', …)` in its TikTok extractor — and that session is never
-     * serialised into the JSON we parse. Fetching the stream URL ourselves,
-     * even replaying every header the payload reports, is refused with 403.
-     * Handing the transfer to the process that holds the session is the only
-     * way short of reimplementing TikTok's challenge flow.
-     *
-     * The branch below is unreachable as the app ships today: yt-dlp is what
-     * resolves the video, so an absent yt-dlp fails at extraction and never
-     * arrives here. It is kept because section 2's extractor seam exists for a
-     * second implementation, and that one may well hand back a URL needing no
-     * session — but nothing currently exercises it outside its own tests.
-     *
-     * Worth stating because it has already misled a diagnosis: an error
-     * carrying downloadToPart's wording ("the CDN refused the download with
-     * 403") cannot have come from a run where yt-dlp was installed, and is
-     * therefore evidence about which build produced a log, not about TikTok.
+     * A resumed attempt keeps the name the file already has. Asking
+     * `resolveOutputPath` again would find that very file, decide it was
+     * somebody else's, and pick the next free name — which is the second half
+     * of how one video ended up on disk twice.
      */
+    const targetPath =
+      resumed?.targetPath ??
+      (() => {
+        const extension = pickExtension(selection.stream.ext, config.audioOnly);
+        const basename = renderTemplate(config.filenameTemplate, {
+          metadata: input.resolved.metadata,
+          awemeId: input.normalized.awemeId,
+          index: input.item.position,
+          batchIndex: input.item.batch_index,
+          extension,
+        });
+        return resolveOutputPath({
+          directory,
+          basename,
+          extension,
+          // 'replace' is dedup layer 3's Replace existing; everything else must
+          // not clobber a file that is already there.
+          onCollision: input.duplicateAction === 'replace' ? 'replace' : 'suffix',
+        });
+      })();
+
+    // 4. Download to `.part` — see `transfer` below.
     const progressSink = (progress: {
       bytesDone: number;
       bytesTotal: number | null;
@@ -214,100 +222,97 @@ export class DownloadPipeline implements MediaPipeline {
         etaMs: progress.etaMs,
       });
 
-    const ytDlpPath = this.options.ytDlpPath?.() ?? null;
-    const outcome = ytDlpPath
-      ? await downloadWithYtDlp({
-          binaryPath: ytDlpPath,
-          runner: this.options.runner,
-          url: input.normalized.canonicalUrl,
-          formatId: selection.formatId,
-          routes: downloadRoutes(input.resolved.extractorArgs, this.options.downloadStrategies?.() ?? []),
-          targetPath,
+    /**
+     * The transfer, and the check that gates the final filename.
+     *
+     * Both are skipped outright when a previous attempt already got this far:
+     * they are the expensive half of the job, they are the half that talks to
+     * TikTok, and repeating them for a file that is already on disk is the
+     * literal definition of downloading the same video twice.
+     */
+    let verified: Awaited<ReturnType<typeof verifyDownload>>;
+    let bytes: number;
+
+    if (resumed) {
+      stages.skip('download');
+      stages.skip('verify');
+      verified = resumed.verified;
+      bytes = resumed.verified.sizeBytes;
+      stages.committed(targetPath, bytes);
+      // So the row does not drop back to 0% on a retry of a video that is
+      // sitting there complete.
+      input.onProgress({ bytesDone: bytes, bytesTotal: bytes, speed: null, etaMs: 0, processing: true });
+      log.info({ targetPath, alreadyDone: input.resume?.done ?? [] }, 'picking up where the last attempt stopped');
+    } else {
+      stages.start('download');
+      const outcome = await this.transfer(input, config, selection, targetPath, progressSink, log);
+      if (outcome.resumedFrom > 0) log.info({ resumedFrom: outcome.resumedFrom }, 'resumed an interrupted download');
+      stages.done('download');
+
+      // 5. Verify while it is still a `.part` (section 9 step 7).
+      stages.start('verify');
+      try {
+        verified = await verifyDownload({
+          filePath: outcome.partPath,
+          expectedDurationMs: input.resolved.metadata.durationMs,
+          audioOnly: config.audioOnly,
+          ffprobe: this.options.ffprobe,
           signal: input.signal,
-          onProgress: progressSink,
-          proxyUrl: this.options.proxyUrl?.(),
-          impersonate: (await this.options.impersonate?.()) ?? null,
-          // Caption tracks ride along with the transfer rather than costing a
-          // second extraction; see captions/tiktok-tracks.ts.
-          ...(config.captions.mode === 'off'
-            ? {}
-            : { subtitleLangs: subtitleLanguages(config.captions.targetLanguage) }),
-          log,
-        })
-      : await downloadToPart({
-          url: selection.stream.url,
-          targetPath,
-          signal: input.signal,
-          expectedBytes: selection.stream.filesize,
-          skipSpaceCheck: true,
-          headers: selection.stream.headers,
-          ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
-          onProgress: progressSink,
         });
-    if (outcome.resumedFrom > 0) log.info({ resumedFrom: outcome.resumedFrom }, 'resumed an interrupted download');
+      } catch (err) {
+        // A file that failed verification is worse than no file: discard it so a
+        // retry starts clean instead of resuming corrupt bytes.
+        discardPart(targetPath);
+        stages.failed('verify');
+        throw toAppError(err, 'VERIFY_FAILED');
+      }
 
-    // 5. Verify while it is still a `.part` (section 9 step 7).
-    let verified;
-    try {
-      verified = await verifyDownload({
-        filePath: outcome.partPath,
-        expectedDurationMs: input.resolved.metadata.durationMs,
-        audioOnly: config.audioOnly,
-        ffprobe: this.options.ffprobe,
-        signal: input.signal,
-      });
-    } catch (err) {
-      // A file that failed verification is worse than no file: discard it so a
-      // retry starts clean instead of resuming corrupt bytes.
-      discardPart(targetPath);
-      throw toAppError(err, 'VERIFY_FAILED');
+      if (verified.degraded) {
+        log.warn('ffprobe is unavailable; the file was saved with only a size check');
+      }
+
+      /**
+       * The file arrived silent when it was supposed to have sound.
+       *
+       * This is the check that would have caught the silent downloads on the day
+       * they started rather than several batches later: the selector believed the
+       * chosen stream carried audio, and ffprobe — looking at the actual bytes —
+       * disagrees. Not fatal, because the video is watchable and re-downloading
+       * would not fix a stream TikTok served without sound, but it belongs in the
+       * log where a pattern of it is visible.
+       */
+      if (!config.audioOnly && verified.hasAudio === false) {
+        log.warn(
+          {
+            stream: selection.stream.id,
+            codec: selection.stream.codec,
+            expectedAudio: selection.stream.hasAudio || selection.audioStream !== undefined,
+          },
+          selection.stream.hasAudio || selection.audioStream
+            ? 'the finished file has no audio track, although the chosen stream was expected to carry one'
+            : 'the finished file has no audio track, as expected for this post',
+        );
+      }
+
+      // 6. Only now does the final filename come into existence.
+      bytes = outcome.bytes;
+      input.onProgress({ bytesDone: bytes, bytesTotal: bytes, speed: null, etaMs: 0, processing: true });
+      commitPart(outcome.partPath, targetPath);
+
+      /**
+       * Announced before anything that can still fail.
+       *
+       * Everything below this line is improvement to a video that already
+       * exists, and every one of those steps can throw. When one did, the item
+       * failed, the queue retried it, and the retry picked the next free
+       * filename and downloaded the whole thing again — one video, two files.
+       */
+      stages.committed(targetPath, bytes);
+      input.onCommitted?.(targetPath);
+      // Banked last, so the note the next attempt reads is only written once
+      // the file it names is genuinely at that path.
+      stages.done('verify');
     }
-
-    if (verified.degraded) {
-      log.warn('ffprobe is unavailable; the file was saved with only a size check');
-    }
-
-    /**
-     * The file arrived silent when it was supposed to have sound.
-     *
-     * This is the check that would have caught the silent downloads on the day
-     * they started rather than several batches later: the selector believed the
-     * chosen stream carried audio, and ffprobe — looking at the actual bytes —
-     * disagrees. Not fatal, because the video is watchable and re-downloading
-     * would not fix a stream TikTok served without sound, but it belongs in the
-     * log where a pattern of it is visible.
-     */
-    if (!config.audioOnly && verified.hasAudio === false) {
-      log.warn(
-        {
-          stream: selection.stream.id,
-          codec: selection.stream.codec,
-          expectedAudio: selection.stream.hasAudio || selection.audioStream !== undefined,
-        },
-        selection.stream.hasAudio || selection.audioStream
-          ? 'the finished file has no audio track, although the chosen stream was expected to carry one'
-          : 'the finished file has no audio track, as expected for this post',
-      );
-    }
-
-    // 6. Only now does the final filename come into existence.
-    input.onProgress({
-      bytesDone: outcome.bytes,
-      bytesTotal: outcome.bytes,
-      speed: null,
-      etaMs: 0,
-      processing: true,
-    });
-    commitPart(outcome.partPath, targetPath);
-    /**
-     * Announced before anything that can still fail.
-     *
-     * Everything below this line is improvement to a video that already
-     * exists, and every one of those steps can throw. When one did, the item
-     * failed, the queue retried it, and the retry picked the next free
-     * filename and downloaded the whole thing again — one video, two files.
-     */
-    input.onCommitted?.(targetPath);
 
     /**
      * 7. Post-processing (phase 5).
@@ -320,9 +325,9 @@ export class DownloadPipeline implements MediaPipeline {
      * file is watchable; losing it because a filter chain misbehaved would be
      * a worse outcome than keeping it with its watermark.
      */
-    let strategy = selection.strategy;
-    let watermarkRemoved = selection.strategy === 'clean_source';
-    let outroTrimmedMs: number | null = null;
+    let strategy = stages.carried.sourceStrategy ?? selection.strategy;
+    let watermarkRemoved = stages.carried.watermarkRemoved ?? selection.strategy === 'clean_source';
+    let outroTrimmedMs: number | null = stages.carried.outroTrimmedMs ?? null;
     /**
      * Sharpening, and which pass gets to carry it.
      *
@@ -341,11 +346,18 @@ export class DownloadPipeline implements MediaPipeline {
      * ruin the half of TikTok that is already heavily graded, so the video is
      * sampled and only what is actually missing is restored — and a video that
      * needs nothing returns no filter, which means no re-encode either.
+     *
+     * Measured again on a resumed attempt rather than remembered, because it is
+     * an input to the two passes below and one of them is why the attempt is
+     * happening. It is skipped only when both of those passes are already done,
+     * since then there is nothing left for the answer to feed.
      */
     let colour: string | null = null;
-    if (config.colourCorrection !== 'off' && !config.audioOnly) {
+    const needsColour = !stages.isDone('watermark') || !stages.isDone('finish');
+    if (config.colourCorrection !== 'off' && !config.audioOnly && needsColour) {
       const ffmpegPath = this.options.ffmpegPath();
       if (ffmpegPath) {
+        stages.start('colour');
         const stats = await measureColour(targetPath, {
           ffmpegPath,
           runner: this.options.runner,
@@ -355,13 +367,20 @@ export class DownloadPipeline implements MediaPipeline {
         const plan = planColourCorrection(stats, config.colourCorrection === 'strong' ? 1.6 : 1);
         colour = plan.filter;
         log.info({ stats, correction: plan.filter }, `colour: ${plan.reason}`);
+        // `measureColour` answers null rather than throwing when it cannot read
+        // the video, and a video it could not read is one it cannot correct.
+        if (stats === null) stages.failed('colour');
+        else stages.done('colour');
       }
     }
 
     /** One chain, so one encode does every job that wants doing. */
     const enhanceFilter = [colour, sharpen].filter(Boolean).join(',') || null;
 
-    if (this.options.postProcessor) {
+    if (stages.isDone('watermark')) {
+      stages.skip('watermark');
+    } else if (this.options.postProcessor) {
+      stages.start('watermark');
       try {
         const processed = await this.options.postProcessor.process({
           filePath: targetPath,
@@ -379,8 +398,8 @@ export class DownloadPipeline implements MediaPipeline {
           ...(this.options.confirmOutro ? { confirmOutro: this.options.confirmOutro } : {}),
           onEstimate: (estimatedMs) =>
             input.onProgress({
-              bytesDone: outcome.bytes,
-              bytesTotal: outcome.bytes,
+              bytesDone: bytes,
+              bytesTotal: bytes,
               speed: null,
               etaMs: estimatedMs,
               processing: true,
@@ -392,14 +411,17 @@ export class DownloadPipeline implements MediaPipeline {
         outroTrimmedMs = processed.outroTrimmedMs;
         watermarkReEncoded = processed.reEncoded;
         for (const note of processed.notes) log.info({ note }, 'post-processing');
+        stages.done('watermark', { sourceStrategy: strategy, watermarkRemoved, outroTrimmedMs });
       } catch (err) {
         log.warn(
           { err: err instanceof Error ? err.message : String(err) },
           'post-processing failed; keeping the unprocessed file',
         );
+        // Not banked: it did not happen, so a later attempt should try it
+        // rather than skip it.
+        stages.failed('watermark');
       }
     }
-
 
     /**
      * 8. Captions, and the title and description written from them.
@@ -412,7 +434,7 @@ export class DownloadPipeline implements MediaPipeline {
      * downloaded and watchable, and losing it because a filter chain misbehaved
      * would be the worse outcome by far.
      */
-    let captionNote: string | null = null;
+    let captionNote: string | null = stages.carried.captionNote ?? null;
     let transcriptCues: readonly { startMs: number; endMs: number; lines: readonly string[] }[] = [];
 
     /**
@@ -427,7 +449,11 @@ export class DownloadPipeline implements MediaPipeline {
         ? { ...config.captions, mode: input.item.caption_mode as CaptionMode }
         : config.captions;
 
-    if (captionSettings.mode !== 'off' || config.seoMetadata) {
+    if (stages.isDone('captions')) {
+      stages.skip('captions');
+    } else if (captionSettings.mode !== 'off' || config.seoMetadata) {
+      stages.start('captions');
+      let burned = true;
       try {
         const captions = await applyCaptions({
           filePath: targetPath,
@@ -467,6 +493,7 @@ export class DownloadPipeline implements MediaPipeline {
           log.info({ reason: captions.skipped }, 'no captions were added');
         }
       } catch (err) {
+        burned = false;
         captionNote = err instanceof Error ? err.message : String(err);
         log.warn({ err: captionNote }, 'captioning failed; the video was kept without captions');
       }
@@ -483,8 +510,10 @@ export class DownloadPipeline implements MediaPipeline {
           log.warn({ err: err instanceof Error ? err.message : String(err) }, 'could not write the title sidecar');
         }
       }
-    }
 
+      if (burned) stages.done('captions', { captionNote });
+      else stages.failed('captions');
+    }
 
     /**
      * 9. Make the container acceptable to something other than a local player.
@@ -499,7 +528,10 @@ export class DownloadPipeline implements MediaPipeline {
      * for the common case where nothing needed processing and the file is
      * exactly as TikTok served it.
      */
-    if (!config.audioOnly) {
+    if (stages.isDone('finish')) {
+      stages.skip('finish');
+    } else if (!config.audioOnly) {
+      stages.start('finish');
       try {
         const compat = await makeUploadable({
           filePath: targetPath,
@@ -544,11 +576,13 @@ export class DownloadPipeline implements MediaPipeline {
           log,
         });
         if (compat.rewritten) log.info({ reason: compat.reason }, 'container rewritten for compatibility');
+        stages.done('finish');
       } catch (err) {
         log.warn(
           { err: err instanceof Error ? err.message : String(err) },
           'the compatibility pass failed; the download is kept as it is',
         );
+        stages.failed('finish');
       }
     }
 
@@ -573,6 +607,7 @@ export class DownloadPipeline implements MediaPipeline {
      * anything that can fail after `commitPart` has to degrade to a null column
      * instead. Both hashes are optional metadata; neither is worth a duplicate.
      */
+    stages.start('record');
     // SHA-256 is a streaming read of bytes already on disk, so it is cheap.
     // The perceptual hash is not: it decodes the video again with ffmpeg, so
     // it only runs when repost detection is explicitly turned on.
@@ -621,6 +656,134 @@ export class DownloadPipeline implements MediaPipeline {
   }
 
   /**
+   * Reopens the file a previous attempt left, or decides there is not one.
+   *
+   * The note on the queue row says where the bytes are; this checks that the
+   * claim is still true. A file that has been moved or deleted, or that no
+   * longer reads as a video, means the note is worthless — and a worthless note
+   * must be discarded whole, because half-believing it would skip the watermark
+   * and caption passes on a video that is about to be downloaded fresh.
+   */
+  private async reopen(
+    input: PipelineInput,
+    config: AppConfig,
+    log: Logger,
+  ): Promise<{ targetPath: string; verified: Awaited<ReturnType<typeof verifyDownload>> } | null> {
+    const resume = input.resume;
+    if (!resume) return null;
+
+    if (!existsSync(resume.filePath)) {
+      log.warn({ filePath: resume.filePath }, 'the file the last attempt left is gone; downloading it again');
+      return null;
+    }
+
+    try {
+      /**
+       * Duration is deliberately not re-checked.
+       *
+       * The check exists to catch a truncated transfer, and this file already
+       * passed it once. Since then the outro trim may legitimately have made it
+       * shorter than TikTok reported, so re-applying the original tolerance
+       * would reject a correctly processed video as corrupt.
+       */
+      const verified = await verifyDownload({
+        filePath: resume.filePath,
+        expectedDurationMs: null,
+        audioOnly: config.audioOnly,
+        ffprobe: this.options.ffprobe,
+        signal: input.signal,
+      });
+      return { targetPath: resume.filePath, verified };
+    } catch (err) {
+      // An abort is not a verdict on the file — it is the queue stopping — so
+      // it must not be answered by deleting the file and starting over.
+      if (input.signal.aborted) throw err;
+
+      log.warn(
+        { filePath: resume.filePath, err: err instanceof Error ? err.message : String(err) },
+        'the file the last attempt left will not read; discarding it and downloading again',
+      );
+      // Removed rather than left: it is unreadable, this app wrote it minutes
+      // ago, and leaving it would make the fresh download pick a second name
+      // and sit beside a file nothing can play.
+      rmSync(resume.filePath, { force: true });
+      return null;
+    }
+  }
+
+  /**
+   * The transfer itself — yt-dlp performing it, not our own HTTP client.
+   *
+   * TikTok's CDN authenticates against the cookiejar yt-dlp builds while
+   * solving the challenge during extraction — `_set_cookie(hostname, 'sid_tt',
+   * …)` in its TikTok extractor — and that session is never serialised into the
+   * JSON we parse. Fetching the stream URL ourselves, even replaying every
+   * header the payload reports, is refused with 403. Handing the transfer to the
+   * process that holds the session is the only way short of reimplementing
+   * TikTok's challenge flow.
+   *
+   * The second branch is unreachable as the app ships today: yt-dlp is what
+   * resolves the video, so an absent yt-dlp fails at extraction and never
+   * arrives here. It is kept because section 2's extractor seam exists for a
+   * second implementation, and that one may well hand back a URL needing no
+   * session — but nothing currently exercises it outside its own tests.
+   *
+   * Worth stating because it has already misled a diagnosis: an error carrying
+   * downloadToPart's wording ("the CDN refused the download with 403") cannot
+   * have come from a run where yt-dlp was installed, and is therefore evidence
+   * about which build produced a log, not about TikTok.
+   *
+   * It lives in its own method so the resume branch above reads as the single
+   * decision it is: transfer, or do not.
+   */
+  private async transfer(
+    input: PipelineInput,
+    config: AppConfig,
+    selection: ReturnType<typeof selectStream>,
+    targetPath: string,
+    onProgress: (progress: {
+      bytesDone: number;
+      bytesTotal: number | null;
+      speed: number | null;
+      etaMs: number | null;
+    }) => void,
+    log: Logger,
+  ): ReturnType<typeof downloadToPart> {
+    const ytDlpPath = this.options.ytDlpPath?.() ?? null;
+    if (!ytDlpPath) {
+      return downloadToPart({
+        url: selection.stream.url,
+        targetPath,
+        signal: input.signal,
+        expectedBytes: selection.stream.filesize,
+        skipSpaceCheck: true,
+        headers: selection.stream.headers,
+        ...(this.options.fetchImpl ? { fetchImpl: this.options.fetchImpl } : {}),
+        onProgress,
+      });
+    }
+
+    return downloadWithYtDlp({
+      binaryPath: ytDlpPath,
+      runner: this.options.runner,
+      url: input.normalized.canonicalUrl,
+      formatId: selection.formatId,
+      routes: downloadRoutes(input.resolved.extractorArgs, this.options.downloadStrategies?.() ?? []),
+      targetPath,
+      signal: input.signal,
+      onProgress,
+      proxyUrl: this.options.proxyUrl?.(),
+      impersonate: (await this.options.impersonate?.()) ?? null,
+      // Caption tracks ride along with the transfer rather than costing a
+      // second extraction; see captions/tiktok-tracks.ts.
+      ...(config.captions.mode === 'off'
+        ? {}
+        : { subtitleLangs: subtitleLanguages(config.captions.targetLanguage) }),
+      log,
+    });
+  }
+
+  /**
    * A photo slideshow, into a folder of its own.
    *
    * Everything the video path does after the transfer is skipped rather than
@@ -663,6 +826,18 @@ export class DownloadPipeline implements MediaPipeline {
 
     log.info({ directory }, 'downloading a photo slideshow');
 
+    /**
+     * Two steps rather than seven, and said out loud rather than left blank.
+     *
+     * A slideshow genuinely has nothing to verify, no watermark to remove and
+     * nothing to caption, so the row would otherwise show a ladder of steps
+     * that never move — which reads as stuck rather than as not applicable.
+     */
+    input.onStage?.('download', 'started');
+    for (const step of ['verify', 'colour', 'watermark', 'captions', 'finish'] as const) {
+      input.onStage?.(step, 'skipped');
+    }
+
     const result = await downloadPhotoPost({
       binaryPath: this.options.ytDlpPath?.() ?? null,
       runner: this.options.runner,
@@ -674,6 +849,7 @@ export class DownloadPipeline implements MediaPipeline {
       log,
     });
 
+    input.onStage?.('download', 'done');
     input.onProgress({ bytesDone: result.bytes, bytesTotal: result.bytes, speed: null, etaMs: 0 });
     log.info({ directory, files: result.files.length, bytes: result.bytes }, 'slideshow saved');
 

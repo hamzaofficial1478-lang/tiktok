@@ -3,6 +3,7 @@ import { ERROR_CODES } from '../errors';
 import { DUPLICATE_ACTIONS, LOG_LEVELS, PHOTO_ACTIONS, QUEUE_STATUSES, SOURCE_STRATEGIES } from '../types';
 import { AppConfigSchema } from '../config-schema';
 import { CAPTION_MODES } from '../caption-schema';
+import { PIPELINE_STAGES } from '../stages';
 import { INVOKE_CHANNELS, EVENT_CHANNELS, type InvokeChannel, type EventChannel } from './channels';
 
 export { INVOKE_CHANNELS, EVENT_CHANNELS };
@@ -119,6 +120,23 @@ export const QueueItemSchema = z.object({
    * Null for everything else, including a failure that is finished with.
    */
   nextAttemptAt: z.number().nullable(),
+  /**
+   * Which of the download's steps is running, and which one went wrong.
+   *
+   * The status column has four words for a job with seven steps, so "it is
+   * stuck" and "it is four minutes into re-encoding" arrived as the same
+   * message, and a failure said what the error was but never where it happened.
+   */
+  stage: z.enum(PIPELINE_STAGES).nullable(),
+  failedStage: z.enum(PIPELINE_STAGES).nullable(),
+  /**
+   * Steps already banked from an earlier attempt.
+   *
+   * Non-empty means the video is on disk and a retry resumes rather than
+   * downloading it again — a materially different promise to someone watching
+   * a row fail, and one worth making visible.
+   */
+  stagesDone: z.array(z.enum(PIPELINE_STAGES)).readonly(),
 });
 
 export const PendingDuplicateSchema = z.object({

@@ -15,6 +15,7 @@ import type { MediaPipeline, PipelineInput, PipelineResult, QueueEvent } from '@
 import { DEFAULT_CONFIG, type AppConfig } from '@shared/config-schema';
 import { AppError, type ErrorCode } from '@shared/errors';
 import type { SourceStrategy } from '@shared/types';
+import type { PipelineStage, StageState } from '@shared/stages';
 import type { Clock } from '@main/clock';
 
 export const silent = pino({ level: 'silent' });
@@ -107,6 +108,17 @@ export class FakePipeline implements MediaPipeline {
    * to a queue working through the batch in order.
    */
   readonly attempts: string[] = [];
+  /**
+   * Attempts that actually fetched bytes.
+   *
+   * The instrument for "it downloaded the same video twice". `attempts` counts
+   * every call including resumptions, and a resumption is precisely the thing
+   * that is *not* a second download — so a test asking whether a video was
+   * fetched once has to look here.
+   */
+  readonly transfers: string[] = [];
+  /** `${awemeId}:${stage}:${state}` for every step announcement, in order. */
+  readonly stageLog: string[] = [];
   private failures = new Map<string, ErrorCode[]>();
   private hangs = new Set<string>();
   private slowPostProcess = new Map<string, number>();
@@ -161,6 +173,17 @@ export class FakePipeline implements MediaPipeline {
     this.hangs.clear();
   }
 
+  /**
+   * The same courtesy for post-commit failures.
+   *
+   * A test that wants to watch an attempt fail, then watch the *next* one
+   * succeed, needs the fault to stop being true at a moment of its choosing —
+   * exactly as a transient ffmpeg failure stops being true.
+   */
+  clearCommitFailures(): void {
+    this.failAfterCommit.clear();
+  }
+
   /** Stands in for a video TikTok only offers with the watermark burnt in. */
   strategyFor(awemeId: string, sourceStrategy: SourceStrategy, watermarkRemoved: boolean): void {
     this.strategies.set(awemeId, { sourceStrategy, watermarkRemoved });
@@ -169,6 +192,10 @@ export class FakePipeline implements MediaPipeline {
   async process(input: PipelineInput): Promise<PipelineResult> {
     const awemeId = input.normalized.awemeId;
     this.attempts.push(awemeId);
+    const stage = (name: PipelineStage, state: StageState): void => {
+      this.stageLog.push(`${awemeId}:${name}:${state}`);
+      input.onStage?.(name, state);
+    };
 
     if (this.hangs.has(awemeId)) {
       // Waits until cancelled, standing in for a long download.
@@ -177,19 +204,52 @@ export class FakePipeline implements MediaPipeline {
       });
     }
 
-    const remainingCommitFailures = this.failAfterCommit.get(awemeId) ?? 0;
-    if (remainingCommitFailures > 0) {
-      this.failAfterCommit.set(awemeId, remainingCommitFailures - 1);
-      const filePath = `/out/${awemeId}.mp4`;
-      this.existingFiles.add(filePath);
-      input.onCommitted?.(filePath);
-      throw new AppError('FFMPEG_FAILED', 'post-processing failed after the file was committed');
-    }
-
+    /**
+     * Failures that happen before any bytes land.
+     *
+     * Ordered ahead of the transfer because that is where they belong: a
+     * refused extraction or a dropped connection leaves nothing on disk, so
+     * such an item has nothing to resume from and its retry rightly starts
+     * over.
+     */
     const queued = this.failures.get(awemeId);
     if (queued && queued.length > 0) {
       const code = queued.shift() as ErrorCode;
+      stage('download', 'started');
       throw new AppError(code, `fake pipeline failure for ${awemeId}`);
+    }
+
+    /**
+     * The transfer — or the decision not to repeat one.
+     *
+     * Modelled the way the real pipeline works, because the bug under test
+     * lives exactly here: the bytes are committed under their final name and
+     * banked *before* the steps that can still fail, so an attempt that dies
+     * later finds the file waiting for it instead of fetching the video again.
+     */
+    let filePath: string;
+    if (input.resume) {
+      filePath = input.resume.filePath;
+      stage('download', 'skipped');
+      stage('verify', 'skipped');
+    } else {
+      stage('download', 'started');
+      filePath = `/out/${awemeId}${input.duplicateAction === 'redownload' ? ' (2)' : ''}.mp4`;
+      this.transfers.push(awemeId);
+      stage('download', 'done');
+
+      stage('verify', 'started');
+      this.existingFiles.add(filePath);
+      input.onCommitted?.(filePath);
+      input.onResumable?.({ filePath, done: ['download', 'verify'], bytes: 1_000_000 });
+      stage('verify', 'done');
+    }
+
+    const remainingCommitFailures = this.failAfterCommit.get(awemeId) ?? 0;
+    if (remainingCommitFailures > 0) {
+      this.failAfterCommit.set(awemeId, remainingCommitFailures - 1);
+      stage('finish', 'started');
+      throw new AppError('FFMPEG_FAILED', 'post-processing failed after the file was committed');
     }
 
     const slow = this.slowPostProcess.get(awemeId);
@@ -212,11 +272,11 @@ export class FakePipeline implements MediaPipeline {
       });
     }
 
+    stage('finish', 'started');
+    stage('finish', 'done');
+
     this.processed.push(awemeId);
     input.onProgress({ bytesDone: 1_000_000, bytesTotal: 1_000_000, speed: 1_000_000, etaMs: 0 });
-
-    const filePath = `/out/${awemeId}${input.duplicateAction === 'redownload' ? ' (2)' : ''}.mp4`;
-    this.existingFiles.add(filePath);
 
     return {
       filePath,

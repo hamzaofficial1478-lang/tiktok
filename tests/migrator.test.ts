@@ -135,6 +135,14 @@ describe('migration runner', () => {
       // Time this video has already cost the queue, across every attempt. The
       // budget that stops one bad link occupying a run for hours.
       'busy_ms',
+      // Which of the download's steps is running, and which one an attempt
+      // stopped at — so the row can say "failed while removing the watermark"
+      // rather than only naming the error.
+      'stage',
+      'failed_stage',
+      // The steps already banked, and where their file is. What turns a retry
+      // into a resumption instead of a second download of the same video.
+      'resume_state',
     ]);
     expect(columns('creators')).toContain('video_limit');
     expect(columns('downloads')).toContain('source_strategy');

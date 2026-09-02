@@ -15,8 +15,11 @@ import type { Clock } from '../clock';
 import { RateLimiter } from './rate-limiter';
 import { decideRetry, MAX_RETRIES } from './retry-policy';
 import { checkDuplicate, checkRepost, dedupePaste } from './dedup';
+import type { PipelineStage, StageState } from '@shared/stages';
 import {
+  readResumeState,
   toSnapshot,
+  type ResumeState,
   type AddLinksResult,
   type BatchSummary,
   type MediaPipeline,
@@ -716,7 +719,30 @@ export class QueueEngine {
 
   private async processItem(row: QueueItemRow, signal: AbortSignal): Promise<void> {
     this.log.debug({ itemId: row.id }, 'resolving the link');
+
+    /**
+     * Work a previous attempt banked, if there was one.
+     *
+     * Its presence changes what this whole method does. The video is already on
+     * disk under its final name, so the duplicate layers below must not run:
+     * every one of them would find this item's *own* file and conclude that
+     * somebody had already downloaded it — parking the item on a question about
+     * itself, or skipping it and leaving the half-finished work half-finished
+     * forever.
+     */
+    const resume = readResumeState(row.resume_state);
+    const resuming = resume !== null && this.fileExists(resume.filePath);
+    if (resume && !resuming) {
+      this.log.warn(
+        { itemId: row.id, filePath: resume.filePath },
+        'the file the last attempt left is no longer there; this one starts from the link',
+      );
+      this.update(row.id, { resumeState: null });
+    }
+
+    this.noteStage(row.id, 'resolve', 'started');
     const { normalized, resolved: alreadyResolved } = await this.normalize(row, signal);
+    this.noteStage(row.id, 'resolve', 'done');
     this.log.info({ itemId: row.id, awemeId: normalized.awemeId, viaShortLink: normalized.viaShortLink }, 'link resolved');
 
     // Written before anything can throw, so a link that turns out to be
@@ -745,7 +771,9 @@ export class QueueEngine {
     }
 
     const decided = row.duplicate_action ?? this.batchChoices.get(row.batch_id) ?? null;
-    const verdict = decided
+    // A resuming item is not a duplicate of anything — the file the layers
+    // below would find is the one this very item put there.
+    const verdict = decided || resuming
       ? ({ kind: 'none' } as const)
       : checkDuplicate(normalized.awemeId, row.id, {
           queueItems: this.options.queueItems,
@@ -799,8 +827,12 @@ export class QueueEngine {
      * this video was downloaded rather than declined or unsupported, and only
      * when the file it named is really there. A missing file falls through to
      * the ordinary paths, which ask rather than assume.
+     *
+     * A resuming item is exempt, and must be: the entry it would find is its
+     * own, written when its own bytes landed, and skipping on it would abandon
+     * the video half-processed rather than finish the step that failed.
      */
-    if (verdict.kind === 'none' && !decided) {
+    if (verdict.kind === 'none' && !decided && !resuming) {
       const settled = this.options.ledger?.find(normalized.awemeId);
       if (settled?.status === 'downloaded' && settled.file_path && this.fileExists(settled.file_path)) {
         this.log.info(
@@ -895,9 +927,20 @@ export class QueueEngine {
           now: this.options.clock.now(),
         });
       },
+      onStage: (stage, state) => this.noteStage(row.id, stage, state),
+      /**
+       * Written down the moment a step that cannot be repeated succeeds.
+       *
+       * This is the note the next attempt reads, and writing it eagerly rather
+       * than at the end is the entire point: the end is exactly what a failing
+       * attempt never reaches.
+       */
+      onResumable: (state) => this.rememberResumePoint(row.id, state),
+      ...(resuming && resume ? { resume } : {}),
     });
 
     throwIfAborted(signal);
+    this.noteStage(row.id, 'record', 'started');
 
     /**
      * A download that finished without the captions someone asked for.
@@ -1307,17 +1350,39 @@ export class QueueEngine {
       }
     }
 
+    /**
+     * The step it fell over at, taken from the last one that announced itself.
+     *
+     * This is the whole reason `stage` is written on `started` rather than only
+     * on completion: at the point something throws, the only record of what was
+     * running is the one made before it ran.
+     */
+    const current = this.options.queueItems.findById(row.id);
+    const failedStage = current?.stage ?? row.stage ?? null;
+
     this.options.queueItems.update(row.id, {
       status: 'failed',
       attemptCount,
       errorCode: appError.code,
       errorDetail: appError.detail ?? null,
       finishedAt: decision.retry ? null : this.options.clock.now(),
+      stage: null,
+      failedStage,
     });
     this.emitItem(this.options.queueItems.findById(row.id));
 
     this.log.warn(
-      { itemId: row.id, code: appError.code, attemptCount, willRetry: decision.retry, reason: decision.reason },
+      {
+        itemId: row.id,
+        code: appError.code,
+        stage: failedStage,
+        attemptCount,
+        willRetry: decision.retry,
+        reason: decision.reason,
+        // Says out loud that the retry will not re-fetch the video, which is
+        // the thing the log was previously silent about while it happened.
+        resuming: current?.resume_state ? true : false,
+      },
       'queue item failed',
     );
 
@@ -1670,12 +1735,60 @@ export class QueueEngine {
     this.options.queueItems.update(itemId, patch);
   }
 
+  /**
+   * Records which step an item is on, and which one went wrong.
+   *
+   * The status column has four words for a job with seven steps, so a video
+   * that had finished downloading and was two minutes into a re-encode looked
+   * exactly like one that was stuck — and a failure named the error but never
+   * the step. This is the column that tells them apart, and it is written on
+   * `started` so that a *thrown* failure can be attributed too: `handleFailure`
+   * reads whichever step was last announced.
+   *
+   * `failed` is the caught kind — the watermark, caption and finishing passes
+   * never take the item down with them — so it is recorded without disturbing
+   * the running stage, and it survives onto a completed row. "Downloaded, but
+   * the finishing pass failed" is a true and useful thing for a row to say.
+   */
+  private noteStage(itemId: number, stage: PipelineStage, state: StageState): void {
+    if (state === 'started') this.update(itemId, { stage, failedStage: null });
+    else if (state === 'failed') this.update(itemId, { failedStage: stage });
+    else return;
+
+    this.emitItem(this.options.queueItems.findById(itemId));
+  }
+
+  /**
+   * Persists what an attempt has banked, so the next one resumes rather than
+   * restarts.
+   *
+   * Not emitted to the renderer on its own: every call is immediately preceded
+   * by a `noteStage` that already refreshed the row.
+   */
+  private rememberResumePoint(itemId: number, state: ResumeState): void {
+    this.update(itemId, { resumeState: JSON.stringify(state) });
+  }
+
   private finish(
     itemId: number,
     status: 'completed' | 'skipped' | 'cancelled',
     patch: Parameters<QueueItemsRepository['update']>[1] = {},
   ): void {
-    this.options.queueItems.update(itemId, { status, finishedAt: this.options.clock.now(), ...patch });
+    this.options.queueItems.update(itemId, {
+      status,
+      finishedAt: this.options.clock.now(),
+      stage: null,
+      /**
+       * The note is torn up when the job is over — but not when it is
+       * cancelled.
+       *
+       * A cancel leaves a real file mid-processing, and the whole point of the
+       * note is that pressing Retry then finishes the remaining steps instead
+       * of fetching the video a second time.
+       */
+      ...(status === 'cancelled' ? {} : { resumeState: null }),
+      ...patch,
+    });
     this.emitItem(this.options.queueItems.findById(itemId));
   }
 

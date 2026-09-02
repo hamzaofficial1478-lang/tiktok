@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { describeError } from '@shared/errors';
+import { PIPELINE_STAGES, STAGE_LABELS, describeStageFailure } from '@shared/stages';
 import type { QueueItemDto } from '@shared/ipc/contract';
 import { orderedItems, useAppStore, type LiveProgress } from '../store/app-store';
 import { invoke } from '../lib/ipc';
@@ -43,18 +44,44 @@ const STRATEGY_DETAIL: Record<string, string> = {
  * Bytes come from the persisted row so they survive a refresh; rate and ETA
  * come from the volatile progress event, so they are simply absent rather than
  * stale when nothing is moving.
+ *
+ * The step name leads when there is one. Before it existed, everything after
+ * the transfer said "Removing watermark…" — including the colour pass, the
+ * captions and the finishing encode — so a video four minutes into a re-encode
+ * and a video that was genuinely stuck showed the identical sentence.
  */
 function activityLabel(item: QueueItemDto, live: LiveProgress | undefined): string {
-  if (item.status === 'processing') return 'Removing watermark…';
-  if (item.status === 'resolving') return 'Looking up the video…';
-  if (item.status !== 'downloading') return '';
+  const step = item.stage ? STAGE_LABELS[item.stage] : null;
+
+  if (item.status !== 'downloading') {
+    if (step && (item.status === 'processing' || item.status === 'resolving')) return `${step}…`;
+    if (item.status === 'processing') return 'Finishing up…';
+    if (item.status === 'resolving') return 'Looking up the video…';
+    return '';
+  }
 
   const parts: string[] = [];
   if (item.bytesTotal) parts.push(`${formatBytes(item.bytesDone)} / ${formatBytes(item.bytesTotal)}`);
   else if (item.bytesDone) parts.push(formatBytes(item.bytesDone));
   if (live?.speed) parts.push(formatSpeed(live.speed));
   if (live?.etaMs) parts.push(formatEta(live.etaMs));
+  // Steps other than the transfer itself are worth naming even mid-download,
+  // since the bytes line already says what the transfer is doing.
+  if (parts.length === 0 && step) return `${step}…`;
   return parts.join(' · ');
+}
+
+/**
+ * The failure line: what went wrong, and — new — where.
+ *
+ * "Extractor out of date" and "Extractor out of date, while removing the
+ * watermark" are very different reports, and only the second one is actionable
+ * by anybody. The step comes first because it is the part that narrows the
+ * search; the cause follows it.
+ */
+function failureLabel(item: QueueItemDto, fallback: string): string {
+  if (!item.failedStage) return fallback;
+  return `${describeStageFailure(item.failedStage)} — ${fallback}`;
 }
 
 /**
@@ -79,6 +106,65 @@ function useCountdown(at: number | null): number | null {
   if (at === null) return null;
   const seconds = Math.ceil((at - now) / 1_000);
   return seconds > 0 ? seconds : null;
+}
+
+type StepState = 'done' | 'running' | 'failed' | 'pending';
+
+/**
+ * Where a step stands, worked out from the two things the row records.
+ *
+ * The row stores the step that is running and the step that failed, not a
+ * status per step — one column instead of eight, and the order of
+ * `PIPELINE_STAGES` supplies the rest: everything before the current step has
+ * been passed, everything after it has not. `stagesDone` is consulted as well
+ * because it survives a failure, so a retry's ladder still shows the transfer
+ * as finished while the row is back at the start.
+ */
+function stepState(item: QueueItemDto, stage: (typeof PIPELINE_STAGES)[number]): StepState {
+  if (item.failedStage === stage) return 'failed';
+  if (item.stage === stage) return 'running';
+  if (item.stagesDone.includes(stage)) return 'done';
+  if (item.status === 'completed') return 'done';
+
+  const marker = item.stage ?? item.failedStage;
+  const reached = marker ? PIPELINE_STAGES.indexOf(marker) : -1;
+  return reached > PIPELINE_STAGES.indexOf(stage) ? 'done' : 'pending';
+}
+
+const STEP_MARK: Record<StepState, string> = { done: '✓', running: '▸', failed: '✕', pending: '·' };
+const STEP_TONE: Record<StepState, string> = {
+  done: 'text-ink-300',
+  running: 'text-accent-400',
+  failed: 'text-danger-400',
+  pending: 'text-ink-500 opacity-60',
+};
+
+/**
+ * The seven steps, and which one the item is on.
+ *
+ * This is the answer to "where did it fail?" — a question the interface could
+ * not answer at all before, because a download presented as one indivisible
+ * operation that either worked or did not. Now a row that stopped can point at
+ * the colour pass, or the finishing encode, or the transfer, and a row that is
+ * merely slow can show that it is on the encode rather than stuck.
+ */
+function StageLadder({ item }: { item: QueueItemDto }): React.JSX.Element {
+  return (
+    <ul className="flex flex-wrap gap-x-4 gap-y-1">
+      {PIPELINE_STAGES.map((stage) => {
+        const state = stepState(item, stage);
+        return (
+          <li key={stage} className={`flex items-center gap-1.5 ${STEP_TONE[state]}`}>
+            <span aria-hidden className="font-mono">
+              {STEP_MARK[state]}
+            </span>
+            <span className={state === 'failed' ? 'font-medium' : undefined}>{STAGE_LABELS[stage]}</span>
+            {state === 'failed' && <span className="text-danger-400/70">— failed here</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 function Row({
@@ -120,7 +206,20 @@ function Row({
             className={`truncate text-xs ${descriptor ? 'text-danger-400/80' : 'text-ink-500'}`}
             title={item.errorDetail ?? undefined}
           >
-            {descriptor ? (item.errorDetail ?? descriptor.title) : activityLabel(item, live)}
+            {descriptor
+              ? failureLabel(item, item.errorDetail ?? descriptor.title)
+              : activityLabel(item, live)}
+            {/**
+             * The promise that the retry is not going to start over.
+             *
+             * A row that says "trying again in 8s" after a video has already
+             * downloaded reads as a threat to download it a second time, which
+             * is exactly what used to happen. Saying the steps are kept turns
+             * it back into what it is.
+             */}
+            {item.stagesDone.length > 0 && descriptor && (
+              <span className="ml-2 text-ink-500">· the video is saved; only the rest is retried</span>
+            )}
             {/**
              * The wait, said out loud.
              *
@@ -196,6 +295,16 @@ function Row({
                 <dd className="text-ink-300">{STRATEGY_DETAIL[item.sourceStrategy] ?? item.sourceStrategy}</dd>
               </>
             )}
+            <dt className="text-ink-500">Steps</dt>
+            <dd className="text-ink-300">
+              <StageLadder item={item} />
+              {item.stagesDone.length > 0 && (
+                <p className="mt-1 text-ink-500">
+                  The video is on disk. A retry carries on from the step that failed rather than downloading it
+                  again.
+                </p>
+              )}
+            </dd>
           </dl>
 
           {item.errorCode && (

@@ -39,6 +39,17 @@ export interface QueueItemRow {
    * every attempt. The budget the engine spends; see `addBusyMs`.
    */
   busy_ms: number;
+  /** The step currently running, from `PIPELINE_STAGES`; null when idle. */
+  stage: string | null;
+  /** The step an attempt failed at, kept after the failure so the row can say so. */
+  failed_stage: string | null;
+  /**
+   * JSON: where the bytes are and which steps are already finished.
+   *
+   * Present only between a committed download and the item finishing. It is
+   * what lets a retry resume rather than re-download; see the 010 migration.
+   */
+  resume_state: string | null;
 }
 
 export interface EnqueueInput {
@@ -68,6 +79,9 @@ export interface QueueItemPatch {
   sourceStrategy?: SourceStrategy | null;
   watermarkRemoved?: number | null;
   busyMs?: number;
+  stage?: string | null;
+  failedStage?: string | null;
+  resumeState?: string | null;
 }
 
 const POSITION_SEQ_KEY = 'queue_position_seq';
@@ -212,13 +226,21 @@ export class QueueItemsRepository {
    * to re-read and wonder whether it changed underneath.
    *
    * The watermark columns are cleared on claim so a retry never displays the
-   * previous attempt's badge while the new attempt is still running.
+   * previous attempt's badge while the new attempt is still running, and
+   * `failed_stage` with them — the step that failed last time is history the
+   * moment a new attempt starts, and leaving it would have the row claim to be
+   * failing at a step it has not reached yet.
+   *
+   * `resume_state` is emphatically *not* cleared. It is the record of work
+   * already done on a file that is already on disk, and clearing it here is
+   * exactly the mistake that had retries download the same video twice.
    */
   claimNext(now: number = Date.now()): QueueItemRow | undefined {
     return this.db
       .prepare<[number], QueueItemRow>(
         `UPDATE queue_items
-            SET status = 'resolving', started_at = ?, source_strategy = NULL, watermark_removed = NULL
+            SET status = 'resolving', started_at = ?, source_strategy = NULL, watermark_removed = NULL,
+                failed_stage = NULL
           WHERE id = (
             SELECT id FROM queue_items WHERE status = 'queued' ${QueueItemsRepository.WORK_ORDER} LIMIT 1
           )
@@ -288,6 +310,9 @@ export class QueueItemsRepository {
       sourceStrategy: 'source_strategy',
       watermarkRemoved: 'watermark_removed',
       busyMs: 'busy_ms',
+      stage: 'stage',
+      failedStage: 'failed_stage',
+      resumeState: 'resume_state',
     };
 
     const sets: string[] = [];
