@@ -154,6 +154,21 @@ export const PROCESSING_DEADLINE_MS = 20 * 60_000;
 export const EXTRACTOR_SUSPECT_THRESHOLD = 3;
 
 /**
+ * The shortest window an attempt that is started is ever given.
+ *
+ * An attempt with no time left used to be armed with a one-millisecond
+ * watchdog, which fired before it had done anything and killed the first
+ * process it spawned. What reached the user was "yt-dlp.exe was stopped before
+ * it finished" on every row — a message that reads as a broken program or as
+ * something they did, and is neither.
+ *
+ * If an item is out of budget the honest response is to say so and stop
+ * retrying it, which `handleFailure` does. Starting an attempt and shooting it
+ * a millisecond later is not a limit, it is a misleading way to fail.
+ */
+export const MIN_ATTEMPT_MS = 60_000;
+
+/**
  * How long a lookup TikTok already answered stays usable as a fallback.
  *
  * The metadata in it — duration, handle, caption — would stay true for as long
@@ -247,6 +262,16 @@ export class QueueEngine {
    * can record a timeout it should retry instead of a cancel it must not.
    */
   private readonly timedOut = new Set<number>();
+  /**
+   * How long the running attempt was actually given, by item id.
+   *
+   * So the failure can say what happened rather than quoting the ceiling: an
+   * item near the end of its budget gets a shorter window than the per-attempt
+   * limit, and telling it "gave up after 8 minutes" when it gave up after 90
+   * seconds is the kind of small lie that sends someone looking in the wrong
+   * place.
+   */
+  private readonly allowances = new Map<number, number>();
   /** Consecutive failures that look like the extractor rather than the link. */
   private extractorFailures = 0;
   /** Cancels the per-item time limit, by item id. See `armWatchdog`. */
@@ -573,6 +598,7 @@ export class QueueEngine {
       // just as the cancel arrived never reaches that branch.
       this.cancelledByUser.delete(row.id);
       this.timedOut.delete(row.id);
+      this.allowances.delete(row.id);
       this.processing.delete(row.id);
       this.lastProgressEmit.delete(row.id);
       this.lastProgressWrite.delete(row.id);
@@ -637,8 +663,30 @@ export class QueueEngine {
     phase: 'download' | 'post-processing',
   ): () => void {
     const spent = this.options.queueItems.findById(itemId)?.busy_ms ?? 0;
-    const allowed = Math.max(1, Math.min(limitMs, this.itemTotalBudgetMs - spent));
+
+    /**
+     * The window this attempt gets, and the floor under it.
+     *
+     * `itemTotalBudgetMs - spent` alone could be zero or negative, and the old
+     * code turned that into `Math.max(1, …)` — a **one millisecond** watchdog.
+     * It fired before the attempt had done anything, killing the first process
+     * it spawned, and the file that reached the user said "yt-dlp.exe was
+     * stopped before it finished". That reads as a broken program, or as
+     * something the user did, and it is neither: it is the app arming a timer
+     * it already knew would fire.
+     *
+     * Every attempt that is started gets a real chance. Whether there is
+     * another one after it is decided honestly, once, in `handleFailure` —
+     * where the budget is checked and the row is told plainly that it has been
+     * set aside.
+     */
+    const remaining = this.itemTotalBudgetMs - spent;
+    // The floor lifts what is left of the budget; the per-attempt limit still
+    // caps it, so this can only ever grant a longer window than the old
+    // arithmetic, never a longer one than the phase is entitled to.
+    const allowed = Math.max(1, Math.min(limitMs, Math.max(MIN_ATTEMPT_MS, remaining)));
     const startedAt = Date.now();
+    this.allowances.set(itemId, allowed);
 
     const timer = setTimeout(() => {
       if (controller.signal.aborted) return;
@@ -655,10 +703,32 @@ export class QueueEngine {
 
     return () => {
       clearTimeout(timer);
-      // Wall-clock, not the injected clock: this is a real duration being
-      // charged against a real budget, and a test clock that never advances
-      // would hand every item an unlimited one.
-      this.options.queueItems.addBusyMs(itemId, Date.now() - startedAt);
+      /**
+       * Only the network phase is charged, which is what the budget is for.
+       *
+       * This is stated in the migration that introduced the column — "Only the
+       * part that talks to TikTok is counted. Re-encoding to strip a watermark
+       * and transcribing for burned-in captions are legitimately slow and are
+       * work the user asked for, not a video misbehaving" — and the code did
+       * the opposite: it charged every millisecond of both phases.
+       *
+       * That was survivable while post-processing was a rare watermark
+       * re-encode. It stopped being survivable the moment colour correction,
+       * sharpening and the H.264 conversion started running on *every* video:
+       * four minutes of ffmpeg per attempt, charged to a fifteen-minute budget
+       * meant for a link that hangs. Two or three attempts and a perfectly
+       * healthy video is over its limit — after which the watchdog kills it the
+       * instant it starts and the queue writes it off for good.
+       *
+       * That is the whole of "it works for two or three days and then every
+       * download fails": nothing breaks, a counter fills up.
+       *
+       * Wall-clock rather than the injected clock, because this is a real
+       * duration against a real budget and a test clock that never advances
+       * would hand every item an unlimited one.
+       */
+      this.allowances.delete(itemId);
+      if (phase === 'download') this.options.queueItems.addBusyMs(itemId, Date.now() - startedAt);
     };
   }
 
@@ -1000,6 +1070,21 @@ export class QueueEngine {
        * so writing it twice is writing it once.
        */
       onCommitted: (filePath) => {
+        /**
+         * The bytes are here, so the network budget this item has spent is no
+         * longer evidence against it.
+         *
+         * That budget exists to stop one link that *hangs* from occupying the
+         * queue for an afternoon. A video that has just finished downloading is
+         * demonstrably not that link, and everything it has left to do is local
+         * ffmpeg work that the budget was never meant to cover. Carrying the
+         * spend forward meant a healthy video that hit a problem in
+         * post-processing came back to a shorter and shorter window each time,
+         * until the watchdog was killing it before it could start — and the
+         * queue then set it aside for good, with a message about giving up on a
+         * download that had in fact succeeded.
+         */
+        this.update(row.id, { busyMs: 0 });
         this.options.ledger?.record({
           awemeId: normalized.awemeId,
           // The same handle `handleSuccess` would record, so a creator run's
@@ -1426,9 +1511,26 @@ export class QueueEngine {
      * knows why the abort happened, it takes the ordinary retry path.
      */
     if (appError.code === 'CANCELLED' && this.timedOut.delete(row.id)) {
+      /**
+       * What it was actually given, not the ceiling.
+       *
+       * An item near the end of its budget gets a shorter window than the
+       * per-attempt limit, and quoting the limit told someone their download
+       * had eight minutes when it had ninety seconds — which sends them looking
+       * at their connection instead of at the row that says it is nearly out of
+       * time.
+       */
+      const window = this.allowances.get(row.id) ?? this.itemDeadlineMs;
+      const minutes = window / 60_000;
+      // Never "0 seconds": a window shorter than a second is a number nobody
+      // can act on, and it reads as the app not having tried at all.
+      const said =
+        minutes >= 1
+          ? `${Math.round(minutes)} minute${Math.round(minutes) === 1 ? '' : 's'}`
+          : `${Math.max(1, Math.round(window / 1_000))} second${Math.max(1, Math.round(window / 1_000)) === 1 ? '' : 's'}`;
       appError = new AppError(
         'NETWORK_ERROR',
-        `Gave up after ${Math.round(this.itemDeadlineMs / 60_000)} minutes without finishing. Moved to the back of the queue to try again later.`,
+        `Gave up after ${said} without finishing. Moved to the back of the queue to try again later.`,
       );
     }
 

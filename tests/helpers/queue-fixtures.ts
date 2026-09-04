@@ -122,6 +122,7 @@ export class FakePipeline implements MediaPipeline {
   private failures = new Map<string, ErrorCode[]>();
   private hangs = new Set<string>();
   private slowPostProcess = new Map<string, number>();
+  private slowDownload = new Map<string, number>();
   private failAfterCommit = new Map<string, number>();
   private strategies = new Map<string, { sourceStrategy: SourceStrategy; watermarkRemoved: boolean }>();
 
@@ -162,6 +163,17 @@ export class FakePipeline implements MediaPipeline {
    */
   slowPostProcessFor(awemeId: string, ms: number): void {
     this.slowPostProcess.set(awemeId, ms);
+  }
+
+  /**
+   * Takes its time *before* committing — the half that talks to TikTok.
+   *
+   * The mirror of `slowPostProcessFor`, and the pair of them is what makes the
+   * time budget testable at all: the budget is meant to count this and not
+   * that, and a fake with only one kind of slowness cannot tell the two apart.
+   */
+  slowDownloadFor(awemeId: string, ms: number): void {
+    this.slowDownload.set(awemeId, ms);
   }
 
   /**
@@ -236,10 +248,36 @@ export class FakePipeline implements MediaPipeline {
       stage('download', 'started');
       filePath = `/out/${awemeId}${input.duplicateAction === 'redownload' ? ' (2)' : ''}.mp4`;
       this.transfers.push(awemeId);
+
+      const slow = this.slowDownload.get(awemeId);
+      if (slow !== undefined) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, slow);
+          input.signal.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              reject(new AppError('CANCELLED', 'download aborted'));
+            },
+            { once: true },
+          );
+        });
+      }
+
       stage('download', 'done');
 
       stage('verify', 'started');
       this.existingFiles.add(filePath);
+      /**
+       * The real pipeline announces the switch to local work here, immediately
+       * before the commit, and the engine acts on it: it closes out the network
+       * phase and moves the item onto the post-processing time limit.
+       *
+       * The fake used not to, which made it the one place a test could not see
+       * the difference between time spent waiting on TikTok and time spent in
+       * ffmpeg — precisely the distinction that turned out to matter.
+       */
+      input.onProgress({ bytesDone: 1_000_000, bytesTotal: 1_000_000, speed: null, etaMs: 0, processing: true });
       input.onCommitted?.(filePath);
       input.onResumable?.({ filePath, done: ['download', 'verify'], bytes: 1_000_000 });
       stage('verify', 'done');

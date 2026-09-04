@@ -95,6 +95,21 @@ export function selectNewVideos(
   alreadyHave: (awemeId: string) => boolean,
 ): { readonly urls: readonly string[]; readonly skipped: number } {
   const picked: string[] = [];
+  /**
+   * Ids taken on this pass, so a listing cannot offer the same video twice.
+   *
+   * TikTok's own profile listing repeats a post from time to time — a pinned
+   * video that also appears in date order, or the same post arriving in two
+   * pages while the account is being scrolled. Without this, both copies were
+   * queued: two rows, consecutive positions, identical id, each downloading the
+   * same video into the same folder. It is visible in a queue screenshot as two
+   * rows a couple of lines apart with the same nineteen digits after the handle.
+   *
+   * The paste-level dedup does not catch it, because it only sees one call at a
+   * time; nor does the in-queue check, which looks for rows that are still
+   * *active* and finds nothing once the first copy has finished or failed.
+   */
+  const takenThisPass = new Set<string>();
   let skipped = 0;
 
   for (const url of urls) {
@@ -105,10 +120,13 @@ export function selectNewVideos(
     // rather than counted against the limit.
     if (parsed.status !== 'resolved') continue;
 
+    if (takenThisPass.has(parsed.awemeId)) continue;
+
     if (alreadyHave(parsed.awemeId)) {
       skipped++;
       continue;
     }
+    takenThisPass.add(parsed.awemeId);
     picked.push(parsed.canonicalUrl);
   }
 

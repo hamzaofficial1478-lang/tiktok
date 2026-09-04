@@ -1,0 +1,32 @@
+-- 013_reset_busy_ms — throw away a counter that was measuring the wrong thing.
+--
+-- `busy_ms` is the budget for how long one video may spend *talking to TikTok*,
+-- and migration 009 says so in as many words: "Only the part that talks to
+-- TikTok is counted. Re-encoding to strip a watermark and transcribing for
+-- burned-in captions are legitimately slow and are work the user asked for, not
+-- a video misbehaving."
+--
+-- The code charged both phases. Every millisecond of ffmpeg landed on the same
+-- counter as every millisecond of network.
+--
+-- That was survivable while post-processing was a rare watermark re-encode, and
+-- it stopped being survivable the moment colour correction, sharpening and the
+-- H.264 conversion began running on every video: minutes of local encoding per
+-- attempt, against a fifteen-minute budget. Two or three attempts and a
+-- perfectly healthy video was over its limit — after which the watchdog was
+-- armed for one millisecond, killed the first process the next attempt spawned,
+-- and the row read "yt-dlp.exe was stopped before it finished". Then the budget
+-- check set the item aside for good, and the account it came from offered the
+-- same video again on the next run, because nothing had ever been recorded as
+-- downloaded.
+--
+-- Fixing the arithmetic does not help the rows that already carry the wrong
+-- number. They sit in the queue with their budget spent, and the first thing the
+-- repaired build would do is kill them exactly as the broken one did. So the
+-- counter is thrown away for everything that has not finished: it was measuring
+-- something the budget was never about, which makes it evidence of nothing.
+--
+-- Completed rows keep theirs. They are history, nothing reads them again, and
+-- rewriting a finished row to make a number tidier is not worth doing.
+
+UPDATE queue_items SET busy_ms = 0 WHERE status != 'completed';

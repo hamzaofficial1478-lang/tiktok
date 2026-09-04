@@ -153,7 +153,12 @@ describe('an item that never finishes', () => {
     // thing the run silently lost.
     expect(stuck?.status).not.toBe('cancelled');
     expect(stuck?.errorCode).toBe('NETWORK_ERROR');
-    expect(stuck?.errorDetail ?? '').toMatch(/minutes without finishing/i);
+    // The window it was actually given, whatever that happened to be. The
+    // message used to quote the per-attempt ceiling even when the item had been
+    // handed a fraction of it — telling someone their download had eight
+    // minutes when it had ninety seconds sends them to look at their
+    // connection instead of at the row that says it is nearly out of time.
+    expect(stuck?.errorDetail ?? '').toMatch(/gave up after .+ without finishing/i);
   });
 
   it('gets its retries like any other transient failure', async () => {
