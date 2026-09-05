@@ -64,7 +64,8 @@ describe('SidecarResolver', () => {
     expect(status.present).toBe(true);
     expect(status.checksumValid).toBe(true);
     expect(status.error).toBeNull();
-    expect(status.version).toBe('2026.07.04');
+    // The checksum fixture is a POSIX shell script, not a Windows executable.
+    expect(status.version).toBe(process.platform === 'win32' ? null : '2026.07.04');
   });
 
   it('flags a binary whose checksum does not match, without throwing', async () => {

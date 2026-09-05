@@ -1,4 +1,4 @@
-import { readdirSync, renameSync, rmSync } from 'node:fs';
+import { lstatSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import type { Logger } from 'pino';
 
@@ -63,7 +63,14 @@ export interface FileOps {
 }
 
 const REAL_FS: FileOps = {
-  rename: (from, to) => renameSync(from, to),
+  rename: (from, to) => {
+    // An unexpected directory is not a locked executable to move aside.
+    if (lstatSync(from, { throwIfNoEntry: false })?.isDirectory() ||
+        lstatSync(to, { throwIfNoEntry: false })?.isDirectory()) {
+      throw Object.assign(new Error('refusing to replace a directory'), { code: 'EISDIR' });
+    }
+    renameSync(from, to);
+  },
   remove: (path) => rmSync(path, { force: true }),
 };
 

@@ -105,6 +105,7 @@ export interface YtDlpDownloadOptions {
   readonly url: string;
   /** yt-dlp format_id chosen by the stream selector. */
   readonly formatId: string;
+  readonly ffmpegPath?: string | null;
   /**
    * Routes to try, best first.
    *
@@ -258,6 +259,7 @@ async function attemptDownload(
   route: readonly string[],
 ): Promise<DownloadOutcome> {
   const args = [
+    '--ignore-config',
     '--no-warnings',
     '--no-playlist',
     '--no-part',
@@ -270,6 +272,7 @@ async function attemptDownload(
      * the transfer still visible.
      */
     '--no-quiet',
+    '--progress',
     '--print',
     OUTPUT_TEMPLATE,
     '--retries',
@@ -342,6 +345,8 @@ async function attemptDownload(
     toOutputTemplate(paths.workPath),
   ];
 
+  if (options.ffmpegPath) args.push('--ffmpeg-location', options.ffmpegPath);
+
   if (options.subtitleLangs) {
     args.push(
       '--write-subs',
@@ -401,7 +406,7 @@ async function attemptDownload(
 
   if (options.signal.aborted) throw new AppError('CANCELLED', 'download cancelled');
 
-  if (result.exitCode !== 0) {
+  if (result.timedOut || result.exitCode !== 0) {
     const classified = classifyYtDlpFailure(result);
     options.log?.warn(
       { formatId: options.formatId, exitCode: result.exitCode, stderr: result.stderr.slice(0, 800) },
@@ -411,7 +416,8 @@ async function attemptDownload(
     // point, exactly as with the direct downloader.
     throw new AppError(
       classified.code,
-      result.stderr.trim().split('\n').pop() ?? `yt-dlp exited ${result.exitCode}`,
+      classified.detail ?? (result.timedOut ? 'The download timed out; the partial file was kept for retry.' :
+        result.stderr.trim().split('\n').pop() || `yt-dlp exited ${result.exitCode}`),
     );
   }
 

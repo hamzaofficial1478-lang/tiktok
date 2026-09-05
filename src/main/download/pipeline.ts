@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, rmSync, statSync } from 'node:fs';
 import type { Logger } from 'pino';
 import { AppError, toAppError } from '@shared/errors';
 import type { AppConfig } from '@shared/config-schema';
@@ -159,8 +159,7 @@ export class DownloadPipeline implements MediaPipeline {
       onResumable: input.onResumable,
     });
 
-    // 1. Pick the stream. Clean beats watermarked before resolution is even
-    //    considered (section 9 step 4).
+    // 1. Keep the best picture; prefer a clean source at equal resolution.
     const selection = selectStream(input.resolved.streams, {
       audioOnly: config.audioOnly,
       watermarkMode: config.watermarkMode,
@@ -256,6 +255,7 @@ export class DownloadPipeline implements MediaPipeline {
     } else {
       stages.start('download');
       const outcome = await this.transfer(input, config, selection, targetPath, progressSink, log);
+      input.signal.throwIfAborted();
       if (outcome.resumedFrom > 0) log.info({ resumedFrom: outcome.resumedFrom }, 'resumed an interrupted download');
       stages.done('download');
 
@@ -305,6 +305,7 @@ export class DownloadPipeline implements MediaPipeline {
       }
 
       // 6. Only now does the final filename come into existence.
+      input.signal.throwIfAborted();
       bytes = outcome.bytes;
       input.onProgress({ bytesDone: bytes, bytesTotal: bytes, speed: null, etaMs: 0, processing: true });
       commitPart(outcome.partPath, targetPath);
@@ -386,6 +387,7 @@ export class DownloadPipeline implements MediaPipeline {
 
     /** One chain, so one encode does every job that wants doing. */
     const enhanceFilter = [colour, sharpen].filter(Boolean).join(',') || null;
+    input.signal.throwIfAborted();
 
     if (stages.isDone('watermark')) {
       stages.skip('watermark');
@@ -467,6 +469,7 @@ export class DownloadPipeline implements MediaPipeline {
         ? { ...config.captions, mode: input.item.caption_mode as CaptionMode }
         : config.captions;
 
+    input.signal.throwIfAborted();
     if (stages.isDone('captions')) {
       stages.skip('captions');
     } else if (captionSettings.mode !== 'off' || config.seoMetadata) {
@@ -546,6 +549,7 @@ export class DownloadPipeline implements MediaPipeline {
      * for the common case where nothing needed processing and the file is
      * exactly as TikTok served it.
      */
+    input.signal.throwIfAborted();
     if (stages.isDone('finish')) {
       stages.skip('finish');
     } else if (!config.audioOnly) {
@@ -565,7 +569,7 @@ export class DownloadPipeline implements MediaPipeline {
            * that was downloaded, with the same near-transparent encoder the
            * watermark path uses.
            */
-          ...(config.forceH264
+          ...(config.forceH264 || (enhanceFilter !== null && !watermarkReEncoded)
             ? {
                 toH264: {
                   encoders: (await this.encoders(config)).map((encoder) => ({
@@ -613,7 +617,10 @@ export class DownloadPipeline implements MediaPipeline {
          * nothing. Saying so on the row is the difference between "Facebook is
          * broken" and "the finishing pass could not convert this one".
          */
-        if (compat.uploadable === false) {
+        if (enhanceFilter !== null && !watermarkReEncoded && !compat.rewritten) {
+          log.warn({ reason: compat.reason }, 'enhancement could not be applied; the original video was kept');
+          stages.failed('finish');
+        } else if (compat.uploadable === false) {
           log.warn(
             { problems: compat.problems },
             'this video is still in a form upload sites refuse; see the finishing step on the row',
@@ -675,7 +682,7 @@ export class DownloadPipeline implements MediaPipeline {
         })
       : null;
 
-    const finalSize = existsSync(targetPath) ? verified.sizeBytes : null;
+    const finalSize = existsSync(targetPath) ? statSync(targetPath).size : null;
 
     log.info({ targetPath, strategy, watermarkRemoved, outroTrimmedMs, bytes: finalSize }, 'download complete');
 
@@ -849,6 +856,7 @@ export class DownloadPipeline implements MediaPipeline {
       runner: this.options.runner,
       url: input.normalized.canonicalUrl,
       formatId: selection.formatId,
+      ffmpegPath: this.options.ffmpegPath(),
       routes: downloadRoutes(input.resolved.extractorArgs, this.options.downloadStrategies?.() ?? []),
       targetPath,
       signal: input.signal,

@@ -99,8 +99,8 @@ describe('the sidecar file', () => {
   } satisfies VideoMetadata;
 
   it('sits beside the video under the same name', () => {
-    expect(sidecarPathFor('/out/001 - creator - 7123.mp4')).toBe('/out/001 - creator - 7123.txt');
-    expect(sidecarPathFor('/out/noext')).toBe('/out/noext.txt');
+    expect(sidecarPathFor('/out/001 - creator - 7123.mp4')).toBe(join('/out', '001 - creator - 7123.txt'));
+    expect(sidecarPathFor('/out/noext')).toBe(join('/out', 'noext.txt'));
   });
 
   it('states what it was written from, rather than implying it read the video', () => {

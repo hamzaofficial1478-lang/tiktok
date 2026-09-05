@@ -224,6 +224,7 @@ export class YtDlpExtractor implements Extractor {
     }
 
     const args = [
+      '--ignore-config',
       '--dump-single-json',
       '--no-warnings',
       '--no-progress',

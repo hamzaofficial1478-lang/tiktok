@@ -12,11 +12,10 @@ import type { StreamCandidate } from '../resolve/types';
  * something worse than what was available, and downscaling would mean a
  * re-encode — the exact cost the clean-source strategy exists to avoid.
  *
- * The one ordering rule that remains is the important one: a clean source
- * beats a watermarked one *before* resolution is considered. A clean 480p
- * stream is lossless and instant; a watermarked 1080p stream costs a full
- * re-encode and visible quality to clean up. Resolution only breaks ties
- * within a watermark class, never across it.
+ * Keep the best available picture. A clean source wins at equal resolution,
+ * but choosing clean 480p over available 1080p permanently discards detail
+ * that no sharpening setting can restore. Watermark processing handles the
+ * higher-resolution source when it needs cleaning.
  */
 
 export interface SelectionResult {
@@ -168,12 +167,7 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
    * `needsH264Transcode`. A conversion costs time and one near-transparent
    * encode. The filter cost half the pixels, permanently.
    */
-  const clean = rank(video.filter((s) => !s.watermarked));
-  const watermarked = rank(video.filter((s) => s.watermarked));
-
-  // "Keep watermark" makes the watermarked variant a first-class choice; it is
-  // usually the higher-quality encode TikTok offers for download.
-  const preferred = options.watermarkMode === 'keep' ? (watermarked[0] ?? clean[0]) : (clean[0] ?? watermarked[0]);
+  const preferred = rank(video)[0];
   if (!preferred) throw new AppError('EXTRACTOR_FAILED', 'no usable video stream was offered');
 
   const isClean = !preferred.watermarked;
@@ -188,7 +182,7 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
    * is the right trade when the alternative is nothing at all.
    */
   if (options.canMerge === false && audioStream) {
-    const muxed = [...clean, ...watermarked].find((stream) => stream.hasAudio);
+    const muxed = rank(video.filter((stream) => stream.hasAudio))[0];
     if (muxed) {
       return {
         stream: muxed,
@@ -206,7 +200,7 @@ export function selectStream(streams: readonly StreamCandidate[], options: Selec
     ? `clean source at ${describe(preferred)}, exactly as TikTok serves it`
     : options.watermarkMode === 'keep'
       ? `watermarked source at ${describe(preferred)} (watermark kept by preference)`
-      : `only a watermarked source was available at ${describe(preferred)}; it will need re-encoding`;
+      : `the best available picture is watermarked at ${describe(preferred)}; it will need re-encoding`;
 
   /**
    * A silent stream with no audio anywhere is a legitimate TikTok post — plenty
@@ -292,6 +286,9 @@ export function isHevc(stream: StreamCandidate): boolean {
 function byQualityDesc(a: StreamCandidate, b: StreamCandidate): number {
   const sizeDiff = shortSide(b) - shortSide(a);
   if (sizeDiff !== 0) return sizeDiff;
+
+  const watermarkDiff = Number(a.watermarked) - Number(b.watermarked);
+  if (watermarkDiff !== 0) return watermarkDiff;
 
   // Same resolution: prefer the encode that plays everywhere.
   const hevcDiff = Number(isHevc(a)) - Number(isHevc(b));

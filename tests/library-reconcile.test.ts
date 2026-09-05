@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
+import { join } from 'node:path';
 import { runMigrations } from '@main/db/migrator';
 import { MIGRATIONS } from '@main/db/migrations';
 import { LinkLedgerRepository } from '@main/db/repositories/link-ledger';
@@ -15,7 +16,7 @@ import { awemeIdFromName, reconcileLedger, scanDownloads, type ScanFs } from '@m
 function fakeFs(tree: Record<string, readonly string[]>): ScanFs {
   return {
     readdir: (dir) => {
-      const entries = tree[dir];
+      const entries = tree[dir.replace(/\\/g, '/')];
       if (!entries) throw new Error(`no such directory: ${dir}`);
       return entries.map((name) => {
         // A trailing slash marks a directory, so a tree stays readable.
@@ -69,7 +70,7 @@ describe('scanning the output folder', () => {
     });
 
     expect(items).toEqual([
-      { awemeId: ID_A, filePath: '/out/creatorone/001 - creatorone - ' + ID_A + '.mp4', handle: 'creatorone' },
+      { awemeId: ID_A, filePath: join('/out', 'creatorone', `001 - creatorone - ${ID_A}.mp4`), handle: 'creatorone' },
     ]);
   });
 
@@ -82,7 +83,7 @@ describe('scanning the output folder', () => {
       }),
     });
 
-    expect(items).toEqual([{ awemeId: ID_B, filePath: `/out/creatorone/002 - creatorone - ${ID_B}`, handle: 'creatorone' }]);
+    expect(items).toEqual([{ awemeId: ID_B, filePath: join('/out', 'creatorone', `002 - creatorone - ${ID_B}`), handle: 'creatorone' }]);
   });
 
   it('ignores a transfer that has not finished', () => {

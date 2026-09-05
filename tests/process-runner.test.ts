@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChildProcessRunner } from '@main/resolve/process-runner';
 import { AppError } from '@shared/errors';
 
@@ -18,6 +18,27 @@ const runner = new ChildProcessRunner();
 const forever = ['-e', 'setInterval(() => {}, 1000)'];
 
 describe('stopping a running process', () => {
+  it.skipIf(process.platform !== 'win32')('terminates descendants as well as the Windows launcher', async () => {
+    let descendant = 0;
+    try {
+      const result = await runner.run(process.execPath, ['-e',
+        `const child = require('node:child_process').spawn(process.execPath,
+          ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit', windowsHide: true });
+         console.log(child.pid); setInterval(() => {}, 1000);`,
+      ], { timeoutMs: 1500, onStdout: (chunk) => { descendant = Number(chunk.trim()); } });
+      expect(result.timedOut).toBe(true);
+      expect(descendant).toBeGreaterThan(0);
+      await vi.waitFor(() => expect(() => process.kill(descendant, 0)).toThrow(), { timeout: 3000 });
+    } finally {
+      if (descendant > 0) { try { process.kill(descendant); } catch { /* already terminated */ } }
+    }
+  });
+
+  it('settles a timeout without waiting for process output to close', async () => {
+    const result = await runner.run(process.execPath, forever, { timeoutMs: 50 });
+    expect(result.timedOut).toBe(true);
+    expect(result.exitCode).toBeNull();
+  });
   it('names the program, not the path it happens to live at', async () => {
     const controller = new AbortController();
     const running = runner.run(process.execPath, forever, { signal: controller.signal });

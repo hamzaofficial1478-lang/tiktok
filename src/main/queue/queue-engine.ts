@@ -73,6 +73,8 @@ export interface QueueEngineOptions {
    * sitting through it. Defaults to `ITEM_DEADLINE_MS`.
    */
   readonly itemDeadlineMs?: number;
+  /** Move on if a transfer stops advancing, even while yt-dlp prints retries. */
+  readonly downloadStallMs?: number;
   /**
    * The total across every attempt. Injectable for the same reason.
    * Defaults to `ITEM_TOTAL_BUDGET_MS`.
@@ -278,6 +280,7 @@ export class QueueEngine {
   private readonly watchdogs = new Map<number, () => void>();
   /** Items past the download and into local ffmpeg work; see beginProcessingPhase. */
   private readonly processing = new Set<number>();
+  private readonly transferActivity = new Map<number, { at: number; bytes: number }>();
   private readonly pendingDuplicates = new Map<number, PendingDuplicate>();
   /** Slideshow questions waiting on an answer, and the answers already given. */
   private readonly pendingPhotos = new Map<number, PendingPhotoPost>();
@@ -583,8 +586,25 @@ export class QueueEngine {
     this.controllers.set(row.id, controller);
     this.watchdogs.set(row.id, this.armWatchdog(row.id, controller, this.itemDeadlineMs, 'download'));
 
+    const stallMs = this.options.downloadStallMs ?? 90_000;
+    const stallTimer = setInterval(() => {
+      const activity = this.transferActivity.get(row.id);
+      if (!activity || controller.signal.aborted || Date.now() - activity.at < stallMs) return;
+      this.allowances.set(row.id, stallMs);
+      this.timedOut.add(row.id);
+      controller.abort();
+    }, Math.min(1_000, stallMs));
+    stallTimer.unref?.();
+    let onAbort = (): void => {};
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new AppError('CANCELLED', 'Download stopped.'));
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+    });
+
     try {
-      await this.processItem(row, controller.signal);
+      // A dependency may ignore AbortSignal. The worker must still be freed;
+      // processItem checks the signal before accepting any late result.
+      await Promise.race([this.processItem(row, controller.signal), aborted]);
     } catch (err) {
       // Charged before the decision, not after it, so "has this video used its
       // budget?" is asked with this attempt included. Disarming twice is a
@@ -592,6 +612,9 @@ export class QueueEngine {
       this.disarmWatchdog(row.id);
       this.handleFailure(row, err);
     } finally {
+      clearInterval(stallTimer);
+      controller.signal.removeEventListener('abort', onAbort);
+      this.transferActivity.delete(row.id);
       this.disarmWatchdog(row.id);
       this.controllers.delete(row.id);
       // Whether or not the failure path consumed it — an item that finished
@@ -684,7 +707,8 @@ export class QueueEngine {
     // The floor lifts what is left of the budget; the per-attempt limit still
     // caps it, so this can only ever grant a longer window than the old
     // arithmetic, never a longer one than the phase is entitled to.
-    const allowed = Math.max(1, Math.min(limitMs, Math.max(MIN_ATTEMPT_MS, remaining)));
+    const allowed = phase === 'post-processing' ? limitMs :
+      Math.max(1, Math.min(limitMs, Math.max(MIN_ATTEMPT_MS, remaining)));
     const startedAt = Date.now();
     this.allowances.set(itemId, allowed);
 
@@ -727,7 +751,6 @@ export class QueueEngine {
        * duration against a real budget and a test clock that never advances
        * would hand every item an unlimited one.
        */
-      this.allowances.delete(itemId);
       if (phase === 'download') this.options.queueItems.addBusyMs(itemId, Date.now() - startedAt);
     };
   }
@@ -765,6 +788,7 @@ export class QueueEngine {
     // Progress can report `processing` many times; the phase begins once.
     if (this.processing.has(itemId)) return;
     this.processing.add(itemId);
+    this.transferActivity.delete(itemId);
 
     const controller = this.controllers.get(itemId);
     if (!controller) return;
@@ -886,7 +910,24 @@ export class QueueEngine {
     // Written before anything can throw, so a link that turns out to be
     // undownloadable still leaves its id on the row — which is what the ledger
     // needs in order to remember never to offer it again.
+    throwIfAborted(signal);
     this.update(row.id, { canonicalUrl: normalized.canonicalUrl, awemeId: normalized.awemeId });
+
+    const settled = this.options.ledger?.find(normalized.awemeId);
+    const existingDownload = this.options.downloads.findExistingByAwemeId(normalized.awemeId);
+    // "Skip all duplicates" must not skip new videos later in the same batch.
+    const decided = row.duplicate_action ??
+      (settled || existingDownload ? this.batchChoices.get(row.batch_id) : null) ?? null;
+    // Clearing the library or moving a file does not erase TikTok's ID.
+    // Keep the existing duplicate dialog when a library row still exists.
+    if (!decided && !resuming && settled &&
+        (settled.status !== 'downloaded' || !existingDownload)) {
+      this.finish(row.id, 'skipped', {
+        errorCode: null,
+        errorDetail: settled.status === 'downloaded' ? 'Already downloaded.' : 'Previously skipped or unsupported.',
+      });
+      return;
+    }
 
     /**
      * A slideshow the URL itself gives away.
@@ -908,7 +949,6 @@ export class QueueEngine {
       }
     }
 
-    const decided = row.duplicate_action ?? this.batchChoices.get(row.batch_id) ?? null;
     // A resuming item is not a duplicate of anything — the file the layers
     // below would find is the one this very item put there.
     const verdict = decided || resuming
@@ -948,40 +988,6 @@ export class QueueEngine {
       }
     }
 
-    /**
-     * The video is already on disk from an attempt that fell over afterwards.
-     *
-     * `checkDuplicate` reads the downloads table, and that row is only written
-     * when an item completes. Everything after the file is committed —
-     * watermark removal, captions, colour, the finishing pass — runs before
-     * that point and can throw, and when one does the item fails with no row
-     * to its name. The retry then found no history, downloaded the whole video
-     * again, and `resolveOutputPath` gave the second copy the next free name.
-     * That is what "downloading on repeat" was.
-     *
-     * The ledger does know, because it is written the moment the bytes land.
-     * Consulting it here closes the gap — and the check is deliberately narrow:
-     * only when the duplicate layers found nothing, only when the ledger says
-     * this video was downloaded rather than declined or unsupported, and only
-     * when the file it named is really there. A missing file falls through to
-     * the ordinary paths, which ask rather than assume.
-     *
-     * A resuming item is exempt, and must be: the entry it would find is its
-     * own, written when its own bytes landed, and skipping on it would abandon
-     * the video half-processed rather than finish the step that failed.
-     */
-    if (verdict.kind === 'none' && !decided && !resuming) {
-      const settled = this.options.ledger?.find(normalized.awemeId);
-      if (settled?.status === 'downloaded' && settled.file_path && this.fileExists(settled.file_path)) {
-        this.log.info(
-          { itemId: row.id, awemeId: normalized.awemeId, filePath: settled.file_path },
-          'already downloaded; not fetching it a second time',
-        );
-        this.finish(row.id, 'skipped', { errorCode: null, errorDetail: 'Already downloaded.' });
-        return;
-      }
-    }
-
     if (verdict.kind === 'needs-decision') {
       this.park(row, normalized, verdict.existing);
       return;
@@ -1012,6 +1018,7 @@ export class QueueEngine {
      * needs it — so it has to be on the row before the step that is going to go
      * wrong, not after the item succeeds.
      */
+    throwIfAborted(signal);
     this.rememberLookup(row.id, normalized, resolved);
 
     /**
@@ -1043,6 +1050,7 @@ export class QueueEngine {
     }
 
     this.update(row.id, { status: 'downloading', progress: 0 });
+    if (!photoPost) this.transferActivity.set(row.id, { at: Date.now(), bytes: 0 });
     this.emitItem(this.options.queueItems.findById(row.id));
 
     const current = this.options.queueItems.findById(row.id) ?? row;
@@ -1053,7 +1061,7 @@ export class QueueEngine {
       duplicateAction: decided,
       ...(photoPost ? { photoPost: true } : {}),
       signal,
-      onProgress: (progress) => this.onProgress(row.id, progress),
+      onProgress: (progress) => { if (!signal.aborted) this.onProgress(row.id, progress); },
       /**
        * The video is on disk; write that down before anything else can fail.
        *
@@ -1070,6 +1078,7 @@ export class QueueEngine {
        * so writing it twice is writing it once.
        */
       onCommitted: (filePath) => {
+        if (signal.aborted) return;
         /**
          * The bytes are here, so the network budget this item has spent is no
          * longer evidence against it.
@@ -1095,7 +1104,7 @@ export class QueueEngine {
           now: this.options.clock.now(),
         });
       },
-      onStage: (stage, state) => this.noteStage(row.id, stage, state),
+      onStage: (stage, state) => { if (!signal.aborted) this.noteStage(row.id, stage, state); },
       /**
        * Written down the moment a step that cannot be repeated succeeds.
        *
@@ -1103,7 +1112,7 @@ export class QueueEngine {
        * than at the end is the entire point: the end is exactly what a failing
        * attempt never reaches.
        */
-      onResumable: (state) => this.rememberResumePoint(row.id, state),
+      onResumable: (state) => { if (!signal.aborted) this.rememberResumePoint(row.id, state); },
       ...(resuming && resume ? { resume } : {}),
     });
 
@@ -2024,7 +2033,7 @@ export class QueueEngine {
    * the finishing pass failed" is a true and useful thing for a row to say.
    */
   private noteStage(itemId: number, stage: PipelineStage, state: StageState): void {
-    if (state === 'started') this.update(itemId, { stage, failedStage: null });
+    if (state === 'started') this.update(itemId, { stage, ...(stage === 'resolve' ? { failedStage: null } : {}) });
     else if (state === 'failed') this.update(itemId, { failedStage: stage });
     else return;
 
@@ -2071,6 +2080,11 @@ export class QueueEngine {
    * a 300-row list is not asked to re-render on every socket chunk.
    */
   private onProgress(itemId: number, progress: PipelineProgress): void {
+    const activity = this.transferActivity.get(itemId);
+    if (activity && progress.bytesDone !== activity.bytes) {
+      activity.at = Date.now();
+      activity.bytes = progress.bytesDone;
+    }
     /**
      * The bytes are in; from here on it is local ffmpeg work.
      *

@@ -53,7 +53,7 @@ const metadata: VideoMetadata = {
 describe('stream selection (section 9 step 4)', () => {
   const options = { audioOnly: false, watermarkMode: 'auto' } as const;
 
-  it('prefers a clean source even when a watermarked one is higher resolution', () => {
+  it('keeps higher resolution instead of discarding detail to avoid watermark processing', () => {
     const result = selectStream(
       [
         stream({ id: 'download_addr', watermarked: true, width: 1080, height: 1920 }),
@@ -62,10 +62,8 @@ describe('stream selection (section 9 step 4)', () => {
       options,
     );
 
-    // The entire argument of section 9: clean is lossless and instant, a
-    // watermarked source costs a full re-encode.
-    expect(result.stream.id).toBe('play_addr');
-    expect(result.strategy).toBe('clean_source');
+    expect(result.stream.id).toBe('download_addr');
+    expect(result.strategy).toBe('raw');
   });
 
   it('takes the highest resolution TikTok offers, with no setting to lower it', () => {
@@ -207,7 +205,7 @@ describe('filename templating (section 9 step 9)', () => {
 
 describe('collision handling', () => {
   it('suffixes when the name is taken', () => {
-    const taken = new Set(['/out/video.mp4', '/out/video (2).mp4']);
+    const taken = new Set([join('/out', 'video.mp4'), join('/out', 'video (2).mp4')]);
     const path = resolveOutputPath({
       directory: '/out',
       basename: 'video',
@@ -546,8 +544,7 @@ describe('a downloaded video must not be silent', () => {
     expect(result.reason).toMatch(/TikTok offers no audio for this post/);
   });
 
-  it('still puts a clean source ahead of a watermarked one', () => {
-    // Sound ranks within a watermark class, never across it.
+  it('keeps the higher resolution and sound when a lower clean stream is silent', () => {
     const result = selectStream(
       [
         stream({ id: 'watermarked', watermarked: true, hasAudio: true, width: 1080, height: 1920 }),
@@ -556,7 +553,7 @@ describe('a downloaded video must not be silent', () => {
       ],
       options,
     );
-    expect(result.stream.id).toBe('clean-silent');
-    expect(result.formatId).toBe('clean-silent+audio');
+    expect(result.stream.id).toBe('watermarked');
+    expect(result.formatId).toBe('watermarked');
   });
 });

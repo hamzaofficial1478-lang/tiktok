@@ -122,6 +122,7 @@ export class ProfileExpander {
     signal: AbortSignal | undefined,
   ): Promise<ProfileExpansion> {
     const args = [
+      '--ignore-config',
       '--flat-playlist',
       '--dump-single-json',
       '--no-warnings',

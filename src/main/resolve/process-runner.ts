@@ -85,6 +85,22 @@ export class ChildProcessRunner implements ProcessRunner {
       let timedOut = false;
       let settled = false;
 
+      const terminate = (): void => {
+        // Windows yt-dlp launches child processes (including ffmpeg). Killing
+        // only the parent leaves those running and holding stdout open.
+        if (process.platform === 'win32' && child.pid) {
+          const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+            windowsHide: true, stdio: 'ignore',
+          });
+          killer.on('error', () => child.kill('SIGKILL'));
+          killer.on('exit', (code) => { if (code !== 0) child.kill('SIGKILL'); });
+        } else {
+          child.kill('SIGKILL');
+        }
+        child.stdout.destroy();
+        child.stderr.destroy();
+      };
+
       const finish = (result: ProcessResult): void => {
         if (settled) return;
         settled = true;
@@ -103,11 +119,13 @@ export class ChildProcessRunner implements ProcessRunner {
 
       const timer = setTimeout(() => {
         timedOut = true;
-        child.kill('SIGKILL');
+        terminate();
+        // A timeout must settle even if a descendant never closes its pipes.
+        finish({ stdout, stderr, exitCode: null, timedOut: true });
       }, timeoutMs);
 
       const onAbort = (): void => {
-        child.kill('SIGKILL');
+        terminate();
         /**
          * The program's name, not the path it was installed to.
          *
@@ -122,11 +140,12 @@ export class ChildProcessRunner implements ProcessRunner {
 
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', (chunk: string) => {
+        if (settled) return;
         stdoutBytes += Buffer.byteLength(chunk);
         // Guard against a runaway process filling memory; a truncated payload
         // fails JSON parsing loudly rather than being half-trusted.
         if (stdoutBytes > maxBuffer) {
-          child.kill('SIGKILL');
+          terminate();
           fail(new AppError('EXTRACTOR_FAILED', `${command} produced more than ${maxBuffer} bytes of output`));
           return;
         }
